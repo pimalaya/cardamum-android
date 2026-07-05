@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Neutral surfaces; the night variant lives in values-night/. Every
+         other colour is pulled from the device theme (?android:attr/...). -->
+    <color name="divider">#BDBDBD</color>
+    <color name="surface">#EEEEEE</color>
+
+</resources>

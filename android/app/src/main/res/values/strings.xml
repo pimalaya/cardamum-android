@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="app_name">Cardamum</string>
+
+    <string name="welcome">Welcome</string>
+    <string name="welcome_description">Enter your email address to get started. Cardamum finds your contacts server settings automatically.</string>
+    <string name="email_hint">you@example.org</string>
+    <string name="email_submit">Continue</string>
+    <string name="email_invalid">Enter a valid email address</string>
+    <string name="discover_failed">Could not find your contacts server settings</string>
+
+    <string name="config_title">Choose a configuration</string>
+    <string name="config_carddav">CardDAV</string>
+    <string name="config_jmap">JMAP</string>
+    <string name="config_google_api">Google Contacts API</string>
+    <string name="config_google_carddav">Google CardDAV (OAuth)</string>
+    <string name="config_msgraph">Microsoft Graph</string>
+    <string name="config_soon">Coming soon</string>
+
+    <string name="password_title">Sign in</string>
+    <string name="password_server">%1$s at %2$s</string>
+    <string name="password_hint">Password</string>
+    <string name="password_submit">Connect</string>
+    <string name="password_empty">Enter your password</string>
+    <string name="connect_failed">Could not connect</string>
+
+    <string name="books_title">Addressbooks</string>
+    <string name="books_description">Choose the addressbooks to sync on this phone. Each one appears as its own account in your contacts.</string>
+    <string name="books_submit">Synchronize</string>
+    <string name="books_empty_selection">Select at least one addressbook</string>
+    <string name="accounts_failed">Could not create the accounts</string>
+
+    <string name="sync_title">Synchronizing</string>
+    <string name="sync_addressbooks">Fetching addressbooks</string>
+    <string name="sync_push">Pushing changes of %1$s</string>
+    <string name="sync_cards">Fetching contacts of %1$s</string>
+    <string name="sync_no_addressbook">No addressbook found.</string>
+    <string name="sync_failed">Could not synchronize</string>
+    <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
+    <string name="sync_local_requested">Local sync scheduled</string>
+
+    <string name="contacts_title">Contacts</string>
+    <string name="contacts_sync">Sync</string>
+    <string name="sync_remote">Sync remote</string>
+    <string name="sync_local">Sync local</string>
+    <string name="contacts_add">Add</string>
+    <string name="contacts_empty">No contact yet.</string>
+
+    <string name="back">Back</string>
+    <string name="more">More</string>
+    <string name="delete_selected">Delete selected contacts</string>
+    <string name="cancel_selection">Cancel selection</string>
+    <string name="selected_count">%1$d selected</string>
+    <string name="delete_selected_confirm">Delete the selected contacts?</string>
+    <string name="contact_new">New contact</string>
+    <string name="contact_save">Save</string>
+    <string name="contact_delete">Delete</string>
+    <string name="contact_delete_confirm">Delete this contact?</string>
+    <string name="save_failed">Could not save the contact</string>
+    <string name="delete_failed">Could not delete the contact</string>
+    <string name="invalid_birthday">Birthday must be YYYY-MM-DD</string>
+
+    <string name="tab_name">Name</string>
+    <string name="tab_contact">Contact</string>
+    <string name="tab_address">Address</string>
+    <string name="tab_work">Work</string>
+    <string name="tab_more">More</string>
+    <string name="tab_source">Source</string>
+
+    <string name="hint_display_name">Display name</string>
+    <string name="hint_prefix">Prefix</string>
+    <string name="hint_given">First name</string>
+    <string name="hint_middle">Middle name</string>
+    <string name="hint_family">Last name</string>
+    <string name="hint_suffix">Suffix</string>
+    <string name="hint_street">Street</string>
+    <string name="hint_city">City</string>
+    <string name="hint_region">Region</string>
+    <string name="hint_postcode">Postal code</string>
+    <string name="hint_country">Country</string>
+    <string name="hint_company">Company</string>
+    <string name="hint_department">Department</string>
+    <string name="hint_job_title">Title</string>
+    <string name="hint_role">Role</string>
+    <string name="hint_birthday">Birthday</string>
+
+    <string name="section_nicknames">Nicknames</string>
+    <string name="section_phones">Phones</string>
+    <string name="section_emails">Emails</string>
+    <string name="section_addresses">Addresses</string>
+    <string name="section_websites">Websites</string>
+    <string name="section_notes">Notes</string>
+
+    <string name="add_nickname">Add nickname</string>
+    <string name="add_phone">Add phone</string>
+    <string name="add_email">Add email</string>
+    <string name="add_address">Add address</string>
+    <string name="add_website">Add website</string>
+    <string name="add_note">Add note</string>
+    <string name="remove_row">Remove</string>
+    <string name="clear">Clear</string>
+
+    <string-array name="phone_types">
+        <item>Mobile</item>
+        <item>Home</item>
+        <item>Work</item>
+        <item>Work mobile</item>
+        <item>Fax (home)</item>
+        <item>Fax (work)</item>
+        <item>Pager</item>
+        <item>Other</item>
+    </string-array>
+
+    <string-array name="email_types">
+        <item>Home</item>
+        <item>Work</item>
+        <item>Other</item>
+    </string-array>
+
+    <string-array name="address_types">
+        <item>Home</item>
+        <item>Work</item>
+        <item>Other</item>
+    </string-array>
+
+</resources>

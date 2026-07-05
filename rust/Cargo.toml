@@ -1,0 +1,36 @@
+# Cardamum JNI bridge: a cdylib driving pimconf discovery and io-webdav
+# CardDAV coroutines for the Android :client module. Scoped to the
+# client; the :app module never depends on it.
+
+[package]
+name = "cardamum"
+description = "JNI bridge driving pimconf and io-webdav coroutines for the Cardamum Android client"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+io-http = { version = "0.1", default-features = false }
+io-webdav = { version = "0.0.1", default-features = false }
+jni = "0.22"
+pimconf = { version = "0.1", default-features = false, features = ["rfc6764", "client"] }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+url = { version = "2", default-features = false }
+vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] }
+
+# pimconf pins the `domain` DNS crate to a git rev; replicate it here, as
+# a dependency's own patches are ignored. The Pimalaya crates live in
+# sibling repos and are wired locally (they resolve via git, not
+# crates.io); patch them to the checkouts next door.
+[patch.crates-io]
+domain = { git = "https://github.com/nlnetlabs/domain", rev = "b30087125c13e71010d9783a1bcdd9eb9fa3f336" }
+io-http = { path = "../../io-http" }
+io-webdav = { path = "../../io-webdav" }
+pimconf = { path = "../../pimconf" }
+vcard-rs = { path = "../../vcard-rs" }

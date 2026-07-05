@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Edit schema read by contacts apps (android.provider.CONTACTS_STRUCTURE):
+     declares Cardamum's account type as a contacts source, which is what
+     makes contacts apps list its accounts in their drawer and allow
+     editing its raw contacts. Kinds mirror what the projector writes
+     (docs/contacts-mapping.md). -->
+<ContactsAccountType>
+
+    <EditSchema>
+
+        <!-- The phonetic attributes are mandatory for the AOSP edit
+             schema parser (DefinitionException otherwise), even though
+             the projector does not write phonetic rows. -->
+        <DataKind
+            kind="name"
+            maxOccurs="1"
+            supportsDisplayName="true"
+            supportsFamilyName="true"
+            supportsMiddleName="true"
+            supportsPhoneticFamilyName="true"
+            supportsPhoneticGivenName="true"
+            supportsPhoneticMiddleName="true"
+            supportsPrefix="true"
+            supportsSuffix="true" />
+
+        <DataKind kind="photo" maxOccurs="1" />
+
+        <DataKind kind="phone">
+            <Type type="mobile" />
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="work_mobile" />
+            <Type type="fax_home" />
+            <Type type="fax_work" />
+            <Type type="other_fax" />
+            <Type type="pager" />
+            <Type type="work_pager" />
+            <Type type="car" />
+            <Type type="isdn" />
+            <Type type="other" />
+        </DataKind>
+
+        <DataKind kind="email">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+        </DataKind>
+
+        <DataKind kind="postal" needsStructured="true">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+        </DataKind>
+
+        <DataKind kind="organization" maxOccurs="1" />
+
+        <DataKind kind="nickname" maxOccurs="1" />
+
+        <DataKind kind="note" maxOccurs="1" />
+
+        <DataKind kind="website" />
+
+        <DataKind kind="event" dateWithTime="false">
+            <Type maxOccurs="1" type="birthday" />
+        </DataKind>
+
+    </EditSchema>
+
+</ContactsAccountType>

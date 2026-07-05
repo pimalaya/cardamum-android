@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/flipper"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <include layout="@layout/panel_email" />
+
+    <include layout="@layout/panel_config" />
+
+    <include layout="@layout/panel_password" />
+
+    <include layout="@layout/panel_books" />
+
+    <include layout="@layout/panel_sync" />
+
+    <include layout="@layout/panel_contacts" />
+
+    <include layout="@layout/panel_contact" />
+
+</ViewFlipper>

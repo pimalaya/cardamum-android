@@ -1,0 +1,34 @@
+# Rust
+/rust/target/
+**/*.rs.bk
+
+# Generated native libraries (built by cargo-ndk into the client module)
+/android/client/src/main/jniLibs/
+
+# Gradle / Android
+.gradle/
+.gradle-home/
+/android/build/
+/android/*/build/
+/android/local.properties
+/android/captures/
+*.apk
+*.aab
+
+# Signing material must never be committed
+*.jks
+*.keystore
+keystore.properties
+
+# Nix
+result
+result-*
+
+# Direnv
+/.envrc
+/.direnv/
+
+# IDEs
+.idea/
+*.iml
+.metadata/

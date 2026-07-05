@@ -1,0 +1,74 @@
+name: Releases
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - v*
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    env:
+      CARDAMUM_KEYSTORE_PASSWORD: ${{ secrets.CARDAMUM_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: experimental-features = nix-command flakes
+      - uses: cachix/cachix-action@v16
+        with:
+          name: soywod
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+      # Decode the keystore only when the secret is present; otherwise the
+      # build proceeds and emits an unsigned APK.
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CARDAMUM_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/cardamum.jks"
+            echo "CARDAMUM_KEYSTORE=$RUNNER_TEMP/cardamum.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Assemble release APKs
+        run: nix develop --command bash -c 'cd android && gradle :app:assembleRelease'
+      # Rename each split (and the universal) to its published name; the
+      # *.apk glob absorbs the -unsigned suffix when no keystore is set.
+      - name: Collect the APKs
+        run: |
+          out=android/app/build/outputs/apk/release
+          cp "$out"/app-universal-release*.apk cardamum.apk
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            cp "$out/app-$abi-release"*.apk "cardamum-$abi.apk"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardamum
+          path: cardamum.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardamum-arm64-v8a
+          path: cardamum-arm64-v8a.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardamum-armeabi-v7a
+          path: cardamum-armeabi-v7a.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardamum-x86_64
+          path: cardamum-x86_64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cardamum-x86
+          path: cardamum-x86.apk
+      - uses: softprops/action-gh-release@v2
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        with:
+          files: |
+            cardamum.apk
+            cardamum-arm64-v8a.apk
+            cardamum-armeabi-v7a.apk
+            cardamum-x86_64.apk
+            cardamum-x86.apk
