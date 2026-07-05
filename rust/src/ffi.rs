@@ -16,6 +16,7 @@ use url::Url;
 
 use crate::{
     client::Client,
+    oauth::{authorize_url, validate_redirect},
     project::{apply, project},
     types::Credentials,
 };
@@ -39,6 +40,193 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_discover<'local>
         let json = match Client::new(env, &transport).discover(&email, resolver) {
             Ok(url) => serde_json::json!({ "url": url.as_str() }).to_string(),
             Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchAll`: collects CardDAV service configs (endpoint,
+/// username, authentication methods, source mechanism) from every
+/// pimconf mechanism: fixed provider rules, PACC, RFC 6764 resolve.
+/// Returns a JSON array of service configs.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchAll<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    email: JString<'local>,
+    resolver: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = search_json(env, &transport, &email, &resolver, false);
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchFirst`: same mechanism chain as `searchAll`, stopping
+/// at the first mechanism yielding a config. Returns a JSON array of
+/// service configs (empty when nothing was found).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchFirst<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    email: JString<'local>,
+    resolver: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = search_json(env, &transport, &email, &resolver, true);
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthAuthorizeUrl`: builds the RFC 6749 authorization URL
+/// with PKCE (S256) and CSRF state; pure computation, no transport.
+/// `extras` is a JSON object of provider-specific query parameters
+/// (empty or null for none). Returns `{"url": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthAuthorizeUrl<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    authorization_endpoint: JString<'local>,
+    client_id: JString<'local>,
+    redirect_uri: JString<'local>,
+    scope: JString<'local>,
+    state: JString<'local>,
+    pkce_verifier: JString<'local>,
+    extras: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let authorization_endpoint = read_string(env, &authorization_endpoint);
+        let client_id = read_string(env, &client_id);
+        let redirect_uri = read_string(env, &redirect_uri);
+        let scope = read_string(env, &scope);
+        let state = read_string(env, &state);
+        let pkce_verifier = read_string(env, &pkce_verifier);
+        let extras = read_string(env, &extras);
+
+        let json = match authorize_url(
+            &authorization_endpoint,
+            &client_id,
+            &redirect_uri,
+            &scope,
+            &state,
+            &pkce_verifier,
+            &extras,
+        ) {
+            Ok(url) => serde_json::json!({ "url": url }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthValidateRedirect`: validates the authorization
+/// redirect against the expected CSRF state and extracts the
+/// authorization code; pure computation, no transport. Returns
+/// `{"code": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthValidateRedirect<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    redirect_url: JString<'local>,
+    state: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let redirect_url = read_string(env, &redirect_url);
+        let state = read_string(env, &state);
+
+        let json = match validate_redirect(&redirect_url, &state) {
+            Ok(code) => serde_json::json!({ "code": code }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthRequestAccessToken`: exchanges an authorization code
+/// for tokens against the token endpoint, with the PKCE verifier of
+/// the authorization request. Returns the RFC 6749 §5.1 success
+/// params as JSON (`access_token`, `token_type`, `expires_in`,
+/// `refresh_token`, `scope`, `issued_at`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRequestAccessToken<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token_endpoint: JString<'local>,
+    client_id: JString<'local>,
+    code: JString<'local>,
+    redirect_uri: JString<'local>,
+    pkce_verifier: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token_endpoint = read_string(env, &token_endpoint);
+        let client_id = read_string(env, &client_id);
+        let code = read_string(env, &code);
+        let redirect_uri = read_string(env, &redirect_uri);
+        let pkce_verifier = read_string(env, &pkce_verifier);
+
+        let json = match parse_url(&token_endpoint) {
+            Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).oauth_request_access_token(
+                &url,
+                &client_id,
+                &code,
+                &redirect_uri,
+                &pkce_verifier,
+            ) {
+                Ok(tokens) => serde_json::to_string(&tokens)
+                    .unwrap_or_else(|err| error_json(&err.to_string())),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthRefreshAccessToken`: refreshes tokens against the
+/// token endpoint; `scope` is the space-separated scope list of the
+/// original grant (empty keeps the server default). Returns the same
+/// JSON shape as `oauthRequestAccessToken`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRefreshAccessToken<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token_endpoint: JString<'local>,
+    client_id: JString<'local>,
+    refresh_token: JString<'local>,
+    scope: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token_endpoint = read_string(env, &token_endpoint);
+        let client_id = read_string(env, &client_id);
+        let refresh_token = read_string(env, &refresh_token);
+        let scope = read_string(env, &scope);
+
+        let json = match parse_url(&token_endpoint) {
+            Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).oauth_refresh_access_token(
+                &url,
+                &client_id,
+                &refresh_token,
+                &scope,
+            ) {
+                Ok(tokens) => serde_json::to_string(&tokens)
+                    .unwrap_or_else(|err| error_json(&err.to_string())),
+                Err(err) => error_json(&err),
+            },
         };
 
         Ok(env.new_string(json)?.into())
@@ -327,6 +515,27 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_applyCard<'local
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
+}
+
+/// Runs one search (all or first mechanisms) and serializes the
+/// resulting service configs.
+fn search_json<'local>(
+    env: &mut Env<'local>,
+    transport: &JObject<'local>,
+    email: &JString<'local>,
+    resolver: &JString<'local>,
+    first: bool,
+) -> String {
+    let email = read_string(env, email);
+    let resolver = read_string(env, resolver);
+    let resolver = (!resolver.is_empty()).then_some(resolver.as_str());
+
+    match Client::new(env, transport).search(&email, resolver, first) {
+        Ok(configs) => {
+            serde_json::to_string(&configs).unwrap_or_else(|err| error_json(&err.to_string()))
+        }
+        Err(err) => error_json(&err),
+    }
 }
 
 /// Reads a Java string, defaulting to empty on any conversion error.

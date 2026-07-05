@@ -29,8 +29,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:paddingStart="8dp"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textStyle="bold" />
+            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+            android:textColor="?android:attr/textColorPrimary" />
 
     </LinearLayout>
 
@@ -64,7 +64,18 @@
 
                 </HorizontalScrollView>
 
-                <!-- Hints that the tab strip scrolls further right. -->
+                <!-- Hints that the tab strip scrolls further left/right. -->
+                <ImageView
+                    android:id="@+id/contact_tab_less"
+                    android:layout_width="28dp"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="start"
+                    android:background="@color/surface"
+                    android:contentDescription="@string/more"
+                    android:scaleType="center"
+                    android:src="@drawable/ic_chevron_left"
+                    android:visibility="gone" />
+
                 <ImageView
                     android:id="@+id/contact_tab_more"
                     android:layout_width="28dp"

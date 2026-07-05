@@ -4,7 +4,9 @@ package org.pimalaya.cardamum.client;
  * The libcardamum.so boundary. Every method blocks, drives the given
  * {@link Transport} for all socket I/O, and returns JSON: the documented
  * success shape, or {@code {"error": ".."}}. ETag parameters are plain
- * strings where empty means unknown (no If-Match guard).
+ * strings where empty means unknown (no If-Match guard). On every
+ * CardDAV method, an empty login means the password parameter carries
+ * an OAuth 2.0 access token, sent as Bearer instead of Basic.
  */
 final class Native {
     static {
@@ -20,6 +22,70 @@ final class Native {
      * back to a public one.
      */
     static native String discover(Transport transport, String email, String resolver);
+
+    /**
+     * Unified search: email to CardDAV service configs (endpoint,
+     * username, authentication methods, source mechanism), collected
+     * from every mechanism: fixed provider rules, PACC, RFC 6764
+     * resolve. Returns a JSON array. Resolver as in {@link #discover}.
+     */
+    static native String searchAll(Transport transport, String email, String resolver);
+
+    /**
+     * Same mechanism chain as {@link #searchAll}, stopping at the
+     * first mechanism yielding a config; empty array when none does.
+     */
+    static native String searchFirst(Transport transport, String email, String resolver);
+
+    /**
+     * Builds the OAuth 2.0 authorization URL with PKCE (S256) and CSRF
+     * state; pure computation, no transport. {@code extras} is a JSON
+     * object of provider-specific query parameters (empty for none).
+     * Returns {@code {"url": ".."}}.
+     */
+    static native String oauthAuthorizeUrl(
+            String authorizationEndpoint,
+            String clientId,
+            String redirectUri,
+            String scope,
+            String state,
+            String pkceVerifier,
+            String extras);
+
+    /**
+     * Validates the authorization redirect against the expected CSRF
+     * state and extracts the authorization code; pure computation, no
+     * transport. Returns {@code {"code": ".."}}.
+     */
+    static native String oauthValidateRedirect(String redirectUrl, String state);
+
+    /**
+     * Exchanges an authorization code for tokens against the token
+     * endpoint, with the PKCE verifier of the authorization request.
+     * Returns the RFC 6749 success params as JSON ({@code access_token},
+     * {@code token_type}, {@code expires_in}, {@code refresh_token},
+     * {@code scope}, {@code issued_at}).
+     */
+    static native String oauthRequestAccessToken(
+            Transport transport,
+            String tokenEndpoint,
+            String clientId,
+            String code,
+            String redirectUri,
+            String pkceVerifier);
+
+    /**
+     * Refreshes tokens against the token endpoint; {@code scope} is
+     * the space-separated scope list of the original grant (empty
+     * keeps the server default). Same JSON shape as
+     * {@link #oauthRequestAccessToken}.
+     */
+    static native String oauthRefreshAccessToken(
+            Transport transport,
+            String tokenEndpoint,
+            String clientId,
+            String refreshToken,
+            String scope);
 
     /**
      * Walks current-user-principal to addressbook-home-set to list from

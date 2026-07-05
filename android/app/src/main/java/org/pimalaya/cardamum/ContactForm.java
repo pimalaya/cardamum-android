@@ -115,9 +115,13 @@ final class ContactForm {
     private void setUpScrollHint() {
         HorizontalScrollView scroll = activity.findViewById(R.id.contact_tab_scroll);
         ImageView more = activity.findViewById(R.id.contact_tab_more);
+        ImageView less = activity.findViewById(R.id.contact_tab_less);
 
-        Runnable update = () -> more.setVisibility(
-                scroll.canScrollHorizontally(1) ? View.VISIBLE : View.GONE);
+        Runnable update =
+                () -> {
+                    more.setVisibility(scroll.canScrollHorizontally(1) ? View.VISIBLE : View.GONE);
+                    less.setVisibility(scroll.canScrollHorizontally(-1) ? View.VISIBLE : View.GONE);
+                };
         scroll.setOnScrollChangeListener((view, x, y, oldX, oldY) -> update.run());
         // Re-evaluate once the tab strip has actually measured, otherwise
         // canScrollHorizontally reports false and the hint never shows.
@@ -185,14 +189,23 @@ final class ContactForm {
         family.setText(name == null ? "" : name.optString("family"));
         suffix.setText(name == null ? "" : name.optString("suffix"));
 
+        // Every multi-value section keeps one trailing empty row, so
+        // there is always a blank to fill without tapping the plus.
         fill(nicknames, safe.optJSONArray("nicknames"),
                 value -> nicknames.addView(lineRow(nicknames, value, TEXT_NAME)));
+        nicknames.addView(lineRow(nicknames, "", TEXT_NAME));
+
         fillObjects(phones, safe.optJSONArray("phones"),
                 entry -> phones.addView(phoneRow(entry)));
+        phones.addView(phoneRow(null));
+
         fillObjects(emails, safe.optJSONArray("emails"),
                 entry -> emails.addView(emailRow(entry)));
+        emails.addView(emailRow(null));
+
         fillObjects(addresses, safe.optJSONArray("addresses"),
                 entry -> addresses.addView(addressBlock(entry)));
+        addresses.addView(addressBlock(null));
 
         JSONObject organization = safe.optJSONObject("organization");
         company.setText(organization == null ? "" : organization.optString("company"));
@@ -204,7 +217,11 @@ final class ContactForm {
         fill(websites, safe.optJSONArray("websites"),
                 value -> websites.addView(lineRow(websites, value,
                         InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)));
+        websites.addView(lineRow(websites, "",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
+
         fill(notes, safe.optJSONArray("notes"), value -> notes.addView(noteRow(value)));
+        notes.addView(noteRow(""));
 
         source.setText(vcard);
         tabs.setCurrentTab(0);
@@ -406,22 +423,23 @@ final class ContactForm {
         dialog.show();
     }
 
+    /** Vertical space above each field group (label + input, or label + list). */
+    private static final int GROUP_TOP = 20;
+
     /**
-     * A titled section: a header row with the label and a round add
-     * (plus) button, then a vertical container for its repeating rows.
-     * Returns the rows container.
+     * A titled section: a header row with the small label and, right
+     * next to it (inline, not pushed to the edge), a plus button; then a
+     * vertical container for its repeating rows. Returns the container.
      */
     private LinearLayout section(LinearLayout parent, int title, int addLabel, Runnable onAdd) {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        // Same top spacing as a single field's label, so groups are even.
+        header.setPadding(0, dp(GROUP_TOP), 0, 0);
 
-        TextView label = new TextView(activity);
-        label.setText(title);
-        label.setTextColor(labelColor);
+        TextView label = smallLabel(title);
         label.setPadding(labelIndent, 0, 0, 0);
-        label.setLayoutParams(
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         header.addView(label);
 
         header.addView(iconButton(R.drawable.ic_add, addLabel, accentColor, view -> onAdd.run()));
@@ -434,14 +452,20 @@ final class ContactForm {
         return rows;
     }
 
-    /** The one label style, secondary colour, used for single fields. */
+    /** A small, secondary-coloured label sitting just above its input. */
     private void addLabel(LinearLayout container, int label) {
-        TextView view = new TextView(activity);
-        view.setText(label);
-        view.setTextColor(labelColor);
-        // Indent to the field's text start, so labels line up with values.
-        view.setPadding(labelIndent, dp(12), 0, 0);
+        TextView view = smallLabel(label);
+        // Indent to the field's text start; top spacing separates groups.
+        view.setPadding(labelIndent, dp(GROUP_TOP), 0, 0);
         container.addView(view);
+    }
+
+    private TextView smallLabel(int text) {
+        TextView view = new TextView(activity);
+        view.setText(text);
+        view.setTextColor(labelColor);
+        view.setTextAppearance(android.R.style.TextAppearance_DeviceDefault_Small);
+        return view;
     }
 
     /**
@@ -634,7 +658,7 @@ final class ContactForm {
     /** A round, background-less remove (minus) button for the row. */
     private ImageButton removeButton(LinearLayout target) {
         return iconButton(
-                R.drawable.ic_remove,
+                R.drawable.ic_close,
                 R.string.remove_row,
                 labelColor,
                 view -> ((ViewGroup) target.getParent()).removeView(target));

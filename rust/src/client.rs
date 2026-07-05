@@ -10,9 +10,22 @@
 //! tells it which URL each yield wants.
 
 use core::fmt::Display;
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
-use io_http::rfc7617::basic::HttpAuthBasic;
+use io_http::{
+    rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic, rfc9110::request::HttpRequest,
+};
+use io_oauth::v2_0::{
+    authorization_code_grant::access_token_request::{
+        Oauth20AccessTokenRequestParams, Oauth20RequestAccessToken, Oauth20RequestAccessTokenResult,
+    },
+    issue_access_token::{
+        Oauth20IssueAccessTokenErrorParams, Oauth20IssueAccessTokenSuccessParams,
+    },
+    refresh_access_token::{
+        Oauth20RefreshAccessToken, Oauth20RefreshAccessTokenParams, Oauth20RefreshAccessTokenResult,
+    },
+};
 use io_webdav::{
     coroutine::{WebdavCoroutine, WebdavCoroutineState, WebdavYield},
     rfc4918::{WebdavAuth, coroutine::WebdavRedirectYield},
@@ -36,10 +49,18 @@ use jni::{
 use pimconf::{
     coroutine::{DiscoveryCoroutine, DiscoveryCoroutineState, DiscoveryYield},
     rfc6764::{resolve::ResolveDav, types::DavService, well_known::WellKnown},
+    search::{
+        all::{SearchAll, SearchError},
+        first::SearchFirst,
+        types::{Service, ServiceConfig},
+    },
 };
 use url::Url;
 
-use crate::types::{Addressbook, Card, Credentials};
+use crate::{
+    oauth::parse_pkce_verifier,
+    types::{Addressbook, Card, Credentials},
+};
 
 /// DNS-over-TCP resolver used for the RFC 6764 SRV/TXT lookups when the
 /// device did not expose its own.
@@ -96,6 +117,107 @@ impl<'a, 'local> Client<'a, 'local> {
             // the origin; keep the origin itself as context root.
             Ok(redirect) => Ok(redirect.unwrap_or(origin)),
             Err(err) => Err(format!("{err} (SRV/TXT lookup failed first: {srv_err})")),
+        }
+    }
+
+    /// Searches every pimconf mechanism for CardDAV service configs:
+    /// fixed provider rules (Google/Microsoft, matched by domain then
+    /// by MX records), PACC, then the RFC 6764 resolve. Each config
+    /// carries its endpoint and authentication methods (password,
+    /// OAuth 2.0 grants). With `first`, stops at the first mechanism
+    /// yielding a config.
+    pub fn search(
+        &mut self,
+        email: &str,
+        resolver: Option<&str>,
+        first: bool,
+    ) -> Result<Vec<ServiceConfig>, String> {
+        let resolver = resolver.unwrap_or(DNS_RESOLVER);
+        let resolver = Url::parse(resolver)
+            .map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))?;
+
+        let services = BTreeSet::from([Service::Carddav]);
+
+        if first {
+            let coroutine =
+                SearchFirst::new(email, services, resolver).map_err(|err| err.to_string())?;
+            self.run_search(coroutine)
+        } else {
+            let coroutine =
+                SearchAll::new(email, services, resolver).map_err(|err| err.to_string())?;
+            self.run_search(coroutine)
+        }
+    }
+
+    /// Exchanges an authorization code for OAuth 2.0 tokens against
+    /// the token endpoint (RFC 6749 §4.1.3), carrying the PKCE
+    /// verifier of the authorization request.
+    pub fn oauth_request_access_token(
+        &mut self,
+        token_endpoint: &Url,
+        client_id: &str,
+        code: &str,
+        redirect_uri: &str,
+        pkce_verifier: &str,
+    ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
+        let verifier = parse_pkce_verifier(pkce_verifier)?;
+        let params = Oauth20AccessTokenRequestParams {
+            code: code.into(),
+            redirect_uri: Some(redirect_uri.into()),
+            client_id: client_id.into(),
+            pkce_code_verifier: Some(Cow::Owned(verifier)),
+        };
+
+        let mut coroutine =
+            Oauth20RequestAccessToken::new(oauth_post_request(token_endpoint), params);
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                Oauth20RequestAccessTokenResult::Ok(Ok(success)) => return Ok(success),
+                Oauth20RequestAccessTokenResult::Ok(Err(err)) => return Err(oauth_error(err)),
+                Oauth20RequestAccessTokenResult::Err(err) => return Err(err.to_string()),
+                Oauth20RequestAccessTokenResult::WantsRead => {
+                    arg = Some(self.read(token_endpoint.as_str())?);
+                }
+                Oauth20RequestAccessTokenResult::WantsWrite(bytes) => {
+                    self.write(token_endpoint.as_str(), &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
+    /// Refreshes OAuth 2.0 tokens against the token endpoint
+    /// (RFC 6749 §6). `scope` is the space-separated scope list of
+    /// the original grant (empty keeps the server default).
+    pub fn oauth_refresh_access_token(
+        &mut self,
+        token_endpoint: &Url,
+        client_id: &str,
+        refresh_token: &str,
+        scope: &str,
+    ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
+        let mut params = Oauth20RefreshAccessTokenParams::new(client_id, refresh_token);
+        params.scopes = scope.split_whitespace().map(Cow::Borrowed).collect();
+
+        let mut coroutine =
+            Oauth20RefreshAccessToken::new(oauth_post_request(token_endpoint), params);
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                Oauth20RefreshAccessTokenResult::Ok(Ok(success)) => return Ok(success),
+                Oauth20RefreshAccessTokenResult::Ok(Err(err)) => return Err(oauth_error(err)),
+                Oauth20RefreshAccessTokenResult::Err(err) => return Err(err.to_string()),
+                Oauth20RefreshAccessTokenResult::WantsRead => {
+                    arg = Some(self.read(token_endpoint.as_str())?);
+                }
+                Oauth20RefreshAccessTokenResult::WantsWrite(bytes) => {
+                    self.write(token_endpoint.as_str(), &bytes)?;
+                    arg = None;
+                }
+            }
         }
     }
 
@@ -274,6 +396,39 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
+    /// Drives a search coroutine, converting transport failures on
+    /// one endpoint into an EOF signal (an empty resume slice) so the
+    /// failing mechanism errors out and the search moves on to the
+    /// next one, mirroring pimconf's own std search client.
+    fn run_search<C>(&mut self, mut coroutine: C) -> Result<Vec<ServiceConfig>, String>
+    where
+        C: DiscoveryCoroutine<
+                Yield = DiscoveryYield,
+                Return = Result<Vec<ServiceConfig>, SearchError>,
+            >,
+    {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                DiscoveryCoroutineState::Complete(Ok(configs)) => return Ok(configs),
+                DiscoveryCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsRead { url }) => {
+                    arg = Some(match self.read(url.as_str()) {
+                        Ok(bytes) => bytes,
+                        Err(_) => Vec::new(),
+                    });
+                }
+                DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsWrite { url, bytes }) => {
+                    arg = match self.write(url.as_str(), &bytes) {
+                        Ok(()) => None,
+                        Err(_) => Some(Vec::new()),
+                    };
+                }
+            }
+        }
+    }
+
     /// Drives a plain (non-redirect) coroutine against `target`.
     fn run<C, T, E>(&mut self, target: &Url, mut coroutine: C) -> Result<T, String>
     where
@@ -383,10 +538,39 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 }
 
-/// HTTP Basic auth from the credentials, the only password scheme
-/// CardDAV servers negotiate in practice.
+/// Auth scheme from the credentials: an empty login means the
+/// password field carries an OAuth 2.0 access token (Bearer, RFC
+/// 6750); otherwise HTTP Basic, the only password scheme CardDAV
+/// servers negotiate in practice.
 fn auth(credentials: &Credentials) -> WebdavAuth {
-    WebdavAuth::Basic(HttpAuthBasic::new(credentials.login, credentials.password))
+    if credentials.login.is_empty() {
+        WebdavAuth::Bearer(HttpAuthBearer::new(credentials.password))
+    } else {
+        WebdavAuth::Basic(HttpAuthBasic::new(credentials.login, credentials.password))
+    }
+}
+
+/// POST request skeleton against the token endpoint, Host header
+/// included (the io-oauth coroutines add the Content-Type and body).
+fn oauth_post_request(endpoint: &Url) -> HttpRequest {
+    let host = endpoint.host_str().unwrap_or("");
+    let port = endpoint.port_or_known_default().unwrap_or(443);
+
+    HttpRequest {
+        method: "POST".into(),
+        url: endpoint.clone(),
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+    .header("Host", format!("{host}:{port}"))
+}
+
+/// Formats an RFC 6749 §5.2 token error response.
+fn oauth_error(err: Oauth20IssueAccessTokenErrorParams) -> String {
+    match err.error_description {
+        Some(description) => format!("OAuth error {:?}: {description}", err.error),
+        None => format!("OAuth error {:?}", err.error),
+    }
 }
 
 /// io-webdav addressbook to the JNI-facing shape: the display name

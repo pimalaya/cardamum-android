@@ -2,7 +2,9 @@
 
 use serde::Serialize;
 
-/// Borrowed account credentials threaded through one connection.
+/// Borrowed account credentials threaded through one connection. An
+/// empty login means the password field carries an OAuth 2.0 access
+/// token, authenticated as Bearer instead of Basic.
 pub struct Credentials<'a> {
     pub login: &'a str,
     pub password: &'a str,

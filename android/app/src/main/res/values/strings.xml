@@ -17,12 +17,14 @@
     <string name="config_google_carddav">Google CardDAV (OAuth)</string>
     <string name="config_msgraph">Microsoft Graph</string>
     <string name="config_soon">Coming soon</string>
+    <string name="config_oauth">Sign in with your browser</string>
 
     <string name="password_title">Sign in</string>
     <string name="password_server">%1$s at %2$s</string>
     <string name="password_hint">Password</string>
     <string name="password_submit">Connect</string>
     <string name="password_empty">Enter your password</string>
+    <string name="error_title">Error</string>
     <string name="connect_failed">Could not connect</string>
 
     <string name="books_title">Addressbooks</string>
@@ -45,12 +47,14 @@
     <string name="sync_remote">Sync remote</string>
     <string name="sync_local">Sync local</string>
     <string name="contacts_add">Add</string>
+    <string name="contacts_search">Search</string>
     <string name="contacts_empty">No contact yet.</string>
 
     <string name="back">Back</string>
     <string name="more">More</string>
     <string name="delete_selected">Delete selected contacts</string>
     <string name="cancel_selection">Cancel selection</string>
+    <string name="settings_title">Settings</string>
     <string name="selected_count">%1$d selected</string>
     <string name="delete_selected_confirm">Delete the selected contacts?</string>
     <string name="contact_new">New contact</string>

@@ -7,10 +7,13 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The only surface the app needs: RFC 6764 discovery, the onboarding
- * connection check, and the CardDAV addressbook/card operations. Owns
- * the TLS sockets and the Rust bridge; the app sees neither. Every call
- * blocks, so callers must run it off the main thread.
+ * The only surface the app needs: config search (endpoints plus
+ * authentication methods) and RFC 6764 discovery, OAuth 2.0 token
+ * refresh (the code-exchange side lives on {@link OauthSession}), the
+ * onboarding connection check, and the CardDAV addressbook/card
+ * operations. Owns the TLS sockets and the Rust bridge; the app sees
+ * neither. Every call blocks, so callers must run it off the main
+ * thread.
  */
 public class CardamumClient {
     /**
@@ -23,6 +26,58 @@ public class CardamumClient {
         try {
             JSONObject reply = object(Native.discover(transport, email, resolver));
             return string(reply, "url");
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Searches every discovery mechanism for CardDAV service configs
+     * (fixed provider rules, PACC, RFC 6764 resolve), each carrying
+     * its endpoint and authentication methods, so the connection
+     * screen can list them for the user to choose. Resolver as in
+     * {@link #discover}.
+     */
+    public List<ServiceConfig> searchAll(String email, String resolver) {
+        Transport transport = new Transport();
+        try {
+            return configs(Native.searchAll(transport, email, resolver));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Same mechanism chain as {@link #searchAll}, stopping at the
+     * first mechanism yielding a config; empty when none does.
+     */
+    public List<ServiceConfig> searchFirst(String email, String resolver) {
+        Transport transport = new Transport();
+        try {
+            return configs(Native.searchFirst(transport, email, resolver));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Refreshes OAuth 2.0 tokens; {@code scope} is the space-separated
+     * scope list of the original grant (null keeps the server
+     * default). The code-exchange side lives on {@link OauthSession}.
+     */
+    public OauthTokens oauthRefresh(
+            String tokenEndpoint, String clientId, String refreshToken, String scope) {
+        Transport transport = new Transport();
+        try {
+            JSONObject reply =
+                    object(
+                            Native.oauthRefreshAccessToken(
+                                    transport,
+                                    tokenEndpoint,
+                                    clientId,
+                                    refreshToken,
+                                    scope == null ? "" : scope));
+            return OauthTokens.from(reply);
         } finally {
             transport.close();
         }
@@ -184,10 +239,21 @@ public class CardamumClient {
         return card.uri == null ? card.id + ".vcf" : card.uri;
     }
 
+    /** Parses a search reply into service configs. */
+    private static List<ServiceConfig> configs(String json) {
+        JSONArray reply = array(json);
+
+        List<ServiceConfig> configs = new ArrayList<>(reply.length());
+        for (int index = 0; index < reply.length(); index++) {
+            configs.add(ServiceConfig.from(object(reply, index)));
+        }
+        return configs;
+    }
+
     // ---- Bridge reply parsing ----------------------------------------------
 
     /** Parses an object reply, surfacing the bridge's {@code error} field. */
-    private static JSONObject object(String json) {
+    static JSONObject object(String json) {
         try {
             JSONObject reply = new JSONObject(json.trim());
             String error = reply.optString("error");
@@ -225,7 +291,7 @@ public class CardamumClient {
         }
     }
 
-    private static String string(JSONObject object, String key) {
+    static String string(JSONObject object, String key) {
         try {
             return object.getString(key);
         } catch (JSONException error) {

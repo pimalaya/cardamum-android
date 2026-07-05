@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Material Design icon (Apache-2.0); tinted at use site. -->
+<!-- Material Symbols Outlined (Apache-2.0); tinted at use site. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
-    android:viewportWidth="24" android:viewportHeight="24"
+    android:viewportWidth="960" android:viewportHeight="960"
     android:tint="?android:attr/textColorSecondary">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M10,6L8.59,7.41 13.17,12l-4.58,4.59L10,18l6,-6z" />
+    <group android:translateY="960">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z" />
+    </group>
 </vector>

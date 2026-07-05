@@ -18,4 +18,6 @@
 
     <include layout="@layout/panel_contact" />
 
+    <include layout="@layout/panel_settings" />
+
 </ViewFlipper>

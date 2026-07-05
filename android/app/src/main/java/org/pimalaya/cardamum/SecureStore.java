@@ -24,6 +24,7 @@ public class SecureStore {
     private static final String PREFS = "cardamum.account";
     private static final String KEY_PAYLOAD = "payload";
     private static final String KEY_IV = "iv";
+    private static final String KEY_EMAIL = "email";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String KEY_ALIAS = "cardamum.account.key";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -56,8 +57,18 @@ public class SecureStore {
         }
     }
 
-    /** Encrypts and persists the account, replacing any previous one. */
-    public void save(Account account) {
+    /**
+     * The account's display email (its Android account name), or null.
+     * Kept in the clear since it is not a secret and an OAuth account
+     * carries an empty {@link Account#login} (the Bearer marker), so the
+     * name cannot be recovered from the credentials.
+     */
+    public String email() {
+        return prefs.getString(KEY_EMAIL, null);
+    }
+
+    /** Encrypts and persists the account and its email, replacing any previous one. */
+    public void save(Account account, String email) {
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, secretKey());
@@ -68,6 +79,7 @@ public class SecureStore {
             prefs.edit()
                     .putString(KEY_PAYLOAD, Base64.encodeToString(ciphertext, Base64.NO_WRAP))
                     .putString(KEY_IV, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
+                    .putString(KEY_EMAIL, email)
                     .apply();
         } catch (Exception error) {
             throw new IllegalStateException("Could not save the account", error);

@@ -16,21 +16,20 @@ crate-type = ["cdylib"]
 
 [dependencies]
 io-http = { version = "0.1", default-features = false }
+io-oauth = { version = "0.0.4", default-features = false }
 io-webdav = { version = "0.0.1", default-features = false }
 jni = "0.22"
-pimconf = { version = "0.1", default-features = false, features = ["rfc6764", "client"] }
+pimconf = { version = "0.1", default-features = false, features = ["search"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 url = { version = "2", default-features = false }
 vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] }
 
-# pimconf pins the `domain` DNS crate to a git rev; replicate it here, as
-# a dependency's own patches are ignored. The Pimalaya crates live in
-# sibling repos and are wired locally (they resolve via git, not
-# crates.io); patch them to the checkouts next door.
+# The Pimalaya crates live in sibling repos and are wired locally (they
+# resolve via git, not crates.io); patch them to the checkouts next door.
 [patch.crates-io]
-domain = { git = "https://github.com/nlnetlabs/domain", rev = "b30087125c13e71010d9783a1bcdd9eb9fa3f336" }
 io-http = { path = "../../io-http" }
+io-oauth = { path = "../../io-oauth" }
 io-webdav = { path = "../../io-webdav" }
 pimconf = { path = "../../pimconf" }
 vcard-rs = { path = "../../vcard-rs" }
