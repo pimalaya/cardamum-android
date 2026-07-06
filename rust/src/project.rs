@@ -357,7 +357,7 @@ fn display_name(model: &Value) -> String {
 }
 
 /// A canonical text property built from an owned value.
-fn text_prop(
+pub(crate) fn text_prop(
     kind: VcardPropKind,
     params: Vec<VcardParam<'static>>,
     value: &str,
@@ -470,7 +470,7 @@ fn types(line: &VcardLine) -> (Vec<String>, bool) {
 
 /// Normalizes a BDAY value to `yyyy-mm-dd`, or None for anything partial
 /// (year-less dates have no standard vCard 3 form, so they do not sync).
-fn full_date(raw: &str) -> Option<String> {
+pub(crate) fn full_date(raw: &str) -> Option<String> {
     let date = raw.trim();
     let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
 

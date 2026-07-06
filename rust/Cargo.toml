@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 io-http = { version = "0.1", default-features = false }
+io-msgraph = { version = "0.0.1", default-features = false }
 io-oauth = { version = "0.0.4", default-features = false }
 io-webdav = { version = "0.0.1", default-features = false }
 jni = "0.22"
@@ -29,6 +30,7 @@ vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] 
 # resolve via git, not crates.io); patch them to the checkouts next door.
 [patch.crates-io]
 io-http = { path = "../../io-http" }
+io-msgraph = { path = "../../io-msgraph" }
 io-oauth = { path = "../../io-oauth" }
 io-webdav = { path = "../../io-webdav" }
 pimconf = { path = "../../pimconf" }

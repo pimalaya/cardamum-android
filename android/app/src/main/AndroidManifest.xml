@@ -39,6 +39,15 @@
                 <data
                     android:scheme="com.googleusercontent.apps.23028300025-v4ku58bh4himktfvu8l4u5dmfhoqfdqp" />
             </intent-filter>
+
+            <!-- Catches the Microsoft OAuth redirect (custom scheme)
+                 and hands it to onNewIntent. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="cardamum" />
+            </intent-filter>
         </activity>
 
         <!-- Registers Cardamum's account type (one account per synced

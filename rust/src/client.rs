@@ -15,6 +15,23 @@ use std::{borrow::Cow, collections::BTreeSet};
 use io_http::{
     rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic, rfc9110::request::HttpRequest,
 };
+use io_msgraph::{
+    coroutine::*,
+    v1::{
+        rest::users::{
+            contact_folders::{MsgraphContactFoldersListResponse, list::MsgraphContactFoldersList},
+            contacts::{
+                MsgraphContact, MsgraphContactsListResponse,
+                create::MsgraphContactCreate,
+                delete::MsgraphContactDelete,
+                get::MsgraphContactGet,
+                list::{MsgraphContactsList, MsgraphContactsListParams},
+                update::MsgraphContactUpdate,
+            },
+        },
+        send::{MSGRAPH_API_BASE, MsgraphSend, MsgraphSendError, MsgraphSendOutput},
+    },
+};
 use io_oauth::v2_0::{
     authorization_code_grant::access_token_request::{
         Oauth20AccessTokenRequestParams, Oauth20RequestAccessToken, Oauth20RequestAccessTokenResult,
@@ -58,6 +75,7 @@ use pimconf::{
 use url::Url;
 
 use crate::{
+    msgraph,
     oauth::parse_pkce_verifier,
     types::{Addressbook, Card, Credentials},
 };
@@ -350,6 +368,148 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    // ---- Microsoft Graph operations -----------------------------------------
+
+    /// Lists the Microsoft Graph contact folders as addressbooks,
+    /// prepending the default Contacts folder (Graph serves it outside
+    /// the folder list, addressed by an empty folder id). Collection
+    /// URLs are left empty: the caller composes them, since only it
+    /// knows the account they belong to.
+    pub fn list_graph_addressbooks(&mut self, token: &str) -> Result<Vec<Addressbook>, String> {
+        let auth = HttpAuthBearer::new(token);
+
+        let mut books = vec![Addressbook {
+            id: String::new(),
+            name: "Contacts".to_string(),
+            url: String::new(),
+            description: None,
+            color: None,
+        }];
+
+        let coroutine = MsgraphContactFoldersList::new(&auth, "me", &Default::default())
+            .map_err(|err| err.to_string())?;
+        let mut page = self.run_msgraph(coroutine)?;
+
+        loop {
+            for folder in page.value {
+                books.push(Addressbook {
+                    name: if folder.display_name.is_empty() {
+                        folder.id.clone()
+                    } else {
+                        folder.display_name
+                    },
+                    id: folder.id,
+                    url: String::new(),
+                    description: None,
+                    color: None,
+                });
+            }
+
+            match page.next_link {
+                Some(next) => {
+                    let url = parse_graph_url(&next)?;
+                    page = self.run_msgraph(
+                        MsgraphSend::<MsgraphContactFoldersListResponse>::get(&auth, url),
+                    )?;
+                }
+                None => break,
+            }
+        }
+
+        Ok(books)
+    }
+
+    /// Lists the contacts of the Graph folder (empty id means the
+    /// default Contacts folder), each projected onto a vCard document;
+    /// the Graph id is the addressing key and the changeKey the ETag.
+    pub fn list_graph_cards(&mut self, token: &str, folder: &str) -> Result<Vec<Card>, String> {
+        let auth = HttpAuthBearer::new(token);
+        let folder = (!folder.is_empty()).then_some(folder);
+
+        let params = MsgraphContactsListParams {
+            top: Some(100),
+            ..Default::default()
+        };
+        let coroutine = MsgraphContactsList::new(&auth, "me", folder, &params)
+            .map_err(|err| err.to_string())?;
+        let mut page = self.run_msgraph(coroutine)?;
+
+        let mut cards = Vec::new();
+        loop {
+            cards.extend(page.value.into_iter().map(graph_card));
+
+            match page.next_link {
+                Some(next) => {
+                    let url = parse_graph_url(&next)?;
+                    page = self
+                        .run_msgraph(MsgraphSend::<MsgraphContactsListResponse>::get(&auth, url))?;
+                }
+                None => break,
+            }
+        }
+
+        Ok(cards)
+    }
+
+    /// Creates the vCard as a Graph contact in the folder (empty id
+    /// means the default Contacts folder). Graph names the resource,
+    /// so the returned card carries the server-assigned id.
+    pub fn create_graph_card(
+        &mut self,
+        token: &str,
+        folder: &str,
+        vcard: &str,
+    ) -> Result<Card, String> {
+        let contact = msgraph::to_new_contact(vcard)?;
+        let auth = HttpAuthBearer::new(token);
+        let folder = (!folder.is_empty()).then_some(folder);
+
+        let coroutine = MsgraphContactCreate::new(&auth, "me", folder, &contact)
+            .map_err(|err| err.to_string())?;
+        Ok(graph_card(self.run_msgraph(coroutine)?))
+    }
+
+    /// Reads the Graph contact `id`, projected onto a vCard document.
+    pub fn read_graph_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
+        let auth = HttpAuthBearer::new(token);
+        let coroutine = MsgraphContactGet::new(&auth, "me", id).map_err(|err| err.to_string())?;
+        Ok(graph_card(self.run_msgraph(coroutine)?))
+    }
+
+    /// Updates the Graph contact `id` from the vCard. With a base
+    /// vCard (the state last synced with the server) the PATCH body
+    /// shrinks to the fields the edit changed; without one it falls
+    /// back to the create-shaped body, which cannot clear fields but
+    /// carries none of the nulls the Outlook backend rejects with HTTP
+    /// 500. There is no If-Match guard, updates are last-write-wins.
+    pub fn update_graph_card(
+        &mut self,
+        token: &str,
+        id: &str,
+        vcard: &str,
+        base_vcard: Option<&str>,
+    ) -> Result<Card, String> {
+        let contact = match base_vcard {
+            Some(base) => msgraph::to_contact_delta(vcard, base)?,
+            None => msgraph::to_new_contact(vcard)?,
+        };
+        let auth = HttpAuthBearer::new(token);
+
+        let coroutine =
+            MsgraphContactUpdate::new(&auth, "me", id, &contact).map_err(|err| err.to_string())?;
+        Ok(graph_card(self.run_msgraph(coroutine)?))
+    }
+
+    /// Deletes the Graph contact `id`.
+    pub fn delete_graph_card(&mut self, token: &str, id: &str) -> Result<(), String> {
+        let auth = HttpAuthBearer::new(token);
+        let coroutine =
+            MsgraphContactDelete::new(&auth, "me", id).map_err(|err| err.to_string())?;
+        self.run_msgraph(coroutine)?;
+
+        Ok(())
+    }
+
     // ---- Discovery walk steps ---------------------------------------------
 
     /// PROPFIND the context root for `DAV:current-user-principal`.
@@ -424,6 +584,32 @@ impl<'a, 'local> Client<'a, 'local> {
                         Ok(()) => None,
                         Err(_) => Some(Vec::new()),
                     };
+                }
+            }
+        }
+    }
+
+    /// Runs a Microsoft Graph coroutine to completion, routing every
+    /// yield to the transport stream opened on the Graph origin.
+    fn run_msgraph<C, T>(&mut self, mut coroutine: C) -> Result<T, String>
+    where
+        C: MsgraphCoroutine<
+                Yield = MsgraphYield,
+                Return = Result<MsgraphSendOutput<T>, MsgraphSendError>,
+            >,
+    {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                MsgraphCoroutineState::Complete(Ok(output)) => return Ok(output.response),
+                MsgraphCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                MsgraphCoroutineState::Yielded(MsgraphYield::WantsRead) => {
+                    arg = Some(self.read(MSGRAPH_API_BASE)?);
+                }
+                MsgraphCoroutineState::Yielded(MsgraphYield::WantsWrite(bytes)) => {
+                    self.write(MSGRAPH_API_BASE, &bytes)?;
+                    arg = None;
                 }
             }
         }
@@ -592,6 +778,24 @@ fn into_addressbook(home_set: &Url, book: DavAddressbook) -> Addressbook {
         description: book.description,
         color: book.color,
     }
+}
+
+/// io-msgraph contact to the JNI-facing card shape: the projected
+/// vCard document, the Graph id as both display id and addressing key
+/// (uri), and the changeKey as ETag.
+fn graph_card(contact: MsgraphContact) -> Card {
+    let vcard = msgraph::to_vcard(&contact);
+    Card {
+        id: contact.id.clone(),
+        uri: contact.id,
+        etag: contact.change_key,
+        vcard,
+    }
+}
+
+/// Parses an OData paging link served by Graph.
+fn parse_graph_url(raw: &str) -> Result<Url, String> {
+    Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}"))
 }
 
 /// io-webdav card entry to the JNI-facing shape; vCards are text, so

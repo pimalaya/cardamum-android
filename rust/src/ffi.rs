@@ -468,6 +468,172 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCard<'loca
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.listGraphAddressbooks`: lists the Microsoft Graph contact
+/// folders (default Contacts folder first, empty id) as addressbooks.
+/// Returns a JSON array; collection URLs are empty, the caller
+/// composes them.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGraphAddressbooks<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+
+        let json = match Client::new(env, &transport).list_graph_addressbooks(&token) {
+            Ok(books) => {
+                serde_json::to_string(&books).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.listGraphCards`: lists the contacts of the Graph folder
+/// (empty id means the default Contacts folder), each projected onto
+/// a vCard. Returns a JSON array of `{id, uri, etag, vcard}` objects.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGraphCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    folder: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let folder = read_string(env, &folder);
+
+        let json = match Client::new(env, &transport).list_graph_cards(&token, &folder) {
+            Ok(cards) => {
+                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.createGraphCard`: creates the vCard as a Graph contact in
+/// the folder (empty id means the default Contacts folder). Graph
+/// names the resource, so the returned `{id, uri, etag, vcard}` card
+/// carries the server-assigned id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createGraphCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    folder: JString<'local>,
+    vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let folder = read_string(env, &folder);
+        let vcard = read_string(env, &vcard);
+
+        let json = match Client::new(env, &transport).create_graph_card(&token, &folder, &vcard) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.readGraphCard`: reads the Graph contact at the given id,
+/// projected onto a vCard. Returns `{id, uri, etag, vcard}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readGraphCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+
+        let json = match Client::new(env, &transport).read_graph_card(&token, &id) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.updateGraphCard`: updates the Graph contact at the given id
+/// from the vCard, PATCHing only the fields that differ from the base
+/// vCard when one is passed (empty means unknown; no If-Match guard,
+/// last-write-wins). Returns the updated `{id, uri, etag, vcard}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGraphCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+    vcard: JString<'local>,
+    base_vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+        let vcard = read_string(env, &vcard);
+        let base_vcard = read_string(env, &base_vcard);
+        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
+
+        let json = match Client::new(env, &transport).update_graph_card(&token, &id, &vcard, base) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.deleteGraphCard`: deletes the Graph contact at the given
+/// id. Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteGraphCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+
+        let json = match Client::new(env, &transport).delete_graph_card(&token, &id) {
+            Ok(()) => "{}".to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// `Native.projectCard`: projects a vCard onto the neutral field model
 /// the app maps to ContactsContract rows (docs/contacts-mapping.md).
 /// Returns the model JSON.

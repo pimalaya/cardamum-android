@@ -14,6 +14,17 @@
         android:paddingStart="8dp"
         android:paddingEnd="8dp">
 
+        <!-- Normal mode: back to the home addressbook listing. -->
+        <ImageButton
+            android:id="@+id/contacts_back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_arrow_back"
+            android:tint="?android:attr/textColorPrimary" />
+
+        <!-- Selection mode: cancel the selection. -->
         <ImageButton
             android:id="@+id/contacts_close"
             android:layout_width="48dp"
@@ -24,22 +35,14 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
-        <!-- Normal mode: addressbook selector, sized to its content. -->
-        <Spinner
-            android:id="@+id/contacts_book"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingStart="8dp" />
-
-        <!-- Selection mode: the selected-count title. -->
+        <!-- The addressbook name, or the selected-count while selecting. -->
         <TextView
             android:id="@+id/contacts_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingStart="12dp"
+            android:paddingStart="8dp"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary"
-            android:visibility="gone" />
+            android:textColor="?android:attr/textColorPrimary" />
 
         <!-- Pushes the action icons to the right edge. -->
         <View
@@ -73,15 +76,6 @@
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/contacts_search"
             android:src="@drawable/ic_search"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <ImageButton
-            android:id="@+id/contacts_settings"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/settings_title"
-            android:src="@drawable/ic_settings"
             android:tint="?android:attr/textColorPrimary" />
 
     </LinearLayout>

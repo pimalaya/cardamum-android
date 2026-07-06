@@ -7,24 +7,28 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.util.ArrayList;
+import java.util.List;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.pimalaya.cardamum.client.Account;
 
 /**
- * Caches the single CardDAV account locally, encrypted with an AES-GCM key
- * held in the Android Keystore. The password never touches disk in clear,
- * and no Jetpack Security / Tink dependency is pulled in (smallest APK).
+ * Caches the connected CardDAV accounts locally, encrypted with an
+ * AES-GCM key held in the Android Keystore. Passwords and OAuth tokens
+ * never touch disk in clear, and no Jetpack Security / Tink dependency
+ * is pulled in (smallest APK). The whole account list is one encrypted
+ * blob, keyed by the account email.
  */
 public class SecureStore {
     private static final String PREFS = "cardamum.account";
     private static final String KEY_PAYLOAD = "payload";
     private static final String KEY_IV = "iv";
-    private static final String KEY_EMAIL = "email";
     private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
     private static final String KEY_ALIAS = "cardamum.account.key";
     private static final String TRANSFORMATION = "AES/GCM/NoPadding";
@@ -36,12 +40,12 @@ public class SecureStore {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /** The cached account, or null on first launch. */
-    public Account load() {
+    /** Every cached account, empty on first launch. */
+    public List<AccountEntry> loadAll() {
         String payload = prefs.getString(KEY_PAYLOAD, null);
         String iv = prefs.getString(KEY_IV, null);
         if (payload == null || iv == null) {
-            return null;
+            return new ArrayList<>();
         }
 
         try {
@@ -53,36 +57,38 @@ public class SecureStore {
             byte[] plaintext = cipher.doFinal(Base64.decode(payload, Base64.NO_WRAP));
             return decode(new String(plaintext, StandardCharsets.UTF_8));
         } catch (Exception error) {
-            throw new IllegalStateException("Could not load the account", error);
+            throw new IllegalStateException("Could not load the accounts", error);
         }
     }
 
-    /**
-     * The account's display email (its Android account name), or null.
-     * Kept in the clear since it is not a secret and an OAuth account
-     * carries an empty {@link Account#login} (the Bearer marker), so the
-     * name cannot be recovered from the credentials.
-     */
-    public String email() {
-        return prefs.getString(KEY_EMAIL, null);
+    /** Adds an account (replacing any with the same email), then persists. */
+    public void add(AccountEntry entry) {
+        List<AccountEntry> entries = loadAll();
+        entries.removeIf(candidate -> candidate.email.equals(entry.email));
+        entries.add(entry);
+        save(entries);
     }
 
-    /** Encrypts and persists the account and its email, replacing any previous one. */
-    public void save(Account account, String email) {
+    /** Removes the account with the given email, then persists. */
+    public void remove(String email) {
+        List<AccountEntry> entries = loadAll();
+        entries.removeIf(entry -> entry.email.equals(email));
+        save(entries);
+    }
+
+    private void save(List<AccountEntry> entries) {
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, secretKey());
 
-            byte[] ciphertext =
-                    cipher.doFinal(encode(account).getBytes(StandardCharsets.UTF_8));
+            byte[] ciphertext = cipher.doFinal(encode(entries).getBytes(StandardCharsets.UTF_8));
 
             prefs.edit()
                     .putString(KEY_PAYLOAD, Base64.encodeToString(ciphertext, Base64.NO_WRAP))
                     .putString(KEY_IV, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
-                    .putString(KEY_EMAIL, email)
                     .apply();
         } catch (Exception error) {
-            throw new IllegalStateException("Could not save the account", error);
+            throw new IllegalStateException("Could not save the accounts", error);
         }
     }
 
@@ -108,27 +114,55 @@ public class SecureStore {
         return generator.generateKey();
     }
 
-    private static String encode(Account account) {
+    private static String encode(List<AccountEntry> entries) {
         try {
-            return new JSONObject()
-                    .put("baseUrl", account.baseUrl)
-                    .put("login", account.login)
-                    .put("password", account.password)
-                    .toString();
+            JSONArray array = new JSONArray();
+            for (AccountEntry entry : entries) {
+                JSONObject object =
+                        new JSONObject()
+                                .put("baseUrl", entry.account.baseUrl)
+                                .put("login", entry.account.login)
+                                .put("password", entry.account.password)
+                                .put("email", entry.email);
+                if (entry.refreshToken != null) {
+                    object.put("refreshToken", entry.refreshToken)
+                            .put("tokenEndpoint", entry.tokenEndpoint)
+                            .put("clientId", entry.clientId);
+                }
+                array.put(object);
+            }
+            return array.toString();
         } catch (JSONException error) {
-            throw new IllegalStateException("Could not encode the account", error);
+            throw new IllegalStateException("Could not encode the accounts", error);
         }
     }
 
-    private static Account decode(String json) {
+    private static List<AccountEntry> decode(String json) {
         try {
-            JSONObject object = new JSONObject(json);
-            return new Account(
-                    object.getString("baseUrl"),
-                    object.getString("login"),
-                    object.getString("password"));
+            JSONArray array = new JSONArray(json);
+            List<AccountEntry> entries = new ArrayList<>(array.length());
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject object = array.getJSONObject(index);
+                Account account =
+                        new Account(
+                                object.getString("baseUrl"),
+                                object.getString("login"),
+                                object.getString("password"));
+                entries.add(
+                        new AccountEntry(
+                                account,
+                                object.getString("email"),
+                                object.isNull("refreshToken")
+                                        ? null
+                                        : object.optString("refreshToken"),
+                                object.isNull("tokenEndpoint")
+                                        ? null
+                                        : object.optString("tokenEndpoint"),
+                                object.isNull("clientId") ? null : object.optString("clientId")));
+            }
+            return entries;
         } catch (JSONException error) {
-            throw new IllegalStateException("Could not decode the account", error);
+            throw new IllegalStateException("Could not decode the accounts", error);
         }
     }
 }

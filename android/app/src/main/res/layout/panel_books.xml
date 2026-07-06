@@ -1,23 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Subscription editor: every addressbook (subscribed or not) grouped
+     by account, each with a checkbox; Save applies the new subscription
+     set, Cancel discards. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:orientation="vertical">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/books_title"
-        android:textStyle="bold" />
-
-    <TextView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="16dp"
-        android:text="@string/books_description"
-        android:textColor="?android:attr/textColorSecondary" />
+        android:background="?android:attr/colorPrimary"
+        android:gravity="center_vertical"
+        android:minHeight="56dp"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/subscriptions_title"
+            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+            android:textColor="?android:attr/textColorPrimary" />
+
+    </LinearLayout>
 
     <ScrollView
         android:layout_width="match_parent"
@@ -28,15 +35,33 @@
             android:id="@+id/books_container"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical" />
+            android:orientation="vertical"
+            android:padding="8dp" />
 
     </ScrollView>
 
-    <Button
-        android:id="@+id/books_submit"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="@string/books_submit" />
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <Button
+            android:id="@+id/books_cancel"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@android:string/cancel" />
+
+        <Button
+            android:id="@+id/books_submit"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/subscriptions_save" />
+
+    </LinearLayout>
 
 </LinearLayout>

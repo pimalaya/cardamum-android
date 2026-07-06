@@ -1,5 +1,7 @@
 package org.pimalaya.cardamum;
 
+import org.pimalaya.cardamum.client.CardamumClient;
+
 /**
  * OAuth 2.0 provider defaults for the connection flow.
  *
@@ -27,6 +29,35 @@ final class Oauth {
     /** Google's CardDAV principal root; standard PROPFIND discovery runs from here. */
     static String googleCardDavBase(String email) {
         return "https://www.googleapis.com/carddav/v1/principals/" + email + "/";
+    }
+
+    /**
+     * The Pimalaya Entra app registration (a public client: no secret,
+     * PKCE only, like the Google one).
+     */
+    static final String MICROSOFT_CLIENT_ID = "d535213d-eead-44ce-9564-eecddc194428";
+
+    /** Custom scheme, mirrored by the manifest intent-filter. */
+    static final String MICROSOFT_REDIRECT_URI = "cardamum://oauth2redirect";
+
+    /** The `common` tenant serves both personal (MSA) and Entra accounts. */
+    static final String MICROSOFT_AUTH_ENDPOINT =
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+
+    static final String MICROSOFT_TOKEN_ENDPOINT =
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+
+    /** Graph contacts scope; offline_access makes Entra issue a refresh token. */
+    static final String MICROSOFT_SCOPE =
+            "https://graph.microsoft.com/Contacts.ReadWrite offline_access";
+
+    /**
+     * A Graph account's base URL: the msgraph sentinel plus the email,
+     * so the addressbook URLs derived from it stay unique across
+     * accounts (Graph has no CardDAV context root to fill the slot).
+     */
+    static String msgraphBase(String email) {
+        return CardamumClient.MSGRAPH_PREFIX + email;
     }
 
     private Oauth() {}

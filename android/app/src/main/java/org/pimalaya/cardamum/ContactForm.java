@@ -52,7 +52,6 @@ final class ContactForm {
     }
 
     private final Activity activity;
-    private final int fieldColor;
     private final int labelColor;
     private final int accentColor;
 
@@ -83,7 +82,6 @@ final class ContactForm {
     ContactForm(Activity activity) {
         this.activity = activity;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
-        this.fieldColor = accentColor;
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
         this.labelIndent = new EditText(activity).getPaddingStart();
 
@@ -389,7 +387,7 @@ final class ContactForm {
     /** A bare field with its underline tinted the brand (app-bar) colour. */
     private EditText field() {
         EditText input = new EditText(activity);
-        input.setBackgroundTintList(ColorStateList.valueOf(fieldColor));
+        input.setBackgroundTintList(ColorStateList.valueOf(accentColor));
         return input;
     }
 
@@ -442,7 +440,8 @@ final class ContactForm {
         label.setPadding(labelIndent, 0, 0, 0);
         header.addView(label);
 
-        header.addView(iconButton(R.drawable.ic_add, addLabel, accentColor, view -> onAdd.run()));
+        header.addView(
+                iconButton(R.drawable.ic_arrow_drop_down, addLabel, accentColor, view -> onAdd.run()));
         parent.addView(header);
 
         LinearLayout rows = new LinearLayout(activity);
@@ -455,8 +454,10 @@ final class ContactForm {
     /** A small, secondary-coloured label sitting just above its input. */
     private void addLabel(LinearLayout container, int label) {
         TextView view = smallLabel(label);
-        // Indent to the field's text start; top spacing separates groups.
-        view.setPadding(labelIndent, dp(GROUP_TOP), 0, 0);
+        // Indent to the field's text start; top spacing separates
+        // groups, the small bottom padding keeps the label hugging its
+        // field.
+        view.setPadding(labelIndent, dp(GROUP_TOP), 0, dp(2));
         container.addView(view);
     }
 
@@ -464,7 +465,7 @@ final class ContactForm {
         TextView view = new TextView(activity);
         view.setText(text);
         view.setTextColor(labelColor);
-        view.setTextAppearance(android.R.style.TextAppearance_DeviceDefault_Small);
+        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
         return view;
     }
 

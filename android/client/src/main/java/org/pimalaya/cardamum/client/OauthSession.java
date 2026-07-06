@@ -29,11 +29,32 @@ public final class OauthSession {
      * usually comes from the matching {@link AuthMethod#scope}.
      */
     public OauthSession(String clientId, String redirectUri, String scope) {
+        this(clientId, redirectUri, scope, random(32), random(64));
+    }
+
+    /**
+     * Rebuilds a grant from persisted state and PKCE verifier, so the
+     * redirect can still be redeemed when the process died while the
+     * user was in the browser (the scope only matters before the
+     * authorization request, so it may be empty here).
+     */
+    public OauthSession(
+            String clientId, String redirectUri, String scope, String state, String pkceVerifier) {
         this.clientId = clientId;
         this.redirectUri = redirectUri;
         this.scope = scope == null ? "" : scope;
-        this.state = random(32);
-        this.pkceVerifier = random(64);
+        this.state = state;
+        this.pkceVerifier = pkceVerifier;
+    }
+
+    /** The CSRF state of the authorization request, for persistence. */
+    public String state() {
+        return state;
+    }
+
+    /** The PKCE verifier of the authorization request, for persistence. */
+    public String pkceVerifier() {
+        return pkceVerifier;
     }
 
     /**

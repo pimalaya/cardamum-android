@@ -27,11 +27,11 @@
     <string name="error_title">Error</string>
     <string name="connect_failed">Could not connect</string>
 
-    <string name="books_title">Addressbooks</string>
-    <string name="books_description">Choose the addressbooks to sync on this phone. Each one appears as its own account in your contacts.</string>
-    <string name="books_submit">Synchronize</string>
-    <string name="books_empty_selection">Select at least one addressbook</string>
+    <string name="subscriptions_title">Addressbooks</string>
+    <string name="subscriptions_save">Save</string>
     <string name="accounts_failed">Could not create the accounts</string>
+    <string name="add_account">Add account</string>
+    <string name="home_empty">No addressbook subscribed. Tap the filter to choose some.</string>
 
     <string name="sync_title">Synchronizing</string>
     <string name="sync_addressbooks">Fetching addressbooks</string>
@@ -44,8 +44,10 @@
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>
-    <string name="sync_remote">Sync remote</string>
-    <string name="sync_local">Sync local</string>
+    <string name="sync_remote">Remote sync</string>
+    <string name="sync_remote_hint">Push and fetch changes with the server</string>
+    <string name="sync_local">Local sync</string>
+    <string name="sync_local_hint">Project contacts into this phone\'s Contacts app</string>
     <string name="contacts_add">Add</string>
     <string name="contacts_search">Search</string>
     <string name="contacts_empty">No contact yet.</string>

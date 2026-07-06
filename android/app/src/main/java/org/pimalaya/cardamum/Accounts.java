@@ -25,27 +25,32 @@ final class Accounts {
 
     private Accounts() {}
 
-    /** Creates accounts for the selected addressbooks and removes stale ones. */
-    static void reconcile(Context context, String login, List<Addressbook> books) {
+    /**
+     * Creates one Android account per subscribed addressbook (named after
+     * its own mail account) and removes any that are no longer subscribed.
+     * The full subscribed set must be passed at once: accounts absent from
+     * it are purged.
+     */
+    static void reconcile(Context context, List<BookEntry> books) {
         AccountManager manager = AccountManager.get(context);
 
         for (Account account : manager.getAccountsByType(TYPE)) {
             String url = manager.getUserData(account, DATA_URL);
             boolean wanted = false;
-            for (Addressbook book : books) {
-                wanted |= book.url.equals(url);
+            for (BookEntry book : books) {
+                wanted |= book.book.url.equals(url);
             }
             if (!wanted) {
                 manager.removeAccountExplicitly(account);
             }
         }
 
-        for (Addressbook book : books) {
-            Account account = find(context, book);
+        for (BookEntry book : books) {
+            Account account = find(context, book.book);
             if (account == null) {
-                account = new Account(name(login, book), TYPE);
+                account = new Account(name(book.accountEmail, book.book), TYPE);
                 Bundle data = new Bundle();
-                data.putString(DATA_URL, book.url);
+                data.putString(DATA_URL, book.book.url);
                 manager.addAccountExplicitly(account, null, data);
 
                 // Automatic sync starts off; this is only the default:

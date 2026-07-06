@@ -20,4 +20,6 @@
 
     <include layout="@layout/panel_settings" />
 
+    <include layout="@layout/panel_home" />
+
 </ViewFlipper>

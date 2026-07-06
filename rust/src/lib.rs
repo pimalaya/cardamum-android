@@ -12,10 +12,15 @@
 //! current-user-principal -> addressbook-home-set -> list (doubling as
 //! the onboarding connection check), and `listCards` / `createCard` /
 //! `updateCard` / `deleteCard` are the vCard CRUD the contact screens
-//! build on.
+//! build on. Microsoft accounts expose neither CardDAV nor any vCard
+//! representation, so the `listGraph*` / `*GraphCard` entry points
+//! run io-msgraph's contact coroutines instead, with the msgraph
+//! module projecting Graph contact resources to and from the vCard
+//! document of record.
 
 mod client;
 mod ffi;
+mod msgraph;
 mod oauth;
 mod project;
 mod types;

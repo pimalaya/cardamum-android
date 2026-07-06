@@ -10,12 +10,28 @@ import org.json.JSONObject;
  * The only surface the app needs: config search (endpoints plus
  * authentication methods) and RFC 6764 discovery, OAuth 2.0 token
  * refresh (the code-exchange side lives on {@link OauthSession}), the
- * onboarding connection check, and the CardDAV addressbook/card
- * operations. Owns the TLS sockets and the Rust bridge; the app sees
- * neither. Every call blocks, so callers must run it off the main
- * thread.
+ * onboarding connection check, and the addressbook/card operations.
+ * Owns the TLS sockets and the Rust bridge; the app sees neither.
+ * Every call blocks, so callers must run it off the main thread.
+ *
+ * <p>Two backends hide behind the same operations: CardDAV, and
+ * Microsoft Graph for accounts whose {@link Account#baseUrl} carries
+ * the {@link #MSGRAPH_PREFIX} sentinel (Microsoft exposes no CardDAV;
+ * the Rust bridge projects Graph contacts to and from vCards). A Graph
+ * account authenticates with its OAuth access token in
+ * {@link Account#password}; its addressbook URLs are the base URL plus
+ * the folder id, so they stay unique across accounts. Graph updates
+ * carry no If-Match guard (last-write-wins).
  */
 public class CardamumClient {
+    /**
+     * Sentinel scheme of Microsoft Graph accounts: their base URL is
+     * {@code msgraph://<email>} instead of a CardDAV context root.
+     */
+    public static final String MSGRAPH_PREFIX = "msgraph://";
+
+    /** Path segment of the default Contacts folder (empty Graph folder id). */
+    private static final String MSGRAPH_DEFAULT_FOLDER = "contacts";
     /**
      * Discovers the CardDAV context root for the email, preferring the
      * given {@code tcp://host:port} DNS resolver (null for the default).
@@ -88,10 +104,33 @@ public class CardamumClient {
         listAddressbooks(account);
     }
 
-    /** Walks CardDAV discovery and returns the account's addressbooks. */
+    /**
+     * Lists the account's addressbooks: the CardDAV discovery walk, or
+     * the Graph contact folders (default Contacts folder first).
+     */
     public List<Addressbook> listAddressbooks(Account account) {
         Transport transport = new Transport();
         try {
+            if (isGraph(account)) {
+                JSONArray reply =
+                        array(Native.listGraphAddressbooks(transport, account.password));
+
+                List<Addressbook> books = new ArrayList<>(reply.length());
+                for (int index = 0; index < reply.length(); index++) {
+                    JSONObject book = object(reply, index);
+                    String id = string(book, "id");
+                    String segment = id.isEmpty() ? MSGRAPH_DEFAULT_FOLDER : id;
+                    books.add(
+                            new Addressbook(
+                                    id,
+                                    string(book, "name"),
+                                    account.baseUrl + "/" + segment,
+                                    null,
+                                    null));
+                }
+                return books;
+            }
+
             JSONArray reply =
                     array(
                             Native.listAddressbooks(
@@ -118,20 +157,19 @@ public class CardamumClient {
     public List<Card> listCards(Account account, String addressbookUrl) {
         Transport transport = new Transport();
         try {
-            JSONArray reply =
-                    array(
-                            Native.listCards(
-                                    transport, addressbookUrl, account.login, account.password));
+            String reply =
+                    isGraph(account)
+                            ? Native.listGraphCards(
+                                    transport,
+                                    account.password,
+                                    graphFolder(account, addressbookUrl))
+                            : Native.listCards(
+                                    transport, addressbookUrl, account.login, account.password);
 
-            List<Card> cards = new ArrayList<>(reply.length());
-            for (int index = 0; index < reply.length(); index++) {
-                JSONObject card = object(reply, index);
-                cards.add(
-                        new Card(
-                                string(card, "id"),
-                                string(card, "uri"),
-                                optString(card, "etag"),
-                                string(card, "vcard")));
+            JSONArray parsed = array(reply);
+            List<Card> cards = new ArrayList<>(parsed.length());
+            for (int index = 0; index < parsed.length(); index++) {
+                cards.add(card(object(parsed, index)));
             }
             return cards;
         } finally {
@@ -139,10 +177,25 @@ public class CardamumClient {
         }
     }
 
-    /** Creates the card in the addressbook collection, returning it with its ETag. */
+    /**
+     * Creates the card in the addressbook collection, returning it
+     * with its ETag. Graph names the resource itself, so there the
+     * returned card carries the server-assigned id instead of the
+     * given one.
+     */
     public Card createCard(Account account, String addressbookUrl, String id, String vcard) {
         Transport transport = new Transport();
         try {
+            if (isGraph(account)) {
+                return card(
+                        object(
+                                Native.createGraphCard(
+                                        transport,
+                                        account.password,
+                                        graphFolder(account, addressbookUrl),
+                                        vcard)));
+            }
+
             JSONObject reply =
                     object(
                             Native.createCard(
@@ -163,6 +216,10 @@ public class CardamumClient {
     public Card readCard(Account account, String addressbookUrl, String uri) {
         Transport transport = new Transport();
         try {
+            if (isGraph(account)) {
+                return card(object(Native.readGraphCard(transport, account.password, uri)));
+            }
+
             JSONObject reply =
                     object(
                             Native.readCard(
@@ -171,20 +228,32 @@ public class CardamumClient {
                                     account.login,
                                     account.password,
                                     uri));
-            return new Card(
-                    string(reply, "id"),
-                    string(reply, "uri"),
-                    optString(reply, "etag"),
-                    string(reply, "vcard"));
+            return card(reply);
         } finally {
             transport.close();
         }
     }
 
-    /** Updates the card in the addressbook collection, returning it with its new ETag. */
-    public Card updateCard(Account account, String addressbookUrl, Card card) {
+    /**
+     * Updates the card in the addressbook collection, returning it with
+     * its new ETag. The base vCard (the state last synced with the
+     * server, null when unknown) trims the Graph PATCH to the fields
+     * the edit changed; CardDAV PUTs the full vCard and ignores it.
+     */
+    public Card updateCard(Account account, String addressbookUrl, Card card, String baseVcard) {
         Transport transport = new Transport();
         try {
+            if (isGraph(account)) {
+                return card(
+                        object(
+                                Native.updateGraphCard(
+                                        transport,
+                                        account.password,
+                                        uriOf(card),
+                                        card.vcard,
+                                        baseVcard == null ? "" : baseVcard)));
+            }
+
             JSONObject reply =
                     object(
                             Native.updateCard(
@@ -221,6 +290,11 @@ public class CardamumClient {
     public void deleteCard(Account account, String addressbookUrl, Card card) {
         Transport transport = new Transport();
         try {
+            if (isGraph(account)) {
+                object(Native.deleteGraphCard(transport, account.password, uriOf(card)));
+                return;
+            }
+
             object(
                     Native.deleteCard(
                             transport,
@@ -237,6 +311,33 @@ public class CardamumClient {
     /** The card's addressing key, reconstructed for pre-uri local rows. */
     private static String uriOf(Card card) {
         return card.uri == null ? card.id + ".vcf" : card.uri;
+    }
+
+    private static boolean isGraph(Account account) {
+        return account.baseUrl != null && account.baseUrl.startsWith(MSGRAPH_PREFIX);
+    }
+
+    /**
+     * The Graph folder id addressed by an addressbook URL (the segment
+     * after the account's base URL), empty for the default Contacts
+     * folder.
+     */
+    private static String graphFolder(Account account, String addressbookUrl) {
+        String prefix = account.baseUrl + "/";
+        String folder =
+                addressbookUrl.startsWith(prefix)
+                        ? addressbookUrl.substring(prefix.length())
+                        : addressbookUrl;
+        return folder.equals(MSGRAPH_DEFAULT_FOLDER) ? "" : folder;
+    }
+
+    /** Parses a `{id, uri, etag, vcard}` reply into a card. */
+    private static Card card(JSONObject reply) {
+        return new Card(
+                string(reply, "id"),
+                string(reply, "uri"),
+                optString(reply, "etag"),
+                string(reply, "vcard"));
     }
 
     /** Parses a search reply into service configs. */

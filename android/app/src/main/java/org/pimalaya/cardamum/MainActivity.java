@@ -17,16 +17,13 @@ import android.provider.ContactsContract;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ListView;
-import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ViewFlipper;
@@ -73,11 +70,9 @@ public class MainActivity extends Activity {
     private static final int PANEL_CONTACTS = 5;
     private static final int PANEL_CONTACT = 6;
     private static final int PANEL_SETTINGS = 7;
+    private static final int PANEL_HOME = 8;
 
     private static final int REQUEST_CONTACTS = 1;
-
-    private static final int MENU_SYNC_REMOTE = 1;
-    private static final int MENU_SYNC_LOCAL = 2;
 
     /** One contacts-list entry: a card and the addressbook it lives in. */
     private static final class Entry {
@@ -99,31 +94,37 @@ public class MainActivity extends Activity {
     private ViewFlipper flipper;
     private ContactForm form;
 
-    private Account account;
-
-    /** The account's display email (its Android account name). */
-    private String accountEmail;
+    /** Every connected account (multi-account). */
+    private final List<AccountEntry> accounts = new ArrayList<>();
 
     /** Onboarding state: the entered email and its discovered context root. */
     private String pendingEmail;
     private String discoveredUrl;
+
+    /** True while the auth flow adds a further account (shows a back arrow). */
+    private boolean addingAccount;
 
     /** OAuth grant in flight, between the browser redirect and its redemption. */
     private OauthSession pendingOauth;
     private String pendingTokenEndpoint;
     private String pendingBaseUrl;
     private String pendingAccountEmail;
+    private String pendingClientId;
 
-    /** Addressbooks fetched at connection, awaiting the user's selection. */
-    private List<Addressbook> pendingBooks = new ArrayList<>();
+    /** Subscribed addressbooks grouped for the home screen. */
+    private List<BookEntry> homeBooks = new ArrayList<>();
 
-    /** The synced addressbooks (the user's selection). */
-    private List<Addressbook> books = new ArrayList<>();
+    /** Accounts collapsed on the home screen (all expanded by default). */
+    private final java.util.Set<String> collapsedAccounts = new java.util.HashSet<>();
 
-    /** The addressbook shown in the list; null falls back to the first. */
-    private String selectedBookUrl;
+    /** The addressbook open in the contacts screen. */
+    private BookEntry currentBook;
 
+    /** The open addressbook's cards. */
     private List<Entry> contacts = new ArrayList<>();
+
+    /** Checkboxes of the subscription editor, tagged with their book url. */
+    private List<CheckBox> subscriptionBoxes = new ArrayList<>();
 
     /** The contacts list, sorted; backs the recycling adapter. */
     private List<Entry> sortedContacts = new ArrayList<>();
@@ -131,6 +132,9 @@ public class MainActivity extends Activity {
 
     /** Lower-cased raw-vCard filter from the search bar; empty shows all. */
     private String searchQuery = "";
+
+    /** Debounced search refresh, so typing does not re-render per keystroke. */
+    private Runnable pendingSearch;
 
     /** Multi-select state on the contacts list, keyed by book url + id. */
     private boolean selectionMode;
@@ -158,29 +162,52 @@ public class MainActivity extends Activity {
         setUpBooksPanel();
         setUpContactsPanel();
         setUpContactPanel();
+        setUpHomePanel();
 
-        account = store.load();
-        accountEmail = store.email();
-        if (account == null) {
-            show(PANEL_EMAIL);
-        } else if (base.loadAddressbooks().isEmpty()) {
-            // Fresh start: fetch the addressbooks for the selection step.
-            show(PANEL_SYNC);
-            syncRemote();
+        accounts.addAll(store.loadAll());
+        if (accounts.isEmpty()) {
+            // First run: the onboarding has no way back, at least one
+            // account must be connected.
+            startAuth(false);
         } else {
-            // Offline first: the store renders instantly, syncs are
-            // manual (the Sync menu on the contacts screen).
-            reloadFromBase();
-            show(PANEL_CONTACTS);
+            // Offline first: the home renders instantly from the store,
+            // syncs are manual (the Sync menu on the contacts screen).
+            reloadHome();
+            show(PANEL_HOME);
 
             // NOTE: adb-only hooks, so syncs can be driven headlessly:
             // am start ... --ez syncRemote true / --ez syncLocal true
             if (getIntent().getBooleanExtra("syncRemote", false)) {
-                syncRemote();
+                syncRemote(true);
             } else if (getIntent().getBooleanExtra("syncLocal", false)) {
                 syncLocal();
             }
         }
+
+        // An OAuth redirect can land here rather than in onNewIntent:
+        // when the process died while the user was in the browser, the
+        // redirect recreates the activity from scratch.
+        handleOauthRedirect(getIntent());
+    }
+
+    /** Enters the connection flow, with a back arrow only when adding. */
+    private void startAuth(boolean adding) {
+        addingAccount = adding;
+        pendingEmail = null;
+        discoveredUrl = null;
+        ((EditText) findViewById(R.id.email_input)).setText("");
+        findViewById(R.id.email_back).setVisibility(adding ? View.VISIBLE : View.GONE);
+        show(PANEL_EMAIL);
+    }
+
+    /** The account entry matching an email, or null. */
+    private AccountEntry accountFor(String email) {
+        for (AccountEntry entry : accounts) {
+            if (entry.email.equals(email)) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -204,16 +231,27 @@ public class MainActivity extends Activity {
         }
 
         switch (flipper.getDisplayedChild()) {
+            case PANEL_EMAIL:
+                // Only reachable with a back arrow when adding an account.
+                if (addingAccount) {
+                    show(PANEL_HOME);
+                } else {
+                    super.onBackPressed();
+                }
+                break;
             case PANEL_CONFIG:
                 show(PANEL_EMAIL);
                 break;
             case PANEL_PASSWORD:
                 show(PANEL_CONFIG);
                 break;
-            case PANEL_CONTACT:
-                show(PANEL_CONTACTS);
+            case PANEL_BOOKS:
+                show(PANEL_HOME);
                 break;
-            case PANEL_SETTINGS:
+            case PANEL_CONTACTS:
+                goHome();
+                break;
+            case PANEL_CONTACT:
                 show(PANEL_CONTACTS);
                 break;
             default:
@@ -221,10 +259,17 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Refreshes the home listing from the store and shows it. */
+    private void goHome() {
+        reloadHome();
+        show(PANEL_HOME);
+    }
+
     // ---- Connection screen --------------------------------------------------
 
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
+        findViewById(R.id.email_back).setOnClickListener(view -> show(PANEL_HOME));
         findViewById(R.id.email_submit)
                 .setOnClickListener(
                         view -> {
@@ -325,8 +370,8 @@ public class MainActivity extends Activity {
                 container.addView(
                         configRow(
                                 getString(R.string.config_msgraph),
-                                getString(R.string.config_soon),
-                                null));
+                                getString(R.string.config_oauth),
+                                view -> startMicrosoftOauth()));
                 break;
             case OTHER:
                 container.addView(
@@ -393,12 +438,25 @@ public class MainActivity extends Activity {
 
                             connect(
                                     new Account(discoveredUrl, pendingEmail, password),
-                                    pendingEmail);
+                                    pendingEmail,
+                                    null,
+                                    null,
+                                    null);
                         });
     }
 
-    /** Verifies the account connects before persisting it and selecting books. */
-    private void connect(Account candidate, String email) {
+    /**
+     * Verifies the account connects before persisting it and selecting
+     * books. The last three parameters carry the refresh material of an
+     * OAuth account (all null for a password one), so expired access
+     * tokens can be refreshed on later syncs.
+     */
+    private void connect(
+            Account candidate,
+            String email,
+            String refreshToken,
+            String tokenEndpoint,
+            String clientId) {
         Button submit = findViewById(R.id.password_submit);
         ProgressBar progress = findViewById(R.id.password_progress);
         submit.setEnabled(false);
@@ -412,10 +470,20 @@ public class MainActivity extends Activity {
                                 () -> {
                                     submit.setEnabled(true);
                                     progress.setVisibility(View.GONE);
-                                    account = candidate;
-                                    accountEmail = email;
-                                    store.save(candidate, email);
-                                    showBookSelection(fetched);
+                                    accounts.removeIf(entry -> entry.email.equals(email));
+                                    AccountEntry entry =
+                                            new AccountEntry(
+                                                    candidate,
+                                                    email,
+                                                    refreshToken,
+                                                    tokenEndpoint,
+                                                    clientId);
+                                    accounts.add(entry);
+                                    store.add(entry);
+                                    // Every addressbook of a new account is
+                                    // subscribed by default; the filter edits it.
+                                    base.replaceAddressbooks(email, fetched);
+                                    syncRemote(true);
                                 });
                     } catch (Exception error) {
                         Log.w("cardamum", "connect failed", error);
@@ -443,6 +511,7 @@ public class MainActivity extends Activity {
         pendingTokenEndpoint = Oauth.GOOGLE_TOKEN_ENDPOINT;
         pendingBaseUrl = Oauth.googleCardDavBase(pendingEmail);
         pendingAccountEmail = pendingEmail;
+        pendingClientId = Oauth.GOOGLE_CLIENT_ID;
 
         // access_type=offline + prompt=consent make Google issue a
         // refresh token; login_hint preselects the entered account.
@@ -457,9 +526,97 @@ public class MainActivity extends Activity {
 
         try {
             String url = pendingOauth.authorizeUrl(Oauth.GOOGLE_AUTH_ENDPOINT, extras);
+            persistPendingOauth(Oauth.GOOGLE_CLIENT_ID, Oauth.GOOGLE_REDIRECT_URI);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
             pendingOauth = null;
+            clearPendingOauth();
+            showError(error, R.string.connect_failed);
+        }
+    }
+
+    /** Name of the preferences holding the in-flight OAuth grant. */
+    private static final String OAUTH_PREFS = "cardamum.oauth";
+
+    /**
+     * Persists the in-flight grant: the browser hop routinely outlives
+     * the process (the system reclaims backgrounded apps), and without
+     * the state and PKCE verifier the redirect could not be redeemed.
+     */
+    private void persistPendingOauth(String clientId, String redirectUri) {
+        getSharedPreferences(OAUTH_PREFS, MODE_PRIVATE)
+                .edit()
+                .putString("clientId", clientId)
+                .putString("redirectUri", redirectUri)
+                .putString("state", pendingOauth.state())
+                .putString("verifier", pendingOauth.pkceVerifier())
+                .putString("tokenEndpoint", pendingTokenEndpoint)
+                .putString("baseUrl", pendingBaseUrl)
+                .putString("email", pendingAccountEmail)
+                .apply();
+    }
+
+    /** Restores the persisted grant into the pending fields, if any. */
+    private void restorePendingOauth() {
+        android.content.SharedPreferences prefs = getSharedPreferences(OAUTH_PREFS, MODE_PRIVATE);
+        String state = prefs.getString("state", null);
+        if (state == null) {
+            return;
+        }
+
+        pendingOauth =
+                new OauthSession(
+                        prefs.getString("clientId", ""),
+                        prefs.getString("redirectUri", ""),
+                        "",
+                        state,
+                        prefs.getString("verifier", ""));
+        pendingTokenEndpoint = prefs.getString("tokenEndpoint", "");
+        pendingBaseUrl = prefs.getString("baseUrl", "");
+        pendingAccountEmail = prefs.getString("email", "");
+        pendingClientId = prefs.getString("clientId", "");
+    }
+
+    /** Drops the persisted grant (redeemed, or aborted). */
+    private void clearPendingOauth() {
+        getSharedPreferences(OAUTH_PREFS, MODE_PRIVATE).edit().clear().apply();
+    }
+
+    /**
+     * Starts the Microsoft Graph OAuth grant, mirroring the Google
+     * one: PKCE session, browser, redirect through {@link #onNewIntent}
+     * on the cardamum custom scheme. The connected account carries the
+     * msgraph sentinel base URL, which routes every addressbook and
+     * card operation through Graph instead of CardDAV.
+     */
+    private void startMicrosoftOauth() {
+        pendingOauth =
+                new OauthSession(
+                        Oauth.MICROSOFT_CLIENT_ID,
+                        Oauth.MICROSOFT_REDIRECT_URI,
+                        Oauth.MICROSOFT_SCOPE);
+        pendingTokenEndpoint = Oauth.MICROSOFT_TOKEN_ENDPOINT;
+        pendingBaseUrl = Oauth.msgraphBase(pendingEmail);
+        pendingAccountEmail = pendingEmail;
+        pendingClientId = Oauth.MICROSOFT_CLIENT_ID;
+
+        // login_hint preselects the entered account in the Microsoft
+        // sign-in page; the refresh token comes from the offline_access
+        // scope, no extra parameter needed.
+        JSONObject extras = new JSONObject();
+        try {
+            extras.put("login_hint", pendingEmail);
+        } catch (JSONException ignored) {
+            // A malformed extras object just omits the hint.
+        }
+
+        try {
+            String url = pendingOauth.authorizeUrl(Oauth.MICROSOFT_AUTH_ENDPOINT, extras);
+            persistPendingOauth(Oauth.MICROSOFT_CLIENT_ID, Oauth.MICROSOFT_REDIRECT_URI);
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception error) {
+            pendingOauth = null;
+            clearPendingOauth();
             showError(error, R.string.connect_failed);
         }
     }
@@ -467,11 +624,19 @@ public class MainActivity extends Activity {
     /**
      * Redeems the OAuth redirect for tokens and connects with them, the
      * access token standing in for the password (empty login, Bearer
-     * auth). No-op unless a grant is in flight for this redirect.
+     * auth). No-op unless a grant is in flight for this redirect,
+     * restoring a persisted one when the process died while the user
+     * was in the browser.
      */
     private void handleOauthRedirect(Intent intent) {
         Uri data = intent == null ? null : intent.getData();
-        if (data == null || pendingOauth == null) {
+        if (data == null) {
+            return;
+        }
+        if (pendingOauth == null) {
+            restorePendingOauth();
+        }
+        if (pendingOauth == null) {
             return;
         }
 
@@ -479,72 +644,202 @@ public class MainActivity extends Activity {
         String tokenEndpoint = pendingTokenEndpoint;
         String baseUrl = pendingBaseUrl;
         String email = pendingAccountEmail;
+        String clientId = pendingClientId;
         String redirectUrl = data.toString();
         pendingOauth = null;
+        clearPendingOauth();
 
         io.execute(
                 () -> {
                     try {
                         OauthTokens tokens = session.redeem(tokenEndpoint, redirectUrl);
                         main.post(
-                                () -> connect(new Account(baseUrl, "", tokens.accessToken), email));
+                                () ->
+                                        connect(
+                                                new Account(baseUrl, "", tokens.accessToken),
+                                                email,
+                                                tokens.refreshToken,
+                                                tokenEndpoint,
+                                                clientId));
                     } catch (Exception error) {
                         main.post(() -> showError(error, R.string.connect_failed));
                     }
                 });
     }
 
-    // ---- Addressbook selection screen -----------------------------------------
+    // ---- Home screen ----------------------------------------------------------
 
-    /** Lists the addressbooks with checkboxes, all selected by default. */
-    private void showBookSelection(List<Addressbook> fetched) {
-        pendingBooks = fetched;
+    private void setUpHomePanel() {
+        findViewById(R.id.home_add).setOnClickListener(view -> startAuth(true));
+        findViewById(R.id.home_filter).setOnClickListener(view -> openSubscriptions());
 
-        LinearLayout container = findViewById(R.id.books_container);
+        // The add-account button sits on the accent; contrast its icon.
+        int accent = resolveColor(android.R.attr.colorAccent);
+        int onAccent = android.graphics.Color.luminance(accent) > 0.5f ? 0xFF000000 : 0xFFFFFFFF;
+        ((android.widget.ImageButton) findViewById(R.id.home_add))
+                .setImageTintList(android.content.res.ColorStateList.valueOf(onAccent));
+    }
+
+    /** Rebuilds the home listing: subscribed addressbooks grouped by account. */
+    private void reloadHome() {
+        homeBooks = base.loadSubscribedAddressbooks();
+
+        LinearLayout container = findViewById(R.id.home_container);
         container.removeAllViews();
 
-        for (Addressbook book : fetched) {
+        if (homeBooks.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(R.string.home_empty);
+            empty.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+            empty.setPadding(dp(24), dp(24), dp(24), dp(24));
+            container.addView(empty);
+            return;
+        }
+
+        String group = null;
+        LinearLayout books = null;
+        for (BookEntry entry : homeBooks) {
+            if (!entry.accountEmail.equals(group)) {
+                group = entry.accountEmail;
+                books = new LinearLayout(this);
+                books.setOrientation(LinearLayout.VERTICAL);
+                books.setVisibility(
+                        collapsedAccounts.contains(group) ? View.GONE : View.VISIBLE);
+                container.addView(accountHeader(group, books));
+                container.addView(books);
+            }
+
+            TextView row = new TextView(this);
+            row.setText(entry.book.name);
+            row.setTextSize(14);
+            row.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            row.setPadding(dp(14), dp(16), dp(14), dp(16));
+            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+            row.setOnClickListener(view -> openBook(entry));
+            books.addView(row);
+        }
+    }
+
+    /**
+     * A home account header collapsing its addressbooks on tap: the
+     * email with a state chevron (down when expanded, right when
+     * collapsed), toggling the books container's visibility.
+     */
+    private View accountHeader(String email, LinearLayout books) {
+        TextView label = new TextView(this);
+        label.setText(email);
+        label.setTextSize(16);
+        label.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+        label.setLayoutParams(
+                new LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        android.widget.ImageView chevron = new android.widget.ImageView(this);
+        chevron.setImageResource(R.drawable.ic_chevron_right);
+        chevron.setRotation(collapsedAccounts.contains(email) ? 0 : 90);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(14), dp(16), dp(14), dp(16));
+        header.setBackgroundColor(getColor(R.color.surface));
+        header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
+        header.addView(label);
+        header.addView(chevron);
+
+        header.setOnClickListener(view -> {
+            android.transition.TransitionManager.beginDelayedTransition(
+                    findViewById(R.id.home_container));
+            boolean collapse = books.getVisibility() == View.VISIBLE;
+            if (collapse) {
+                collapsedAccounts.add(email);
+            } else {
+                collapsedAccounts.remove(email);
+            }
+            books.setVisibility(collapse ? View.GONE : View.VISIBLE);
+            chevron.setRotation(collapse ? 0 : 90);
+        });
+
+        return header;
+    }
+
+    /** Opens an addressbook's contacts, loading its cards from the store. */
+    private void openBook(BookEntry entry) {
+        currentBook = entry;
+        searchQuery = "";
+        closeSearch();
+        exitSelection();
+
+        contacts = new ArrayList<>();
+        for (Card card : base.loadCards(entry.book.url)) {
+            contacts.add(new Entry(entry.book, card));
+        }
+
+        ((TextView) findViewById(R.id.contacts_title)).setText(entry.book.name);
+        renderContacts();
+        show(PANEL_CONTACTS);
+    }
+
+    // ---- Subscription editor --------------------------------------------------
+
+    /** Lists every addressbook (subscribed or not) with a checkbox to edit subscriptions. */
+    private void openSubscriptions() {
+        LinearLayout container = findViewById(R.id.books_container);
+        container.removeAllViews();
+        subscriptionBoxes = new ArrayList<>();
+
+        String group = null;
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            if (!entry.accountEmail.equals(group)) {
+                group = entry.accountEmail;
+                TextView header = new TextView(this);
+                header.setText(group);
+                header.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+                header.setPadding(dp(8), dp(16), dp(8), dp(4));
+                container.addView(header);
+            }
+
+            // Name left, checkbox on the right edge, matching the
+            // contacts list rows; the whole row toggles.
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(8), dp(4), dp(8), dp(4));
+            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+
+            TextView name = new TextView(this);
+            name.setText(entry.book.name);
+            name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            name.setLayoutParams(
+                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            row.addView(name);
+
             CheckBox box = new CheckBox(this);
-            box.setText(book.name);
-            box.setChecked(true);
-            box.setPadding(dp(8), dp(14), dp(8), dp(14));
-            container.addView(box);
+            box.setChecked(entry.subscribed);
+            box.setTag(entry.book.url);
+            row.addView(box);
+
+            row.setOnClickListener(view -> box.toggle());
+            container.addView(row);
+            subscriptionBoxes.add(box);
         }
 
         show(PANEL_BOOKS);
     }
 
     private void setUpBooksPanel() {
+        findViewById(R.id.books_cancel).setOnClickListener(view -> show(PANEL_HOME));
         findViewById(R.id.books_submit)
                 .setOnClickListener(
                         view -> {
-                            LinearLayout container = findViewById(R.id.books_container);
-                            List<Addressbook> selected = new ArrayList<>();
-                            for (int index = 0; index < container.getChildCount(); index++) {
-                                if (((CheckBox) container.getChildAt(index)).isChecked()) {
-                                    selected.add(pendingBooks.get(index));
+                            java.util.Set<String> subscribed = new java.util.HashSet<>();
+                            for (CheckBox box : subscriptionBoxes) {
+                                if (box.isChecked()) {
+                                    subscribed.add((String) box.getTag());
                                 }
                             }
-
-                            if (selected.isEmpty()) {
-                                toast(getString(R.string.books_empty_selection));
-                                return;
-                            }
-
-                            books = selected;
-                            base.replaceAddressbooks(selected);
-                            show(PANEL_SYNC);
-
-                            io.execute(
-                                    () -> {
-                                        try {
-                                            Accounts.reconcile(this, accountEmail, selected);
-                                        } catch (Exception error) {
-                                            main.post(
-                                                    () -> showError(error, R.string.accounts_failed));
-                                        }
-                                        main.post(this::syncRemote);
-                                    });
+                            base.setSubscriptions(subscribed);
+                            goHome();
                         });
     }
 
@@ -569,88 +864,125 @@ public class MainActivity extends Activity {
      * the store, pushes the staged local changes, and re-fetches the
      * pushed state. The phone is not touched; that is the local sync.
      */
-    private void syncRemote() {
+    private void syncRemote(boolean toHome) {
         show(PANEL_SYNC);
         TextView status = findViewById(R.id.sync_status);
         status.setText(R.string.sync_addressbooks);
 
         io.execute(
                 () -> {
-                    try {
-                        List<Addressbook> selected = base.loadAddressbooks();
+                    int conflicts = 0;
+                    Exception failure = null;
 
-                        // Pre-selection state (fresh start): run the
-                        // selection step first.
-                        if (selected.isEmpty()) {
-                            List<Addressbook> fetched = client.listAddressbooks(account);
-                            main.post(
-                                    () -> {
-                                        if (fetched.isEmpty()) {
-                                            status.setText(R.string.sync_no_addressbook);
-                                        } else {
-                                            showBookSelection(fetched);
-                                        }
-                                    });
-                            return;
+                    for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+                        AccountEntry account = accountFor(entry.accountEmail);
+                        if (account == null) {
+                            continue;
                         }
 
-                        int conflicts = 0;
-                        for (Addressbook book : selected) {
-                            main.post(
-                                    () ->
-                                            status.setText(
-                                                    getString(R.string.sync_cards, book.name)));
-
-                            // Fetch first, so staged rows learn the
-                            // server's resource names before the push
-                            // addresses them.
-                            List<Card> fetched = client.listCards(account, book.url);
-                            base.replaceCards(book.url, fetched);
-
-                            Map<String, String> serverEtags = new HashMap<>();
-                            for (Card card : fetched) {
-                                serverEtags.put(card.id, card.etag);
+                        try {
+                            conflicts += syncBook(account.account, entry, status);
+                        } catch (Exception error) {
+                            // An expired OAuth access token: refresh it
+                            // and retry the addressbook once.
+                            if (expiredToken(error) && account.refreshToken != null) {
+                                try {
+                                    conflicts += syncBook(refreshAccount(account), entry, status);
+                                    continue;
+                                } catch (Exception retryError) {
+                                    error = retryError;
+                                }
                             }
 
-                            List<CardStore.Pending> pending = base.loadPending(book.url);
-                            if (!pending.isEmpty()) {
-                                main.post(
-                                        () ->
-                                                status.setText(
-                                                        getString(
-                                                                R.string.sync_push, book.name)));
-                                conflicts += push(book, pending, serverEtags);
-
-                                // The push changed the remote; re-fetch
-                                // its resulting state.
-                                base.replaceCards(book.url, client.listCards(account, book.url));
+                            // One addressbook failing (revoked account,
+                            // server down) must not block the others.
+                            Log.w("cardamum", "sync failed for " + entry.book.name, error);
+                            if (failure == null) {
+                                failure = error;
                             }
                         }
-
-                        int unpushed = conflicts;
-                        main.post(
-                                () -> {
-                                    reloadFromBase();
-                                    show(PANEL_CONTACTS);
-                                    if (unpushed > 0) {
-                                        toast(getString(R.string.sync_conflicts, unpushed));
-                                    }
-                                });
-                    } catch (Exception error) {
-                        main.post(
-                                () -> {
-                                    // Offline fallback: the store of the
-                                    // last sync keeps the app usable.
-                                    if (base.loadAddressbooks().isEmpty()) {
-                                        status.setText(message(error, R.string.sync_failed));
-                                        return;
-                                    }
-                                    reloadFromBase();
-                                    show(PANEL_CONTACTS);
-                                    showError(error, R.string.sync_failed);
-                                });
                     }
+
+                    int unpushed = conflicts;
+                    Exception firstFailure = failure;
+                    main.post(
+                            () -> {
+                                // Offline fallback: the store of the last
+                                // sync keeps failing addressbooks usable.
+                                finishSync(toHome);
+                                if (firstFailure != null) {
+                                    showError(firstFailure, R.string.sync_failed);
+                                }
+                                if (unpushed > 0) {
+                                    toast(getString(R.string.sync_conflicts, unpushed));
+                                }
+                            });
                 });
+    }
+
+    /** One addressbook's fetch-push-refetch cycle; returns push conflicts. */
+    private int syncBook(Account acc, BookEntry entry, TextView status) {
+        Addressbook book = entry.book;
+        main.post(() -> status.setText(getString(R.string.sync_cards, book.name)));
+
+        // Fetch first, so staged rows learn the server's resource names
+        // before the push addresses them.
+        List<Card> fetched = client.listCards(acc, book.url);
+        base.replaceCards(book.url, fetched);
+
+        Map<String, String> serverEtags = new HashMap<>();
+        for (Card card : fetched) {
+            serverEtags.put(card.id, card.etag);
+        }
+
+        List<CardStore.Pending> pending = base.loadPending(book.url);
+        int conflicts = 0;
+        if (!pending.isEmpty()) {
+            main.post(() -> status.setText(getString(R.string.sync_push, book.name)));
+            conflicts = push(acc, book, pending, serverEtags);
+
+            // The push changed the remote; re-fetch its resulting state.
+            base.replaceCards(book.url, client.listCards(acc, book.url));
+        }
+        return conflicts;
+    }
+
+    /**
+     * Refreshes an OAuth account's access token and re-persists the
+     * account, returning the fresh credentials. Providers may rotate
+     * the refresh token, so a reissued one replaces the stored one.
+     */
+    private Account refreshAccount(AccountEntry entry) {
+        OauthTokens tokens =
+                client.oauthRefresh(entry.tokenEndpoint, entry.clientId, entry.refreshToken, null);
+
+        String refreshToken =
+                tokens.refreshToken != null ? tokens.refreshToken : entry.refreshToken;
+        Account fresh = new Account(entry.account.baseUrl, "", tokens.accessToken);
+        AccountEntry updated =
+                new AccountEntry(
+                        fresh, entry.email, refreshToken, entry.tokenEndpoint, entry.clientId);
+
+        accounts.removeIf(candidate -> candidate.email.equals(entry.email));
+        accounts.add(updated);
+        store.add(updated);
+        return fresh;
+    }
+
+    /** True for an HTTP 401 from either backend (expired or revoked token). */
+    private static boolean expiredToken(Exception error) {
+        String message = error.getMessage();
+        return message != null && message.contains("HTTP 401");
+    }
+
+    /** After a sync, returns to the home listing, or the open addressbook. */
+    private void finishSync(boolean toHome) {
+        reloadHome();
+        if (toHome || currentBook == null) {
+            show(PANEL_HOME);
+        } else {
+            openBook(currentBook);
+        }
     }
 
     /**
@@ -676,17 +1008,19 @@ public class MainActivity extends Activity {
 
         io.execute(
                 () -> {
-                    List<Addressbook> selected = base.loadAddressbooks();
+                    List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
 
                     try {
-                        Accounts.reconcile(this, accountEmail, selected);
+                        // The full subscribed set at once: reconcile purges
+                        // accounts no longer in it, across all accounts.
+                        Accounts.reconcile(this, subscribed);
                     } catch (Exception error) {
                         main.post(() -> showError(error, R.string.accounts_failed));
                         return;
                     }
 
-                    for (Addressbook book : selected) {
-                        android.accounts.Account target = Accounts.find(this, book);
+                    for (BookEntry entry : subscribed) {
+                        android.accounts.Account target = Accounts.find(this, entry.book);
                         if (target != null) {
                             Bundle extras = new Bundle();
                             extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
@@ -707,7 +1041,7 @@ public class MainActivity extends Activity {
      * sync (NOTE: keep-both resolution lands with the io-offline
      * engine). Any other failure aborts the sync (offline fallback).
      */
-    private int push(Addressbook book, List<CardStore.Pending> changes,
+    private int push(Account account, Addressbook book, List<CardStore.Pending> changes,
             Map<String, String> serverEtags) {
         int conflicts = 0;
 
@@ -717,12 +1051,20 @@ public class MainActivity extends Activity {
                     client.deleteCard(account, book.url, pending.card);
                     base.removeCard(book.url, pending.card.id);
                 } else if (pending.card.etag == null) {
+                    // The staged row is addressed by its local id: Graph
+                    // names created resources itself, so the confirmed
+                    // row may land under a new (server-assigned) id.
                     base.confirmPush(
                             book.url,
+                            pending.card.id,
                             client.createCard(
                                     account, book.url, pending.card.id, pending.card.vcard));
                 } else {
-                    base.confirmPush(book.url, client.updateCard(account, book.url, pending.card));
+                    base.confirmPush(
+                            book.url,
+                            pending.card.id,
+                            client.updateCard(
+                                    account, book.url, pending.card, pending.baseVcard));
                 }
             } catch (Exception error) {
                 String message = error.getMessage();
@@ -751,7 +1093,10 @@ public class MainActivity extends Activity {
                             base.removeCard(book.url, pending.card.id);
                         } else {
                             base.confirmPush(
-                                    book.url, client.updateCard(account, book.url, unguarded));
+                                    book.url,
+                                    pending.card.id,
+                                    client.updateCard(
+                                            account, book.url, unguarded, pending.baseVcard));
                         }
                     } else {
                         conflicts++;
@@ -778,29 +1123,12 @@ public class MainActivity extends Activity {
     // ---- Contacts screen ----------------------------------------------------
 
     private void setUpContactsPanel() {
-        findViewById(R.id.contacts_sync)
-                .setOnClickListener(
-                        anchor -> {
-                            PopupMenu menu = new PopupMenu(this, anchor);
-                            menu.getMenu().add(0, MENU_SYNC_REMOTE, 0, R.string.sync_remote);
-                            menu.getMenu().add(0, MENU_SYNC_LOCAL, 1, R.string.sync_local);
-                            menu.setOnMenuItemClickListener(
-                                    item -> {
-                                        if (item.getItemId() == MENU_SYNC_REMOTE) {
-                                            syncRemote();
-                                        } else {
-                                            syncLocal();
-                                        }
-                                        return true;
-                                    });
-                            menu.show();
-                        });
+        findViewById(R.id.contacts_sync).setOnClickListener(this::showSyncMenu);
+        findViewById(R.id.contacts_back).setOnClickListener(view -> goHome());
         findViewById(R.id.contacts_add)
-                .setOnClickListener(view -> openContact(currentBook(), null));
+                .setOnClickListener(view -> openContact(currentBook.book, null));
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
-        findViewById(R.id.contacts_settings).setOnClickListener(view -> show(PANEL_SETTINGS));
-        findViewById(R.id.settings_back).setOnClickListener(view -> show(PANEL_CONTACTS));
 
         findViewById(R.id.contacts_search).setOnClickListener(view -> openSearch());
         findViewById(R.id.contacts_search_close).setOnClickListener(view -> closeSearch());
@@ -817,8 +1145,16 @@ public class MainActivity extends Activity {
 
                             @Override
                             public void afterTextChanged(android.text.Editable s) {
-                                searchQuery = s.toString().trim().toLowerCase();
-                                renderContacts();
+                                String query = s.toString().trim().toLowerCase();
+                                if (pendingSearch != null) {
+                                    main.removeCallbacks(pendingSearch);
+                                }
+                                pendingSearch =
+                                        () -> {
+                                            searchQuery = query;
+                                            renderContacts();
+                                        };
+                                main.postDelayed(pendingSearch, 250);
                             }
                         });
 
@@ -862,101 +1198,43 @@ public class MainActivity extends Activity {
         ((android.widget.ImageButton) findViewById(R.id.contacts_add))
                 .setImageTintList(android.content.res.ColorStateList.valueOf(onAccent));
 
-        Spinner bookSpinner = findViewById(R.id.contacts_book);
-        bookSpinner.setOnItemSelectedListener(
-                new android.widget.AdapterView.OnItemSelectedListener() {
-                    @Override
-                    public void onItemSelected(
-                            android.widget.AdapterView<?> parent, View v, int pos, long id) {
-                        selectedBookUrl = books.get(pos).url;
-                        renderContacts();
-                    }
-
-                    @Override
-                    public void onNothingSelected(android.widget.AdapterView<?> parent) {}
-                });
     }
 
-    /** The addressbook currently shown, or the first when none is chosen. */
-    private Addressbook currentBook() {
-        for (Addressbook book : books) {
-            if (book.url.equals(selectedBookUrl)) {
-                return book;
-            }
-        }
-        return books.get(0);
+    /** Shows the two-line sync menu anchored to the sync button. */
+    private void showSyncMenu(View anchor) {
+        View content = getLayoutInflater().inflate(R.layout.menu_sync, null);
+        android.widget.PopupWindow popup =
+                new android.widget.PopupWindow(
+                        content,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                        true);
+        popup.setElevation(dp(8));
+        popup.setBackgroundDrawable(
+                new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+        content.findViewById(R.id.menu_sync_remote)
+                .setOnClickListener(
+                        view -> {
+                            popup.dismiss();
+                            syncRemote(false);
+                        });
+        content.findViewById(R.id.menu_sync_local)
+                .setOnClickListener(
+                        view -> {
+                            popup.dismiss();
+                            syncLocal();
+                        });
+        popup.showAsDropDown(anchor);
     }
 
-    /** Populates the app-bar addressbook spinner from the synced books. */
-    private void refreshBookSpinner() {
-        Spinner bookSpinner = findViewById(R.id.contacts_book);
-        List<String> labels = new ArrayList<>();
-        for (Addressbook book : books) {
-            labels.add(book.name);
-        }
-
-        // Collapsed view shows the book name over the account email; the
-        // dropdown keeps plain book names. Both views are fully owned so
-        // the account-email id is not looked up in the dropdown layout.
-        String email = accountEmail == null ? "" : accountEmail;
-        ArrayAdapter<String> bookAdapter =
-                new ArrayAdapter<String>(this, 0, labels) {
-                    @Override
-                    public View getView(
-                            int position, View convertView, android.view.ViewGroup parent) {
-                        View view =
-                                convertView != null
-                                        ? convertView
-                                        : getLayoutInflater()
-                                                .inflate(
-                                                        R.layout.spinner_appbar_item, parent, false);
-                        ((TextView) view.findViewById(R.id.spinner_book_name)).setText(getItem(position));
-                        TextView emailView = view.findViewById(R.id.spinner_book_email);
-                        emailView.setText(email);
-                        emailView.setVisibility(email.isEmpty() ? View.GONE : View.VISIBLE);
-                        return view;
-                    }
-
-                    @Override
-                    public View getDropDownView(
-                            int position, View convertView, android.view.ViewGroup parent) {
-                        TextView view =
-                                (TextView)
-                                        (convertView != null
-                                                ? convertView
-                                                : getLayoutInflater()
-                                                        .inflate(
-                                                                android.R.layout
-                                                                        .simple_spinner_dropdown_item,
-                                                                parent,
-                                                                false));
-                        view.setText(getItem(position));
-                        return view;
-                    }
-                };
-        bookSpinner.setAdapter(bookAdapter);
-
-        int index = 0;
-        for (int i = 0; i < books.size(); i++) {
-            if (books.get(i).url.equals(selectedBookUrl)) {
-                index = i;
-            }
-        }
-        bookSpinner.setSelection(index);
-    }
-
-    /** Sorts the cards of the selected addressbook and refreshes the list. */
+    /** Sorts the open addressbook's cards (search-filtered) and refreshes the list. */
     private void renderContacts() {
         TextView status = findViewById(R.id.contacts_status);
         TextView sticky = findViewById(R.id.contacts_sticky_letter);
         updateSelectionUi();
 
-        String book = currentBook().url;
         sortedContacts = new ArrayList<>();
         for (Entry entry : contacts) {
-            if (!entry.book.url.equals(book)) {
-                continue;
-            }
             if (!searchQuery.isEmpty()
                     && !entry.card.vcard.toLowerCase().contains(searchQuery)) {
                 continue;
@@ -1021,7 +1299,7 @@ public class MainActivity extends Activity {
     }
 
     private static String key(Entry entry) {
-        return entry.book.url + " " + entry.card.id;
+        return entry.book.url + "\0" + entry.card.id;
     }
 
     /** Toggles a contact's selection and refreshes the list and app bar. */
@@ -1058,26 +1336,30 @@ public class MainActivity extends Activity {
 
     /** Clears the filter, hides the search bar and dismisses the keyboard. */
     private void closeSearch() {
+        // Dismiss the keyboard while the input still holds the focus:
+        // hiding the bar first drops the focus and leaves the keyboard
+        // up.
+        hideKeyboard();
         ((EditText) findViewById(R.id.contacts_search_input)).setText("");
         findViewById(R.id.contacts_search_bar).setVisibility(View.GONE);
-        hideKeyboard();
     }
 
-    /** The addressbook selector gives way to the count while selecting. */
+    /** The addressbook name gives way to the selected count while selecting. */
     private void updateSelectionUi() {
         TextView title = findViewById(R.id.contacts_title);
-        title.setText(getString(R.string.selected_count, selectedKeys.size()));
-        title.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        findViewById(R.id.contacts_book).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        if (selectionMode) {
+            title.setText(getString(R.string.selected_count, selectedKeys.size()));
+        } else if (currentBook != null) {
+            title.setText(currentBook.book.name);
+        }
 
+        findViewById(R.id.contacts_back).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_close)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         findViewById(R.id.contacts_delete)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         findViewById(R.id.contacts_sync).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_search).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_settings)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_add).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
@@ -1098,7 +1380,7 @@ public class MainActivity extends Activity {
         }
         selectionMode = false;
         selectedKeys.clear();
-        reloadFromBase();
+        reloadCurrentBook();
     }
 
     /** A round avatar with the name's first letter, coloured by its hash. */
@@ -1181,21 +1463,19 @@ public class MainActivity extends Activity {
             return;
         }
 
-        reloadFromBase();
+        reloadCurrentBook();
         show(PANEL_CONTACTS);
     }
 
-    /** Rebuilds the contacts list from the base (staged edits included). */
-    private void reloadFromBase() {
-        books = base.loadAddressbooks();
-        List<Entry> entries = new ArrayList<>();
-        for (Addressbook book : books) {
-            for (Card card : base.loadCards(book.url)) {
-                entries.add(new Entry(book, card));
-            }
+    /** Rebuilds the open addressbook's contacts from the base (staged edits included). */
+    private void reloadCurrentBook() {
+        if (currentBook == null) {
+            return;
         }
-        contacts = entries;
-        refreshBookSpinner();
+        contacts = new ArrayList<>();
+        for (Card card : base.loadCards(currentBook.book.url)) {
+            contacts.add(new Entry(currentBook.book, card));
+        }
         renderContacts();
     }
 
@@ -1259,6 +1539,13 @@ public class MainActivity extends Activity {
         flipper.setDisplayedChild(panel);
     }
 
+    /** Resolves a theme attribute to its referenced resource id. */
+    private int resolveAttr(int attr) {
+        android.util.TypedValue value = new android.util.TypedValue();
+        getTheme().resolveAttribute(attr, value, true);
+        return value.resourceId;
+    }
+
     /** Resolves a theme colour attribute to an ARGB int. */
     private int resolveColor(int attr) {
         android.util.TypedValue value = new android.util.TypedValue();
@@ -1271,12 +1558,15 @@ public class MainActivity extends Activity {
 
     /** Dismisses the soft keyboard, e.g. when leaving the edit form. */
     private void hideKeyboard() {
+        // Fall back to the flipper's window token when nothing holds
+        // the focus (it is the same window either way).
         View focus = getCurrentFocus();
+        View anchor = focus != null ? focus : flipper;
+        android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager)
+                        getSystemService(INPUT_METHOD_SERVICE);
+        imm.hideSoftInputFromWindow(anchor.getWindowToken(), 0);
         if (focus != null) {
-            android.view.inputmethod.InputMethodManager imm =
-                    (android.view.inputmethod.InputMethodManager)
-                            getSystemService(INPUT_METHOD_SERVICE);
-            imm.hideSoftInputFromWindow(focus.getWindowToken(), 0);
             focus.clearFocus();
         }
     }

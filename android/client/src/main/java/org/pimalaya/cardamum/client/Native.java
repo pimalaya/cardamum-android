@@ -156,4 +156,47 @@ final class Native {
             String password,
             String uri,
             String etag);
+
+    /**
+     * Lists the Microsoft Graph contact folders (default Contacts
+     * folder first, empty id) as a JSON array of addressbooks whose
+     * collection URLs are empty: the caller composes them, since only
+     * it knows the account they belong to.
+     */
+    static native String listGraphAddressbooks(Transport transport, String token);
+
+    /**
+     * Lists the contacts of the Graph folder (empty id means the
+     * default Contacts folder), each projected onto a vCard, as a JSON
+     * array of {@code {id, uri, etag, vcard}} (Graph id as id and uri,
+     * changeKey as etag).
+     */
+    static native String listGraphCards(Transport transport, String token, String folder);
+
+    /**
+     * Creates the vCard as a Graph contact in the folder (empty id
+     * means the default Contacts folder); Graph names the resource, so
+     * the returned {@code {id, uri, etag, vcard}} carries the
+     * server-assigned id.
+     */
+    static native String createGraphCard(
+            Transport transport, String token, String folder, String vcard);
+
+    /**
+     * Reads the Graph contact at the given id, projected onto a vCard;
+     * returns {@code {id, uri, etag, vcard}}.
+     */
+    static native String readGraphCard(Transport transport, String token, String id);
+
+    /**
+     * Updates the Graph contact at the given id from the vCard,
+     * PATCHing only the fields that differ from the base vCard when
+     * one is passed (empty means unknown; no If-Match guard); returns
+     * the updated {@code {id, uri, etag, vcard}}.
+     */
+    static native String updateGraphCard(
+            Transport transport, String token, String id, String vcard, String baseVcard);
+
+    /** Deletes the Graph contact at the given id; returns {@code {}}. */
+    static native String deleteGraphCard(Transport transport, String token, String id);
 }
