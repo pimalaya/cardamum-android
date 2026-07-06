@@ -229,40 +229,104 @@ public class CardamumClient {
         }
     }
 
-    /** Lists the cards of the addressbook collection at the given URL. */
-    public List<Card> listCards(Account account, String addressbookUrl) {
+    /**
+     * True when the account's cards are account-level resources with
+     * m:n addressbook memberships (JMAP, Google): they list once per
+     * account through {@link #listAccountCards}, not per addressbook.
+     * CardDAV and Graph cards live in the one collection they were
+     * listed from and go through {@link #listCards}.
+     */
+    public static boolean isAccountLevel(Account account) {
+        return isJmap(account) || isGoogle(account);
+    }
+
+    /**
+     * Lists every card of an account-level backend (JMAP, Google) in
+     * one pass, each carrying its addressbook memberships as book ids
+     * ({@link Card#books}).
+     */
+    public List<Card> listAccountCards(Account account) {
         Transport transport = new Transport();
         try {
             String reply =
                     isGoogle(account)
                             ? Native.listGoogleCards(transport, account.password)
-                            : isGraph(account)
-                                    ? Native.listGraphCards(
-                                            transport,
-                                            account.password,
-                                            graphFolder(account, addressbookUrl))
-                                    : isJmap(account)
-                                            ? Native.listJmapCards(
-                                                    transport,
-                                                    jmapSessionUrl(account),
-                                                    account.login,
-                                                    account.password,
-                                                    jmapBook(account, addressbookUrl))
-                                            : Native.listCards(
-                                                    transport,
-                                                    addressbookUrl,
-                                                    account.login,
-                                                    account.password);
-
-            JSONArray parsed = array(reply);
-            List<Card> cards = new ArrayList<>(parsed.length());
-            for (int index = 0; index < parsed.length(); index++) {
-                cards.add(card(object(parsed, index)));
-            }
-            return cards;
+                            : Native.listJmapCards(
+                                    transport,
+                                    jmapSessionUrl(account),
+                                    account.login,
+                                    account.password);
+            return cards(reply);
         } finally {
             transport.close();
         }
+    }
+
+    /** Lists the cards of the addressbook collection at the given URL. */
+    public List<Card> listCards(Account account, String addressbookUrl) {
+        Transport transport = new Transport();
+        try {
+            String reply =
+                    isGraph(account)
+                            ? Native.listGraphCards(
+                                    transport,
+                                    account.password,
+                                    graphFolder(account, addressbookUrl))
+                            : Native.listCards(
+                                    transport,
+                                    addressbookUrl,
+                                    account.login,
+                                    account.password);
+            return cards(reply);
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Adds and removes the card's addressbook memberships on an
+     * account-level backend, by book id: JMAP patches addressBookIds,
+     * Google modifies group members.
+     */
+    public void updateCardBooks(
+            Account account, String cardId, List<String> add, List<String> remove) {
+        Transport transport = new Transport();
+        try {
+            String reply =
+                    isGoogle(account)
+                            ? Native.updateGoogleCardBooks(
+                                    transport,
+                                    account.password,
+                                    cardId,
+                                    books(add),
+                                    books(remove))
+                            : Native.updateJmapCardBooks(
+                                    transport,
+                                    jmapSessionUrl(account),
+                                    account.login,
+                                    account.password,
+                                    cardId,
+                                    books(add),
+                                    books(remove));
+            object(reply);
+        } finally {
+            transport.close();
+        }
+    }
+
+    /** Serializes a book id list for the bridge. */
+    private static String books(List<String> ids) {
+        return new JSONArray(ids).toString();
+    }
+
+    /** Parses a card-array reply. */
+    private static List<Card> cards(String reply) {
+        JSONArray parsed = array(reply);
+        List<Card> cards = new ArrayList<>(parsed.length());
+        for (int index = 0; index < parsed.length(); index++) {
+            cards.add(card(object(parsed, index)));
+        }
+        return cards;
     }
 
     /**
@@ -424,6 +488,16 @@ public class CardamumClient {
     }
 
     /**
+     * Indexes a vCard for the store: the display fields the contacts
+     * list renders (name, first email and phone, UID) and a normalized
+     * content hash for the divergence flag of linked replicas. Pure
+     * computation, no transport.
+     */
+    public JSONObject indexCard(String vcard) {
+        return object(Native.indexCard(vcard));
+    }
+
+    /**
      * Patches an edited field model back onto the vCard, preserving
      * every property the model does not manage.
      */
@@ -527,13 +601,22 @@ public class CardamumClient {
         return folder.equals(MSGRAPH_DEFAULT_FOLDER) ? "" : folder;
     }
 
-    /** Parses a `{id, uri, etag, vcard}` reply into a card. */
+    /** Parses a `{id, uri, etag, vcard, books?}` reply into a card. */
     private static Card card(JSONObject reply) {
+        List<String> books = new ArrayList<>();
+        JSONArray parsed = reply.optJSONArray("books");
+        if (parsed != null) {
+            for (int index = 0; index < parsed.length(); index++) {
+                books.add(parsed.optString(index));
+            }
+        }
+
         return new Card(
                 string(reply, "id"),
                 string(reply, "uri"),
                 optString(reply, "etag"),
-                string(reply, "vcard"));
+                string(reply, "vcard"),
+                books);
     }
 
     /** Parses a search reply into service configs. */

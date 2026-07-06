@@ -11,13 +11,24 @@
         android:gravity="center_vertical"
         android:minHeight="56dp"
         android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_title_inset"
+        android:paddingStart="@dimen/app_bar_padding"
         android:paddingEnd="@dimen/app_bar_padding">
+
+        <!-- Back to the app's root, the merged contacts list. -->
+        <ImageButton
+            android:id="@+id/home_back"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_arrow_back"
+            android:tint="?android:attr/textColorPrimary" />
 
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:paddingStart="@dimen/app_bar_title_padding"
             android:text="@string/subscriptions_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
@@ -28,7 +39,7 @@
             android:layout_height="@dimen/app_bar_icon"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/add_account"
-            android:src="@drawable/ic_book_plus"
+            android:src="@drawable/ic_account_add"
             android:tint="?android:attr/textColorPrimary" />
 
     </LinearLayout>

@@ -21,10 +21,17 @@ use crate::types::Card;
 
 /// JMAP ContactCard to the JNI-facing card shape: the projected vCard
 /// document, the ContactCard id as both display id and addressing key
-/// (uri), and the JSON hash as ETag.
+/// (uri), the JSON hash as ETag, and the AddressBook memberships as
+/// the card's books (RFC 9610 addressBookIds is natively m:n).
 pub fn to_card(card: JmapContactCard) -> Result<Card, String> {
     let etag = etag(&card);
     let vcard = to_vcard(&card.card)?;
+    let books = card
+        .address_book_ids
+        .iter()
+        .filter(|(_, member)| **member)
+        .map(|(id, _)| id.clone())
+        .collect();
     let id = card
         .id
         .ok_or_else(|| "JMAP ContactCard is missing its id".to_string())?;
@@ -34,6 +41,7 @@ pub fn to_card(card: JmapContactCard) -> Result<Card, String> {
         id,
         etag,
         vcard,
+        books,
     })
 }
 

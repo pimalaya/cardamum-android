@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use io_msgraph::v1::{
     MsgraphField,
     rest::users::{
-        contacts::{MsgraphContact, MsgraphPhysicalAddress},
+        contacts::{MsgraphContact, MsgraphPhysicalAddress, MsgraphSingleValueExtendedProperty},
         messages::MsgraphEmailAddress,
     },
 };
@@ -49,7 +49,24 @@ use vcard::{
     },
 };
 
-use crate::project::{full_date, text_prop};
+use crate::project::{MAX_STASH_LINE, escape_text, full_date, splice_props, text_prop};
+
+/// Extended-property id under which the vCard remainder is stashed on
+/// the Graph contact (a fixed app GUID plus a name, the String MAPI
+/// form); it rides inline in create and update bodies and reads back
+/// through a filtered `$expand` (docs/custom-data.md).
+pub const EXTENDED_PROP_ID: &str =
+    "String {c8e5e5cf-3f6c-4f0a-9d4e-52f1e7b2a9d3} Name cardamum-vcard";
+
+/// Property names minted by [`to_vcard`] from the Graph-only contact
+/// fields; [`to_contact`] consumes (drops) them, the server value
+/// being authoritative (the fields stay Unset, out of every body).
+const MINTED_PROPS: &[&str] = &[
+    "X-MSGRAPH-FILE-AS",
+    "X-MSGRAPH-OFFICE-LOCATION",
+    "X-MSGRAPH-ASSISTANT",
+    "X-MSGRAPH-MANAGER",
+];
 
 /// Projects an io-msgraph contact onto a fresh vCard 4.0 document.
 ///
@@ -226,7 +243,27 @@ pub fn to_vcard(contact: &MsgraphContact) -> String {
         }
     }
 
-    String::from_utf8_lossy(&card.to_bytes()).into_owned()
+    let vcard = String::from_utf8_lossy(&card.to_bytes()).into_owned();
+
+    // NOTE: Graph-only fields ride the vCard as read-only X-MSGRAPH-*
+    // vendor properties, and the stashed remainder restores verbatim
+    // (docs/custom-data.md).
+    let mut extra = Vec::new();
+    if let Some(value) = opt(&contact.file_as) {
+        extra.push(format!("X-MSGRAPH-FILE-AS:{}", escape_text(value)));
+    }
+    if let Some(value) = opt(&contact.office_location) {
+        extra.push(format!("X-MSGRAPH-OFFICE-LOCATION:{}", escape_text(value)));
+    }
+    if let Some(value) = opt(&contact.assistant_name) {
+        extra.push(format!("X-MSGRAPH-ASSISTANT:{}", escape_text(value)));
+    }
+    if let Some(value) = opt(&contact.manager) {
+        extra.push(format!("X-MSGRAPH-MANAGER:{}", escape_text(value)));
+    }
+    extra.extend(stash_lines(contact));
+
+    splice_props(vcard, &extra)
 }
 
 /// Projects a vCard onto an io-msgraph contact, the full-state
@@ -270,72 +307,111 @@ pub fn to_contact(vcard: &str) -> Result<MsgraphContact, String> {
     let mut children = Vec::new();
     let mut categories = Vec::new();
     let mut notes = Vec::new();
+    let mut stash = Vec::new();
     let mut name_seen = false;
 
+    // NOTE: Outlook stores fixed slots behind the Graph collections:
+    // three email addresses (primary/secondary/tertiary), two business
+    // and two home phones (Business/Business 2, Home/Home 2), three IM
+    // addresses (Graph rejects bodies overflowing a slot set). The
+    // first properties win; extras land in the stash remainder like
+    // every other line that does not project, so they survive on the
+    // server and restore on read (docs/custom-data.md).
     for line in &card.props {
-        let Ok(kind) = VcardPropKind::from_str(line.name.get()) else {
-            continue;
-        };
-
-        match kind {
-            VcardPropKind::Fn => {
-                let name = FN::decode(line, version);
-                first(&mut display_name, &name.0);
+        let consumed = match VcardPropKind::from_str(line.name.get()) {
+            // NOTE: the VERSION line is structural and the minted
+            // X-MSGRAPH-* properties are read-only projections;
+            // neither belongs to the remainder.
+            Err(_) => {
+                let raw_name = line.name.get();
+                raw_name.eq_ignore_ascii_case("VERSION")
+                    || MINTED_PROPS
+                        .iter()
+                        .any(|prop| raw_name.eq_ignore_ascii_case(prop))
             }
-            VcardPropKind::N => {
+            // NOTE: the UID is managed: the Graph id addresses the
+            // resource through the request path.
+            Ok(VcardPropKind::Uid) => true,
+            Ok(VcardPropKind::Fn) => {
+                let name = FN::decode(line, version);
+                set_first(&mut display_name, &name.0)
+            }
+            Ok(VcardPropKind::N) => {
                 if !name_seen {
                     name_seen = true;
                     let n = N::decode(line, version);
-                    first(&mut surname, n.family.join(" "));
-                    first(&mut given_name, n.given.join(" "));
-                    first(&mut middle_name, n.additional.join(" "));
-                    first(&mut title, n.prefixes.join(" "));
+                    set_first(&mut surname, n.family.join(" "));
+                    set_first(&mut given_name, n.given.join(" "));
+                    set_first(&mut middle_name, n.additional.join(" "));
+                    set_first(&mut title, n.prefixes.join(" "));
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Nickname => {
+            Ok(VcardPropKind::Nickname) => {
                 let all = NICKNAME::decode(line, version);
-                if let Some(nick) = all.0.first() {
-                    first(&mut nick_name, nick);
+                match all.0.first() {
+                    Some(nick) => set_first(&mut nick_name, nick),
+                    None => false,
                 }
             }
-            VcardPropKind::Email => {
+            Ok(VcardPropKind::Email) => {
                 let email = EMAIL::decode(line, version);
                 let address = email.0.trim();
-                if !address.is_empty() {
+                if emails.len() < 3 && !address.is_empty() {
                     emails.push(MsgraphEmailAddress {
                         name: None,
                         address: Some(address.to_string()),
                     });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Impp => {
+            Ok(VcardPropKind::Impp) => {
                 let impp = IMPP::decode(line, version);
                 let address = impp.0.trim();
-                if !address.is_empty() {
+                if ims.len() < 3 && !address.is_empty() {
                     ims.push(address.to_string());
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Tel => {
+            Ok(VcardPropKind::Tel) => {
                 let tel = TEL::decode(line, version);
                 let number = tel.0.trim();
                 if number.is_empty() {
-                    continue;
-                }
-
-                let types = type_values(line);
-                if types.iter().any(|t| t == "cell") {
-                    // NOTE: one mobile slot; further cell TELs are
-                    // dropped rather than misfiled as business phones.
-                    if mobile_phone.is_none() {
-                        mobile_phone = Some(number.to_string());
-                    }
-                } else if types.iter().any(|t| t == "home") {
-                    home_phones.push(number.to_string());
+                    false
                 } else {
-                    business_phones.push(number.to_string());
+                    let types = type_values(line);
+                    if types.iter().any(|t| t == "cell") {
+                        // NOTE: one mobile slot; further cell TELs are
+                        // stashed rather than misfiled as business
+                        // phones.
+                        if mobile_phone.is_none() {
+                            mobile_phone = Some(number.to_string());
+                            true
+                        } else {
+                            false
+                        }
+                    } else if types.iter().any(|t| t == "home") {
+                        if home_phones.len() < 2 {
+                            home_phones.push(number.to_string());
+                            true
+                        } else {
+                            false
+                        }
+                    } else if business_phones.len() < 2 {
+                        business_phones.push(number.to_string());
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
-            VcardPropKind::Adr => {
+            Ok(VcardPropKind::Adr) => {
                 let adr = ADR::decode(line, version);
 
                 // NOTE: Graph's street is one multiline field; the po
@@ -364,71 +440,87 @@ pub fn to_contact(vcard: &str) -> Result<MsgraphContact, String> {
                     && address.country_or_region.is_none()
                     && address.postal_code.is_none();
                 if empty {
-                    continue;
-                }
-
-                let types = type_values(line);
-                let slot = if types.iter().any(|t| t == "home") {
-                    &mut home_address
-                } else if types.iter().any(|t| t == "work") {
-                    &mut business_address
+                    false
                 } else {
-                    &mut other_address
-                };
-                if slot.is_none() {
-                    *slot = Some(address);
+                    let types = type_values(line);
+                    let slot = if types.iter().any(|t| t == "home") {
+                        &mut home_address
+                    } else if types.iter().any(|t| t == "work") {
+                        &mut business_address
+                    } else {
+                        &mut other_address
+                    };
+                    if slot.is_none() {
+                        *slot = Some(address);
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
-            VcardPropKind::Org => {
+            Ok(VcardPropKind::Org) => {
                 if company_name.is_none() && department.is_none() {
                     let org = ORG::decode(line, version);
                     let mut components = org.0.iter().map(|component| component.as_ref());
                     let company = components.next().unwrap_or_default();
                     let rest = components.collect::<Vec<_>>().join(" ");
-                    first(&mut company_name, company);
-                    first(&mut department, rest);
+                    set_first(&mut company_name, company);
+                    set_first(&mut department, rest);
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Title => {
+            Ok(VcardPropKind::Title) => {
                 let value = TITLE::decode(line, version);
-                first(&mut job_title, &value.0);
+                set_first(&mut job_title, &value.0)
             }
-            VcardPropKind::Role => {
+            Ok(VcardPropKind::Role) => {
                 let role = ROLE::decode(line, version);
-                first(&mut profession, &role.0);
+                set_first(&mut profession, &role.0)
             }
-            VcardPropKind::Url => {
+            Ok(VcardPropKind::Url) => {
                 let url = URL::decode(line, version);
-                first(&mut business_home_page, &url.0);
+                set_first(&mut business_home_page, &url.0)
             }
-            VcardPropKind::Bday => {
-                if birthday.is_none() {
-                    if let Some(date) = full_date(&line.raw_value_str()) {
-                        birthday = Some(format!("{date}T00:00:00Z"));
-                    }
+            Ok(VcardPropKind::Bday) => {
+                // NOTE: a partial (year-less) birthday has no Graph
+                // date it round-trips through; it lands in the stash.
+                if birthday.is_none()
+                    && let Some(date) = full_date(&line.raw_value_str())
+                {
+                    birthday = Some(format!("{date}T00:00:00Z"));
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Note => {
+            Ok(VcardPropKind::Note) => {
                 let note = NOTE::decode(line, version);
                 let note = note.0.trim();
                 if !note.is_empty() {
                     notes.push(note.to_string());
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Categories => {
+            Ok(VcardPropKind::Categories) => {
                 let all = CATEGORIES::decode(line, version);
-                categories.extend(
-                    all.0
-                        .iter()
-                        .map(|category| category.trim())
-                        .filter(|category| !category.is_empty())
-                        .map(str::to_string),
-                );
+                let mut pushed = false;
+                for category in &all.0 {
+                    let category = category.trim();
+                    if !category.is_empty() {
+                        categories.push(category.to_string());
+                        pushed = true;
+                    }
+                }
+                pushed
             }
-            VcardPropKind::Related => {
-                // NOTE: only free-form names (VALUE=text) project; a
-                // URI RELATED points at another card and has no Graph
-                // slot.
+            Ok(VcardPropKind::Related) => {
+                // NOTE: only free-form spouse and child names
+                // (VALUE=text) project; other types and URI RELATED
+                // lines land in the stash.
                 let text = line.params.iter().any(|param| {
                     param.name.get().eq_ignore_ascii_case("VALUE")
                         && param
@@ -440,28 +532,33 @@ pub fn to_contact(vcard: &str) -> Result<MsgraphContact, String> {
                     let related = RELATED::decode(line, version);
                     let types = type_values(line);
                     if types.iter().any(|t| t == "spouse") {
-                        first(&mut spouse_name, &related.0);
+                        set_first(&mut spouse_name, &related.0)
                     } else if types.iter().any(|t| t == "child") {
                         let child = related.0.trim();
                         if !child.is_empty() {
                             children.push(child.to_string());
+                            true
+                        } else {
+                            false
                         }
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
             }
-            _ => {}
+            Ok(_) => false,
+        };
+
+        if !consumed {
+            let raw = line.to_string();
+            let raw = raw.trim_end().to_string();
+            if raw.len() <= MAX_STASH_LINE {
+                stash.push(raw);
+            }
         }
     }
-
-    // NOTE: Outlook stores fixed slots behind the Graph collections:
-    // three email addresses (primary/secondary/tertiary), two business
-    // and two home phones (Business/Business 2, Home/Home 2), three IM
-    // addresses. The first properties win, extras are dropped (Graph
-    // rejects bodies overflowing a slot set).
-    emails.truncate(3);
-    ims.truncate(3);
-    business_phones.truncate(2);
-    home_phones.truncate(2);
 
     Ok(MsgraphContact {
         display_name: MsgraphField::set_or_null(display_name),
@@ -488,6 +585,15 @@ pub fn to_contact(vcard: &str) -> Result<MsgraphContact, String> {
         children: MsgraphField::Set(children),
         personal_notes: MsgraphField::set_or_null((!notes.is_empty()).then(|| notes.join("\n"))),
         categories: MsgraphField::Set(categories),
+        // NOTE: the stash entry is always Set (empty value when the
+        // card has no remainder) so the delta projection can tell a
+        // cleared stash from an unchanged one.
+        single_value_extended_properties: MsgraphField::Set(vec![
+            MsgraphSingleValueExtendedProperty {
+                id: EXTENDED_PROP_ID.to_string(),
+                value: stash.join("\n"),
+            },
+        ]),
         ..Default::default()
     })
 }
@@ -537,6 +643,7 @@ pub fn to_contact_delta(vcard: &str, base_vcard: &str) -> Result<MsgraphContact,
         children,
         personal_notes,
         categories,
+        single_value_extended_properties,
     );
 
     Ok(contact)
@@ -548,7 +655,12 @@ pub fn to_contact_delta(vcard: &str, base_vcard: &str) -> Result<MsgraphContact,
 /// backend rejects null complex properties on POST with an internal
 /// server error (HTTP 500).
 pub fn to_new_contact(vcard: &str) -> Result<MsgraphContact, String> {
-    let contact = to_contact(vcard)?;
+    let mut contact = to_contact(vcard)?;
+
+    // NOTE: an empty stash entry is a no-op on a fresh resource.
+    if stash_lines(&contact).is_empty() {
+        contact.single_value_extended_properties = MsgraphField::Unset;
+    }
 
     let mut body = to_value(&contact).map_err(|err| err.to_string())?;
     if let Some(object) = body.as_object_mut() {
@@ -663,12 +775,33 @@ fn option_component(value: &Option<String>) -> Vec<Cow<'static, str>> {
     }
 }
 
-/// Fills a single-instance Graph field, first non-empty value wins.
-fn first(slot: &mut Option<String>, value: impl AsRef<str>) {
+/// Fills a single-instance Graph field, first non-empty value wins;
+/// true when this value took the slot.
+fn set_first(slot: &mut Option<String>, value: impl AsRef<str>) -> bool {
     let value = value.as_ref().trim();
     if slot.is_none() && !value.is_empty() {
         *slot = Some(value.to_string());
+        true
+    } else {
+        false
     }
+}
+
+/// The stashed vCard remainder lines behind the contact's cardamum
+/// extended property (matched by name: Graph may normalize the GUID
+/// spelling in responses).
+fn stash_lines(contact: &MsgraphContact) -> Vec<String> {
+    contact
+        .single_value_extended_properties
+        .as_option()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|prop| prop.id.to_ascii_lowercase().contains("cardamum-vcard"))
+        .flat_map(|prop| prop.value.split('\n'))
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The structured-value components joined into one Graph field, None
@@ -972,6 +1105,97 @@ mod tests {
     #[test]
     fn round_trip() {
         let contact = full_contact();
-        assert_eq!(to_contact(&to_vcard(&contact)).unwrap(), contact);
+
+        // NOTE: the full-state projection always carries the (empty)
+        // stash slot, so a cleared stash is distinguishable from an
+        // unchanged one.
+        let mut expected = contact.clone();
+        expected.single_value_extended_properties =
+            MsgraphField::Set(vec![MsgraphSingleValueExtendedProperty {
+                id: EXTENDED_PROP_ID.to_string(),
+                value: String::new(),
+            }]);
+
+        assert_eq!(to_contact(&to_vcard(&contact)).unwrap(), expected);
+    }
+
+    #[test]
+    fn stash_preserves_unprojected_props() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nX-FOO;TYPE=bar:baz\r\n\
+            EMAIL:a@x.org\r\nEMAIL:b@x.org\r\nEMAIL:c@x.org\r\nEMAIL:d@x.org\r\nEND:VCARD\r\n";
+
+        let contact = to_contact(vcard).unwrap();
+        let props = contact
+            .single_value_extended_properties
+            .as_option()
+            .unwrap();
+        assert_eq!(props[0].id, EXTENDED_PROP_ID);
+        assert_eq!(props[0].value, "X-FOO;TYPE=bar:baz\nEMAIL:d@x.org");
+
+        let restored = to_vcard(&contact);
+        assert!(restored.contains("X-FOO;TYPE=bar:baz\r\n"));
+        assert!(restored.contains("EMAIL:d@x.org\r\n"));
+        assert!(restored.ends_with("END:VCARD\r\n"));
+    }
+
+    #[test]
+    fn minted_props_project_and_consume() {
+        let mut contact = full_contact();
+        contact.file_as = MsgraphField::Set("Doe, Jane".into());
+        contact.office_location = MsgraphField::Set("B2".into());
+        contact.assistant_name = MsgraphField::Set("Sam".into());
+        contact.manager = MsgraphField::Set("Alex".into());
+
+        let vcard = to_vcard(&contact);
+        assert!(vcard.contains("X-MSGRAPH-FILE-AS:Doe\\, Jane\r\n"));
+        assert!(vcard.contains("X-MSGRAPH-OFFICE-LOCATION:B2\r\n"));
+        assert!(vcard.contains("X-MSGRAPH-ASSISTANT:Sam\r\n"));
+        assert!(vcard.contains("X-MSGRAPH-MANAGER:Alex\r\n"));
+
+        // Consumed on the way back: the fields stay Unset (out of the
+        // body, server authoritative) and the lines stay out of the
+        // stash.
+        let back = to_contact(&vcard).unwrap();
+        assert_eq!(back.file_as, MsgraphField::Unset);
+        assert_eq!(back.office_location, MsgraphField::Unset);
+        assert_eq!(back.assistant_name, MsgraphField::Unset);
+        assert_eq!(back.manager, MsgraphField::Unset);
+        let props = back.single_value_extended_properties.as_option().unwrap();
+        assert_eq!(props[0].value, "");
+    }
+
+    #[test]
+    fn to_contact_delta_tracks_the_stash() {
+        let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nX-FOO:bar\r\nEND:VCARD\r\n";
+        let unchanged = to_contact_delta(base, base).unwrap();
+        assert_eq!(
+            unchanged.single_value_extended_properties,
+            MsgraphField::Unset
+        );
+
+        // A dropped remainder clears the server-side stash through an
+        // explicit empty value.
+        let cleared = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nEND:VCARD\r\n";
+        let delta = to_contact_delta(cleared, base).unwrap();
+        let props = delta.single_value_extended_properties.as_option().unwrap();
+        assert_eq!(props[0].value, "");
+    }
+
+    #[test]
+    fn to_new_contact_drops_the_empty_stash() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nEND:VCARD\r\n";
+        let contact = to_new_contact(vcard).unwrap();
+        assert_eq!(
+            contact.single_value_extended_properties,
+            MsgraphField::Unset
+        );
+
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nX-FOO:bar\r\nEND:VCARD\r\n";
+        let contact = to_new_contact(vcard).unwrap();
+        let props = contact
+            .single_value_extended_properties
+            .as_option()
+            .unwrap();
+        assert_eq!(props[0].value, "X-FOO:bar");
     }
 }

@@ -48,6 +48,16 @@
             android:textSize="12sp"
             android:visibility="gone" />
 
+        <!-- Merged row: how many places back this contact. -->
+        <TextView
+            android:id="@+id/contact_accounts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="12sp"
+            android:textStyle="italic"
+            android:visibility="gone" />
+
     </LinearLayout>
 
     <CheckBox

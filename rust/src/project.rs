@@ -488,6 +488,118 @@ pub(crate) fn full_date(raw: &str) -> Option<String> {
     None
 }
 
+/// Indexes a vCard for the app's store, computed once at write time:
+/// the fields the contacts list renders (FN, first EMAIL, first TEL,
+/// UID) and a normalized content hash for the divergence flag of
+/// linked replicas. The hash is FNV-1a over the sorted logical
+/// property lines, excluding the structural and volatile ones
+/// (VERSION, PRODID, REV), so property order and server-side revision
+/// stamps do not read as divergence; any other representational
+/// difference does, which is honest for a document of record.
+pub fn index(vcard: &str) -> Result<Value, String> {
+    let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
+    let version = card.version();
+
+    let mut name = String::new();
+    let mut email = String::new();
+    let mut phone = String::new();
+    let mut uid = String::new();
+    let mut lines = Vec::new();
+
+    for line in &card.props {
+        match VcardPropKind::from_str(line.name.get()) {
+            Ok(VcardPropKind::Fn) if name.is_empty() => {
+                name = FN::decode(line, version).0.trim().to_string();
+            }
+            Ok(VcardPropKind::Email) if email.is_empty() => {
+                email = EMAIL::decode(line, version).0.trim().to_string();
+            }
+            Ok(VcardPropKind::Tel) if phone.is_empty() => {
+                phone = TEL::decode(line, version).0.trim().to_string();
+            }
+            Ok(VcardPropKind::Uid) if uid.is_empty() => {
+                uid = UID::decode(line, version).0.trim().to_string();
+            }
+            _ => {}
+        }
+
+        let skip = match VcardPropKind::from_str(line.name.get()) {
+            Ok(VcardPropKind::ProdId) | Ok(VcardPropKind::Rev) => true,
+            Ok(_) => false,
+            Err(_) => line.name.get().eq_ignore_ascii_case("VERSION"),
+        };
+        if !skip {
+            let raw = line.to_string();
+            lines.push(raw.trim_end().to_string());
+        }
+    }
+
+    lines.sort();
+    let hash = fnv1a(lines.join("\n").as_bytes());
+
+    Ok(json!({
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "uid": uid,
+        "hash": format!("{hash:016x}"),
+    }))
+}
+
+/// FNV-1a 64: a stable hash across runs and releases, unlike the std
+/// hasher (stored hashes compare against freshly computed ones).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Longest raw property line the provider backends stash server-side.
+/// Longer lines (base64 PHOTO blobs, essentially) stay only in the
+/// local document of record instead of risking the whole write against
+/// undocumented provider size limits.
+pub(crate) const MAX_STASH_LINE: usize = 8 * 1024;
+
+/// Splices raw property lines (logical lines without their ending)
+/// into a serialized vCard, right before its END:VCARD line.
+pub(crate) fn splice_props(vcard: String, lines: &[String]) -> String {
+    if lines.is_empty() {
+        return vcard;
+    }
+
+    let mut extra = lines.join("\r\n");
+    extra.push_str("\r\n");
+
+    match vcard.rfind("END:VCARD") {
+        Some(position) => {
+            let mut out = vcard;
+            out.insert_str(position, &extra);
+            out
+        }
+        None => vcard + &extra,
+    }
+}
+
+/// Escapes a text value for a minted property line (RFC 6350 3.4:
+/// backslash, comma, semicolon and newline).
+pub(crate) fn escape_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => out.push_str("\\\\"),
+            ',' => out.push_str("\\,"),
+            ';' => out.push_str("\\;"),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +607,32 @@ mod tests {
     fn card(props: &str) -> Value {
         let vcard = format!("BEGIN:VCARD\r\nVERSION:3.0\r\n{props}END:VCARD\r\n");
         project(&vcard).unwrap()
+    }
+
+    #[test]
+    fn index_extracts_display_fields() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Jane Doe\r\n\
+            EMAIL:jane@doe.org\r\nEMAIL:b@x.org\r\nTEL;TYPE=cell:+331111\r\nEND:VCARD\r\n";
+
+        let index = index(vcard).unwrap();
+        assert_eq!(index["name"], "Jane Doe");
+        assert_eq!(index["email"], "jane@doe.org");
+        assert_eq!(index["phone"], "+331111");
+        assert_eq!(index["uid"], "abc");
+        assert!(!index["hash"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn index_hash_ignores_order_and_volatile_props() {
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Jane\r\n\
+            TEL:+331111\r\nREV:20260707T000000Z\r\nEND:VCARD\r\n";
+        let b = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL:+331111\r\nFN:Jane\r\n\
+            UID:abc\r\nPRODID:-//other//tool//EN\r\nEND:VCARD\r\n";
+        let c = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Janet\r\n\
+            TEL:+331111\r\nEND:VCARD\r\n";
+
+        assert_eq!(index(a).unwrap()["hash"], index(b).unwrap()["hash"]);
+        assert_ne!(index(a).unwrap()["hash"], index(c).unwrap()["hash"]);
     }
 
     #[test]

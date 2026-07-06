@@ -16,8 +16,8 @@ use core::str::FromStr;
 use std::borrow::Cow;
 
 use io_google_people::v1::rest::people::{
-    PeopleAddress, PeopleBiography, PeopleBirthday, PeopleContentType, PeopleDate,
-    PeopleEmailAddress, PeopleImClient, PeopleName, PeopleNickname, PeopleOccupation,
+    PeopleAddress, PeopleBiography, PeopleBirthday, PeopleClientData, PeopleContentType,
+    PeopleDate, PeopleEmailAddress, PeopleImClient, PeopleName, PeopleNickname, PeopleOccupation,
     PeopleOrganization, PeoplePerson, PeoplePersonField, PeoplePhoneNumber, PeopleRelation,
     PeopleUrl,
 };
@@ -43,15 +43,19 @@ use vcard::{
     },
 };
 
-use crate::project::{full_date, text_prop};
+use crate::project::{MAX_STASH_LINE, escape_text, full_date, splice_props, text_prop};
 
 /// Person fields the projection manages: they are fully replaced by
 /// updates (fields absent from a masked body are cleared), while every
 /// other People field stays out of the mask and survives untouched.
+/// clientData is managed too: it carries the stashed vCard remainder
+/// (but masked writes must merge foreign entries first, see the
+/// client's update).
 pub const MANAGED_FIELDS: &[PeoplePersonField] = &[
     PeoplePersonField::Addresses,
     PeoplePersonField::Biographies,
     PeoplePersonField::Birthdays,
+    PeoplePersonField::ClientData,
     PeoplePersonField::EmailAddresses,
     PeoplePersonField::ImClients,
     PeoplePersonField::Names,
@@ -61,6 +65,46 @@ pub const MANAGED_FIELDS: &[PeoplePersonField] = &[
     PeoplePersonField::PhoneNumbers,
     PeoplePersonField::Relations,
     PeoplePersonField::Urls,
+];
+
+/// Person fields the projection reads: the managed set plus the
+/// Google-scoped fields minted as X-GOOGLE-* properties, read-only
+/// projections that stay out of every update mask.
+pub const READ_FIELDS: &[PeoplePersonField] = &[
+    PeoplePersonField::Addresses,
+    PeoplePersonField::Biographies,
+    PeoplePersonField::Birthdays,
+    PeoplePersonField::ClientData,
+    PeoplePersonField::EmailAddresses,
+    PeoplePersonField::ExternalIds,
+    PeoplePersonField::ImClients,
+    PeoplePersonField::Locations,
+    PeoplePersonField::Memberships,
+    PeoplePersonField::MiscKeywords,
+    PeoplePersonField::Names,
+    PeoplePersonField::Nicknames,
+    PeoplePersonField::Occupations,
+    PeoplePersonField::Organizations,
+    PeoplePersonField::PhoneNumbers,
+    PeoplePersonField::Relations,
+    PeoplePersonField::Urls,
+];
+
+/// clientData key of the entry stashing the vCard remainder: every
+/// property the projection neither manages nor mints, preserved
+/// verbatim through Google (docs/custom-data.md).
+pub const CLIENT_DATA_KEY: &str = "cardamum.vcard";
+
+/// Property names minted by [`to_vcard`] from the Google-scoped person
+/// fields; [`to_person`] consumes (drops) them, the server value being
+/// authoritative. X-GOOGLE-MEMBERSHIP is no longer minted (memberships
+/// became structural addressbook data) but stays consumed, so lines
+/// from earlier projections are dropped rather than stashed.
+const MINTED_PROPS: &[&str] = &[
+    "X-GOOGLE-MEMBERSHIP",
+    "X-GOOGLE-EXTERNAL-ID",
+    "X-GOOGLE-MISC-KEYWORD",
+    "X-GOOGLE-LOCATION",
 ];
 
 /// The bare person id behind a `people/<id>` resource name, the
@@ -230,15 +274,25 @@ pub fn to_vcard(person: &PeoplePerson) -> String {
         }
     }
 
-    String::from_utf8_lossy(&card.to_bytes()).into_owned()
+    let vcard = String::from_utf8_lossy(&card.to_bytes()).into_owned();
+
+    let mut extra = minted_props(person);
+    extra.extend(stash_lines(person));
+    splice_props(vcard, &extra)
 }
 
 /// Projects a vCard onto an io-google-people person, the full-state
 /// projection: every managed field carries the vCard's values (empty
 /// when the vCard drops the property, which clears the masked field on
-/// update), while unmanaged People fields stay out of the body. The
-/// UID is not read back: the resource name addresses the person
-/// through the request path, filled by the caller.
+/// update), while unmanaged People fields stay out of the body. Every
+/// line that does not project (unknown and X-* properties, standard
+/// properties without a People slot, values past a single-instance
+/// slot, partial birthdays) is stashed verbatim into the cardamum
+/// clientData entry, so it survives on Google and restores on read.
+/// The UID is not read back (the resource name addresses the person
+/// through the request path, filled by the caller) and the minted
+/// X-GOOGLE-* properties are consumed, the server value being
+/// authoritative.
 pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
     let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
     let version = card.version();
@@ -247,31 +301,45 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
     let mut name = PeopleName::default();
     let mut org = PeopleOrganization::default();
     let mut notes = Vec::new();
+    let mut stash = Vec::new();
     let mut name_seen = false;
 
     for line in &card.props {
-        let Ok(kind) = VcardPropKind::from_str(line.name.get()) else {
-            continue;
-        };
-
-        match kind {
-            VcardPropKind::Fn => {
-                let value = FN::decode(line, version);
-                first(&mut name.unstructured_name, &value.0);
+        let consumed = match VcardPropKind::from_str(line.name.get()) {
+            // NOTE: the VERSION line is structural and the minted
+            // X-GOOGLE-* properties are read-only projections; neither
+            // belongs to the remainder.
+            Err(_) => {
+                let raw_name = line.name.get();
+                raw_name.eq_ignore_ascii_case("VERSION")
+                    || MINTED_PROPS
+                        .iter()
+                        .any(|prop| raw_name.eq_ignore_ascii_case(prop))
             }
-            VcardPropKind::N => {
+            // NOTE: the UID is managed: the resource name addresses
+            // the person through the request path.
+            Ok(VcardPropKind::Uid) => true,
+            Ok(VcardPropKind::Fn) => {
+                let value = FN::decode(line, version);
+                set_first(&mut name.unstructured_name, &value.0)
+            }
+            Ok(VcardPropKind::N) => {
                 if !name_seen {
                     name_seen = true;
                     let n = N::decode(line, version);
-                    first(&mut name.family_name, n.family.join(" "));
-                    first(&mut name.given_name, n.given.join(" "));
-                    first(&mut name.middle_name, n.additional.join(" "));
-                    first(&mut name.honorific_prefix, n.prefixes.join(" "));
-                    first(&mut name.honorific_suffix, n.suffixes.join(" "));
+                    set_first(&mut name.family_name, n.family.join(" "));
+                    set_first(&mut name.given_name, n.given.join(" "));
+                    set_first(&mut name.middle_name, n.additional.join(" "));
+                    set_first(&mut name.honorific_prefix, n.prefixes.join(" "));
+                    set_first(&mut name.honorific_suffix, n.suffixes.join(" "));
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Nickname => {
+            Ok(VcardPropKind::Nickname) => {
                 let all = NICKNAME::decode(line, version);
+                let mut pushed = false;
                 for nick in &all.0 {
                     let nick = nick.trim();
                     if !nick.is_empty() {
@@ -279,10 +347,12 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                             value: Some(nick.to_string()),
                             ..Default::default()
                         });
+                        pushed = true;
                     }
                 }
+                pushed
             }
-            VcardPropKind::Email => {
+            Ok(VcardPropKind::Email) => {
                 let email = EMAIL::decode(line, version);
                 let address = email.0.trim();
                 if !address.is_empty() {
@@ -291,9 +361,12 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                         email_type: std_type_of(&type_values(line)),
                         ..Default::default()
                     });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Impp => {
+            Ok(VcardPropKind::Impp) => {
                 let impp = IMPP::decode(line, version);
                 let address = impp.0.trim();
                 if !address.is_empty() {
@@ -306,9 +379,12 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                         protocol,
                         ..Default::default()
                     });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Tel => {
+            Ok(VcardPropKind::Tel) => {
                 let tel = TEL::decode(line, version);
                 let number = tel.0.trim();
                 if !number.is_empty() {
@@ -317,9 +393,12 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                         phone_type: tel_type_of(&type_values(line)),
                         ..Default::default()
                     });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Adr => {
+            Ok(VcardPropKind::Adr) => {
                 let adr = ADR::decode(line, version);
 
                 let address = PeopleAddress {
@@ -353,35 +432,42 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                     && address.country.is_none();
                 if !empty {
                     person.addresses.push(address);
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Org => {
+            Ok(VcardPropKind::Org) => {
                 if org.name.is_none() && org.department.is_none() {
                     let value = ORG::decode(line, version);
                     let mut components = value.0.iter().map(|component| component.as_ref());
                     let company = components.next().unwrap_or_default();
                     let rest = components.collect::<Vec<_>>().join(" ");
-                    first(&mut org.name, company);
-                    first(&mut org.department, rest);
+                    set_first(&mut org.name, company);
+                    set_first(&mut org.department, rest);
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Title => {
+            Ok(VcardPropKind::Title) => {
                 let value = TITLE::decode(line, version);
-                first(&mut org.title, &value.0);
+                set_first(&mut org.title, &value.0)
             }
-            VcardPropKind::Role => {
-                if person.occupations.is_empty() {
-                    let role = ROLE::decode(line, version);
-                    let role = role.0.trim();
-                    if !role.is_empty() {
-                        person.occupations.push(PeopleOccupation {
-                            value: Some(role.to_string()),
-                            ..Default::default()
-                        });
-                    }
+            Ok(VcardPropKind::Role) => {
+                let role = ROLE::decode(line, version);
+                let role = role.0.trim();
+                if person.occupations.is_empty() && !role.is_empty() {
+                    person.occupations.push(PeopleOccupation {
+                        value: Some(role.to_string()),
+                        ..Default::default()
+                    });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Url => {
+            Ok(VcardPropKind::Url) => {
                 let url = URL::decode(line, version);
                 let page = url.0.trim();
                 if !page.is_empty() {
@@ -389,34 +475,45 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                         value: Some(page.to_string()),
                         ..Default::default()
                     });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Bday => {
-                if person.birthdays.is_empty() {
-                    if let Some(date) = full_date(&line.raw_value_str()) {
-                        let mut parts = date.split('-').map(|part| part.parse().ok());
-                        person.birthdays.push(PeopleBirthday {
-                            date: Some(PeopleDate {
-                                year: parts.next().flatten(),
-                                month: parts.next().flatten(),
-                                day: parts.next().flatten(),
-                            }),
-                            ..Default::default()
-                        });
-                    }
+            Ok(VcardPropKind::Bday) => {
+                // NOTE: a partial (year-less) birthday has no People
+                // date it round-trips through; it lands in the stash.
+                if person.birthdays.is_empty()
+                    && let Some(date) = full_date(&line.raw_value_str())
+                {
+                    let mut parts = date.split('-').map(|part| part.parse().ok());
+                    person.birthdays.push(PeopleBirthday {
+                        date: Some(PeopleDate {
+                            year: parts.next().flatten(),
+                            month: parts.next().flatten(),
+                            day: parts.next().flatten(),
+                        }),
+                        ..Default::default()
+                    });
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Note => {
+            Ok(VcardPropKind::Note) => {
                 let note = NOTE::decode(line, version);
                 let note = note.0.trim();
                 if !note.is_empty() {
                     notes.push(note.to_string());
+                    true
+                } else {
+                    false
                 }
             }
-            VcardPropKind::Related => {
-                // NOTE: only free-form names (VALUE=text) project; a
-                // URI RELATED points at another card and has no People
-                // slot.
+            Ok(VcardPropKind::Related) => {
+                // NOTE: only free-form spouse and child names
+                // (VALUE=text) project; other types and URI RELATED
+                // lines land in the stash.
                 let text = line.params.iter().any(|param| {
                     param.name.get().eq_ignore_ascii_case("VALUE")
                         && param
@@ -424,30 +521,49 @@ pub fn to_person(vcard: &str) -> Result<PeoplePerson, String> {
                             .iter()
                             .any(|value| value.get().eq_ignore_ascii_case("text"))
                 });
-                if text {
-                    let related = RELATED::decode(line, version);
-                    let related = related.0.trim();
-                    if !related.is_empty() {
-                        let types = type_values(line);
-                        let relation_type = if types.iter().any(|t| t == "spouse") {
-                            Some("spouse")
-                        } else if types.iter().any(|t| t == "child") {
-                            Some("child")
-                        } else {
-                            None
-                        };
-                        if let Some(relation_type) = relation_type {
-                            person.relations.push(PeopleRelation {
-                                person: Some(related.to_string()),
-                                relation_type: Some(relation_type.to_string()),
-                                ..Default::default()
-                            });
-                        }
-                    }
+                let related = RELATED::decode(line, version);
+                let related = related.0.trim();
+                let types = type_values(line);
+                let relation_type = if types.iter().any(|t| t == "spouse") {
+                    Some("spouse")
+                } else if types.iter().any(|t| t == "child") {
+                    Some("child")
+                } else {
+                    None
+                };
+
+                if let Some(relation_type) = relation_type
+                    && text
+                    && !related.is_empty()
+                {
+                    person.relations.push(PeopleRelation {
+                        person: Some(related.to_string()),
+                        relation_type: Some(relation_type.to_string()),
+                        ..Default::default()
+                    });
+                    true
+                } else {
+                    false
                 }
             }
-            _ => {}
+            Ok(_) => false,
+        };
+
+        if !consumed {
+            let raw = line.to_string();
+            let raw = raw.trim_end().to_string();
+            if raw.len() <= MAX_STASH_LINE {
+                stash.push(raw);
+            }
         }
+    }
+
+    if !stash.is_empty() {
+        person.client_data = vec![PeopleClientData {
+            key: Some(CLIENT_DATA_KEY.to_string()),
+            value: Some(stash.join("\n")),
+            ..Default::default()
+        }];
     }
 
     let empty = name.unstructured_name.is_none()
@@ -494,6 +610,7 @@ pub fn changed_fields(person: &PeoplePerson, base: &PeoplePerson) -> Vec<PeopleP
         addresses => Addresses,
         biographies => Biographies,
         birthdays => Birthdays,
+        client_data => ClientData,
         email_addresses => EmailAddresses,
         im_clients => ImClients,
         names => Names,
@@ -647,12 +764,86 @@ fn option_component(field: &Option<String>) -> Vec<Cow<'static, str>> {
     component(field)
 }
 
-/// Fills a single-instance People field, first non-empty value wins.
-fn first(slot: &mut Option<String>, value: impl AsRef<str>) {
+/// Fills a single-instance People field, first non-empty value wins;
+/// true when this value took the slot.
+fn set_first(slot: &mut Option<String>, value: impl AsRef<str>) -> bool {
     let value = value.as_ref().trim();
     if slot.is_none() && !value.is_empty() {
         *slot = Some(value.to_string());
+        true
+    } else {
+        false
     }
+}
+
+/// X-GOOGLE-* lines minted from the Google-scoped person fields the
+/// projection exposes read-only: external ids, miscellaneous keywords
+/// and locations mean nothing outside the account they came from, so
+/// they ride the vCard as vendor properties (docs/custom-data.md) and
+/// are consumed on the way back. Group memberships are NOT minted:
+/// they are the card's addressbook memberships (docs/merged-view.md),
+/// surfaced structurally on the JNI card instead.
+fn minted_props(person: &PeoplePerson) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for id in &person.external_ids {
+        if let Some(value) = opt(&id.value) {
+            lines.push(typed_line("X-GOOGLE-EXTERNAL-ID", &id.id_type, value));
+        }
+    }
+
+    for keyword in &person.misc_keywords {
+        if let Some(value) = opt(&keyword.value) {
+            // NOTE: the serde wire name of the keyword type enum is the
+            // canonical People spelling (HOME, OUTLOOK_KEYWORD, ...).
+            let keyword_type = keyword
+                .keyword_type
+                .and_then(|t| serde_json::to_value(t).ok())
+                .and_then(|v| v.as_str().map(str::to_string));
+            lines.push(typed_line("X-GOOGLE-MISC-KEYWORD", &keyword_type, value));
+        }
+    }
+
+    for location in &person.locations {
+        if let Some(value) = opt(&location.value) {
+            lines.push(typed_line(
+                "X-GOOGLE-LOCATION",
+                &location.location_type,
+                value,
+            ));
+        }
+    }
+
+    lines
+}
+
+/// A minted line with an optional TYPE parameter, carried only when
+/// the type is a plain token a parameter value holds unquoted.
+fn typed_line(name: &str, r#type: &Option<String>, value: &str) -> String {
+    let value = escape_text(value);
+    let token = opt(r#type).filter(|t| {
+        t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    });
+
+    match token {
+        Some(token) => format!("{name};TYPE={token}:{value}"),
+        None => format!("{name}:{value}"),
+    }
+}
+
+/// The stashed vCard remainder lines behind the person's cardamum
+/// clientData entry.
+fn stash_lines(person: &PeoplePerson) -> Vec<String> {
+    person
+        .client_data
+        .iter()
+        .filter(|entry| entry.key.as_deref() == Some(CLIENT_DATA_KEY))
+        .filter_map(|entry| entry.value.as_deref())
+        .flat_map(|value| value.split('\n'))
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The structured-value components joined into one People field, None
@@ -908,5 +1099,88 @@ mod tests {
     fn round_trip() {
         let person = full_person();
         assert_eq!(to_person(&to_vcard(&person)).unwrap(), person);
+    }
+
+    #[test]
+    fn stash_preserves_unprojected_props() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nX-FOO;TYPE=bar:baz\r\n\
+            GENDER:F\r\nBDAY:--0412\r\nEND:VCARD\r\n";
+
+        let person = to_person(vcard).unwrap();
+        assert!(person.birthdays.is_empty());
+
+        let stash = &person.client_data[0];
+        assert_eq!(stash.key.as_deref(), Some(CLIENT_DATA_KEY));
+        assert_eq!(
+            stash.value.as_deref(),
+            Some("X-FOO;TYPE=bar:baz\nGENDER:F\nBDAY:--0412")
+        );
+
+        let restored = to_vcard(&person);
+        assert!(restored.contains("X-FOO;TYPE=bar:baz\r\n"));
+        assert!(restored.contains("GENDER:F\r\n"));
+        assert!(restored.contains("BDAY:--0412\r\n"));
+        assert!(restored.ends_with("END:VCARD\r\n"));
+
+        // The restored document projects back to the same person.
+        assert_eq!(to_person(&restored).unwrap(), person);
+    }
+
+    #[test]
+    fn minted_props_project_and_consume() {
+        use io_google_people::v1::rest::people::{
+            PeopleContactGroupMembership, PeopleExternalId, PeopleMembership,
+        };
+
+        let mut person = full_person();
+        person.memberships = vec![PeopleMembership {
+            contact_group_membership: Some(PeopleContactGroupMembership {
+                contact_group_resource_name: Some("contactGroups/myContacts".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        person.external_ids = vec![PeopleExternalId {
+            value: Some("42".into()),
+            id_type: Some("account".into()),
+            ..Default::default()
+        }];
+
+        // Memberships are structural addressbook data, not a minted
+        // vendor property.
+        let vcard = to_vcard(&person);
+        assert!(!vcard.contains("X-GOOGLE-MEMBERSHIP"));
+        assert!(vcard.contains("X-GOOGLE-EXTERNAL-ID;TYPE=account:42\r\n"));
+
+        // Consumed on the way back: the server value is authoritative,
+        // so the minted lines neither project nor reach the stash; a
+        // legacy X-GOOGLE-MEMBERSHIP line is dropped the same way.
+        let legacy = vcard.replace(
+            "END:VCARD",
+            "X-GOOGLE-MEMBERSHIP:contactGroups/myContacts\r\nEND:VCARD",
+        );
+        let back = to_person(&legacy).unwrap();
+        assert!(back.memberships.is_empty());
+        assert!(back.external_ids.is_empty());
+        assert!(back.client_data.is_empty());
+    }
+
+    #[test]
+    fn changed_fields_tracks_the_stash() {
+        let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nEND:VCARD\r\n";
+        let edited = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\nX-FOO:bar\r\nEND:VCARD\r\n";
+
+        let fields = changed_fields(&to_person(edited).unwrap(), &to_person(base).unwrap());
+        assert_eq!(fields, vec![PeoplePersonField::ClientData]);
+    }
+
+    #[test]
+    fn stash_skips_oversized_lines() {
+        let photo = format!("PHOTO:data:image/jpeg;base64,{}", "A".repeat(10_000));
+        let vcard =
+            format!("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:X\r\n{photo}\r\nX-FOO:bar\r\nEND:VCARD\r\n");
+
+        let person = to_person(&vcard).unwrap();
+        assert_eq!(person.client_data[0].value.as_deref(), Some("X-FOO:bar"));
     }
 }

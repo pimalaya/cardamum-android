@@ -1,0 +1,39 @@
+# Merged view pivot
+
+The account > addressbook > contacts hierarchy is too rigid: seeing another addressbook means navigating out and back in, moving a card between accounts has no home, and the app opens on a list of containers instead of the contacts themselves. The pivot turns the app contact-first: one merged list across every subscribed account and addressbook, the containers demoted to a filter and a management screen. The Android Contacts app is the precedent, with the one design decision that matters borrowed from it: **merged is a view, not a storage model**. The native app never merges storage; every raw contact belongs to exactly one account and the merged contact is an aggregation layer on top. Cardamum does the same.
+
+## Model
+
+Three concepts, replacing "a card belongs to multiple addressbooks and accounts":
+
+- **Replica**: one server resource, the unit of storage, staging and sync: (account, card id, vCard, etag, staged flags). Every card row is bound to exactly one remote; even an offline-created card is born assigned to its target account and book, a replica whose server resource does not exist yet.
+- **Membership**: the addressbooks a replica belongs to *within its account*. JMAP (`addressBookIds`) and Google (group labels) are natively m:n; CardDAV and Graph constrain the set to one collection. Membership is a field on the replica, never a duplication of it.
+- **Link**: the cross-account identity tying replicas into one logical contact. Keyed by the vCard UID (copying a card to another account preserves it), extended by manual link/unlink later. Links exist only in the view layer: nothing on any server and nothing in sync depends on them.
+
+The invariant: **storage and sync speak only in replicas (one card row, one remote resource); the logical multi-account contact exists only as a link between replicas at display time.** Sync stays the per-account, per-book loop it is today, each replica reconciling under its own etag/guard; there is no multi-master anything. Divergence between linked replicas is a display state, not a sync conflict: resolution is an explicit user action that stages ordinary per-replica edits.
+
+## Stages
+
+### Stage 1: contact-first home (implemented)
+
+The app opens on the merged contacts list across every subscribed addressbook of every account. UID-equal cards collapse into one row (flagged with the account count); tapping a multi-replica row asks which account's copy to open, since editing stays strictly per-replica (the vCard-is-the-model principle: one document at a time, the source tab showing exactly what is patched). The old home becomes the Addressbooks management screen behind an app-bar icon: same account groups, sync checkboxes, account add/delete; tapping a book there opens the contacts list filtered to it (the back arrow returns to the merged root, and only shows when filtered). Adding a contact from the merged root asks for the target addressbook when more than one is subscribed. Multi-select delete removes every replica of the selected rows. No schema change: cards stay keyed by addressbook; UID grouping is computed at render time.
+
+### Stage 2: replica storage (implemented)
+
+CardStore (schema v6) keys cards by account plus a backend-unique key, with the addressbooks a replica belongs to in a separate membership table: a JMAP card in two books or a Google card under several labels is one row instead of per-book duplicates. On the account-level backends the key is the bare server id; on CardDAV and Graph resource ids are only unique per collection, so the collection URL is part of the key (and the membership is always exactly one). Sync now loops accounts: JMAP and Google fetch every card once (JMAP `ContactCard/query` unfiltered with `addressBookIds`, Google `connections.list` with group memberships), map the memberships onto the subscribed addressbooks and skip cards with none; CardDAV and Graph keep their per-collection cycle. Google contact groups are surfaced as addressbooks (myContacts as Contacts, then the user groups), replacing the single synthetic Contacts book, and X-GOOGLE-MEMBERSHIP is no longer minted (memberships are structural now; legacy lines are still consumed). Memberships are read-only in this stage: fetches refresh them as server truth, pushes never touch them, and a Google create lands in myContacts regardless of the chosen book (group assignment needs the stage 3 membership operations).
+
+### Stage 3: cross-account copy and linking (implemented, apart from match suggestions)
+
+The card editor gained an addressbooks dialog: checked means the contact exists there, through the open replica's memberships or a UID-linked replica elsewhere. Checking a book adds the contact: on the replica's own account-level backend a staged membership (pushed as one JMAP `addressBookIds` patch, or Google `contactGroups.members.modify` calls per group), anywhere else a copied replica born with the same UID, so the merged view links it instantly. Unchecking removes: a staged membership removal when the replica keeps other books, a staged delete of the replica otherwise; the book the editor was opened from is locked. Membership changes stage in the store (a state column on the membership table: synced, added, removed; opposite stagings cancel out) and push after the cards, so a created replica's staged memberships ride its server-assigned id; this also closes the stage 2 gap where a Google copy could only land in myContacts.
+
+Manual link and unlink live in the view layer as two local tables, per the model's rule that links exist only at display time. Selecting several rows offers a Link action joining their group keys into one cluster; the chooser dialog of a merged row offers Unlink, which drops the cluster and detaches every replica (a detached replica never groups automatically until linked again). The automatic key remains the vCard UID; clusters and detachments are exceptions layered on top, nothing on any server or in sync depends on them, and a replica whose storage key is renamed by a create push simply falls back to UID grouping. Still to come in this stage: the conservative, always-confirmed match suggestions (exact email/phone).
+
+### Stage 4: divergence and defaults (implemented, apart from keep-in-sync)
+
+Linked replicas are compared by content: the bridge indexes every card at write time (display fields plus a normalized content hash, FNV-1a over the sorted logical property lines with VERSION/PRODID/REV excluded, so property order and revision stamps never read as divergence), the store persists the index as columns, and a merged row whose replicas' hashes differ is flagged "diverged". Resolution is pick-a-source: the chooser dialog of a diverged row offers Resolve, the user picks the replica whose document wins, and that vCard is staged as an ordinary edit onto every other replica, each pushed through its own account's normal path (etag guards and 412 handling included) — no merge, no special sync mode. Picking a source across manually-linked, UID-different replicas rewrites the losers' UIDs to the source's, which also makes the link automatic from then on. The default save addressbook (long-press a book on the management screen; flagged "default" there) replaces the per-creation prompt while it stays subscribed. The write-time index also removed the last vCard parsing from Java: the list renders from stored columns only. Still to come, optionally: a per-link "keep in sync" toggle auto-fanning-out edits as staged per-replica writes; sugar over the same mechanics, never a new sync mode.
+
+## Non-goals
+
+- **Multi-master sync**: a logical contact never pushes anywhere; only replicas do.
+- **Merged editing**: the edit form always operates on one replica's vCard document.
+- **Automatic aggregation**: no name-based heuristics; UID equality and explicit user actions only (Android's auto-aggregation false positives are the cautionary tale).

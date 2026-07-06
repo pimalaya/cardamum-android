@@ -78,6 +78,21 @@
     <string name="sync_local_done">Contacts projected to this phone</string>
     <string name="contacts_add">Add</string>
     <string name="contacts_search">Search</string>
+    <string name="contact_accounts">In %1$d addressbooks</string>
+    <string name="contact_accounts_diverged">In %1$d addressbooks, diverged</string>
+    <string name="save_target_title">Add to addressbook</string>
+    <string name="manage_books_title">Addressbooks of this contact</string>
+    <string name="manage_books_locked">The open addressbook cannot be removed from here</string>
+    <string name="manage_books_done">Addressbooks updated; changes push on the next sync</string>
+    <string name="link_selected">Link selected contacts</string>
+    <string name="unlink">Unlink</string>
+    <string name="link_done">Contacts linked</string>
+    <string name="unlink_done">Contact unlinked; link it again from the selection</string>
+    <string name="resolve">Resolve</string>
+    <string name="resolve_title">Keep which version?</string>
+    <string name="resolve_done">Contact resolved; changes push on the next sync</string>
+    <string name="default_set">%1$s is now the default addressbook for new contacts</string>
+    <string name="default_marker">%1$s · default</string>
     <string name="empty_search_title">Empty result</string>
     <string name="empty_book_title">Empty addressbook</string>
 

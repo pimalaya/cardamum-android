@@ -50,6 +50,17 @@
             android:layout_height="1dp"
             android:layout_weight="1" />
 
+        <!-- Selection mode: link the selected rows into one contact. -->
+        <ImageButton
+            android:id="@+id/contacts_link"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/link_selected"
+            android:src="@drawable/ic_link"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
         <ImageButton
             android:id="@+id/contacts_delete"
             android:layout_width="@dimen/app_bar_icon"
@@ -59,6 +70,16 @@
             android:src="@drawable/ic_delete_bar"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
+
+        <!-- Opens the addressbooks management screen. -->
+        <ImageButton
+            android:id="@+id/contacts_books"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/subscriptions_title"
+            android:src="@drawable/ic_filter_list"
+            android:tint="?android:attr/textColorPrimary" />
 
         <!-- The sync icon gives way to a spinner while a sync runs. -->
         <FrameLayout
@@ -74,12 +95,14 @@
                 android:src="@drawable/ic_sync"
                 android:tint="?android:attr/textColorPrimary" />
 
-            <!-- Sized to match the sync glyph it replaces. -->
+            <!-- The small style's own size: the M3 sync glyph carries
+                 built-in margins, so a full 24dp spinner reads bigger
+                 than the icon it replaces. -->
             <ProgressBar
                 android:id="@+id/contacts_sync_progress"
                 style="?android:attr/progressBarStyleSmall"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:layout_gravity="center"
                 android:indeterminateTint="?android:attr/textColorPrimary"
                 android:visibility="gone" />

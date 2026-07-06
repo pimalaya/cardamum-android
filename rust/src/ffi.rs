@@ -17,7 +17,7 @@ use url::Url;
 use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
-    project::{apply, project},
+    project::{apply, index, project},
     types::Credentials,
 };
 
@@ -682,10 +682,10 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapAddressb
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.listJmapCards`: lists the ContactCards of the JMAP
-/// AddressBook, each converted to a vCard. Returns a JSON array of
-/// `{id, uri, etag, vcard}` objects (ContactCard id as id and uri, a
-/// JSON hash as etag).
+/// `Native.listJmapCards`: lists the account's ContactCards across
+/// every JMAP AddressBook, each converted to a vCard. Returns a JSON
+/// array of `{id, uri, etag, vcard, books}` objects (ContactCard id as
+/// id and uri, a JSON hash as etag, the addressBookIds as books).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapCards<'local>(
     mut env: EnvUnowned<'local>,
@@ -694,13 +694,11 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapCards<'l
     session_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
-    book: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let session_url = read_string(env, &session_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
-        let book = read_string(env, &book);
         let credentials = Credentials {
             login: &login,
             password: &password,
@@ -708,13 +706,12 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapCards<'l
 
         let json = match parse_url(&session_url) {
             Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).list_jmap_cards(&url, &credentials, &book) {
-                    Ok(cards) => serde_json::to_string(&cards)
-                        .unwrap_or_else(|err| error_json(&err.to_string())),
-                    Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).list_jmap_cards(&url, &credentials) {
+                Ok(cards) => {
+                    serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
                 }
-            }
+                Err(err) => error_json(&err),
+            },
         };
 
         Ok(env.new_string(json)?.into())
@@ -1061,6 +1058,117 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteGoogleCard
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.updateJmapCardBooks`: adds and removes AddressBook
+/// memberships of the ContactCard at the given id (JSON string arrays
+/// of book ids). Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateJmapCardBooks<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    session_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    id: JString<'local>,
+    add: JString<'local>,
+    remove: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let session_url = read_string(env, &session_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let id = read_string(env, &id);
+        let add = read_string(env, &add);
+        let remove = read_string(env, &remove);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match (
+            parse_url(&session_url),
+            parse_books(&add),
+            parse_books(&remove),
+        ) {
+            (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => error_json(&err),
+            (Ok(url), Ok(add), Ok(remove)) => {
+                match Client::new(env, &transport).update_jmap_card_books(
+                    &url,
+                    &credentials,
+                    &id,
+                    &add,
+                    &remove,
+                ) {
+                    Ok(()) => "{}".to_string(),
+                    Err(err) => error_json(&err),
+                }
+            }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.updateGoogleCardBooks`: adds and removes the People contact
+/// at the given id from contact groups (JSON string arrays of group
+/// ids). Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGoogleCardBooks<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+    add: JString<'local>,
+    remove: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+        let add = read_string(env, &add);
+        let remove = read_string(env, &remove);
+
+        let json = match (parse_books(&add), parse_books(&remove)) {
+            (Err(err), _) | (_, Err(err)) => error_json(&err),
+            (Ok(add), Ok(remove)) => {
+                match Client::new(env, &transport)
+                    .update_google_card_books(&token, &id, &add, &remove)
+                {
+                    Ok(()) => "{}".to_string(),
+                    Err(err) => error_json(&err),
+                }
+            }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.indexCard`: indexes a vCard for the store (display name,
+/// first email and phone, UID, normalized content hash); pure
+/// computation, no transport. Returns
+/// `{"name", "email", "phone", "uid", "hash"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_indexCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+
+        let json = match index(&vcard) {
+            Ok(index) => index.to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// `Native.projectCard`: projects a vCard onto the neutral field model
 /// the app maps to ContactsContract rows (docs/contacts-mapping.md).
 /// Returns the model JSON.
@@ -1138,6 +1246,14 @@ fn read_string(env: &Env, value: &JString) -> String {
 
 fn parse_url(raw: &str) -> Result<Url, String> {
     Url::parse(raw).map_err(|err| format!("Invalid URL `{raw}`: {err}"))
+}
+
+/// Parses a JSON string array of book ids (empty or null means none).
+fn parse_books(raw: &str) -> Result<Vec<String>, String> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(raw).map_err(|err| format!("Invalid book id list `{raw}`: {err}"))
 }
 
 fn etag_json(etag: Option<String>) -> String {

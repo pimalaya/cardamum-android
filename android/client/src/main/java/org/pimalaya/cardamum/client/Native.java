@@ -138,6 +138,13 @@ final class Native {
             String etag);
 
     /**
+     * Indexes a vCard for the store (display name, first email and
+     * phone, UID, normalized content hash); pure computation, no
+     * transport. Returns {@code {name, email, phone, uid, hash}}.
+     */
+    static native String indexCard(String vcard);
+
+    /**
      * Projects a vCard onto the neutral field model the app maps to
      * ContactsContract rows; pure computation, no transport.
      */
@@ -215,12 +222,13 @@ final class Native {
             Transport transport, String sessionUrl, String login, String password);
 
     /**
-     * Lists the ContactCards of the JMAP AddressBook, each converted
-     * to a vCard, as a JSON array of {@code {id, uri, etag, vcard}}
-     * (ContactCard id as id and uri, a JSON hash as etag).
+     * Lists the account's ContactCards across every JMAP AddressBook,
+     * each converted to a vCard, as a JSON array of {@code {id, uri,
+     * etag, vcard, books}} (ContactCard id as id and uri, a JSON hash
+     * as etag, the m:n addressBookIds as books).
      */
     static native String listJmapCards(
-            Transport transport, String sessionUrl, String login, String password, String book);
+            Transport transport, String sessionUrl, String login, String password);
 
     /**
      * Creates the vCard as a ContactCard in the JMAP AddressBook; the
@@ -262,18 +270,33 @@ final class Native {
             Transport transport, String sessionUrl, String login, String password, String id);
 
     /**
-     * Lists the Google account's contacts as one Contacts addressbook
-     * (the People API has no folders), after a one-person listing
-     * validated the token. Returns a JSON array whose collection URL is
-     * empty: the caller composes it, since only it knows the account it
-     * belongs to.
+     * Adds and removes AddressBook memberships of the ContactCard at
+     * the given id, as JSON string arrays of book ids (one m:n
+     * addressBookIds patch); returns {@code {}}.
+     */
+    static native String updateJmapCardBooks(
+            Transport transport,
+            String sessionUrl,
+            String login,
+            String password,
+            String id,
+            String add,
+            String remove);
+
+    /**
+     * Lists the Google account's contact groups as addressbooks (the
+     * myContacts system group first, as Contacts, then the user's own
+     * groups). Returns a JSON array whose collection URLs are empty:
+     * the caller composes them, since only it knows the account they
+     * belong to.
      */
     static native String listGoogleAddressbooks(Transport transport, String token);
 
     /**
      * Lists the account's People contacts, each projected onto a vCard,
-     * as a JSON array of {@code {id, uri, etag, vcard}} (person id as
-     * id and uri, person etag as etag).
+     * as a JSON array of {@code {id, uri, etag, vcard, books}} (person
+     * id as id and uri, person etag as etag, the m:n contact group
+     * memberships as books).
      */
     static native String listGoogleCards(Transport transport, String token);
 
@@ -307,4 +330,13 @@ final class Native {
 
     /** Deletes the People contact at the given id; returns {@code {}}. */
     static native String deleteGoogleCard(Transport transport, String token, String id);
+
+    /**
+     * Adds and removes the People contact at the given id from contact
+     * groups, as JSON string arrays of group ids (one members:modify
+     * call per group; adds only reach user groups, removing the last
+     * group is rejected server-side); returns {@code {}}.
+     */
+    static native String updateGoogleCardBooks(
+            Transport transport, String token, String id, String add, String remove);
 }

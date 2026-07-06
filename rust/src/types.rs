@@ -37,4 +37,11 @@ pub struct Card {
     pub etag: Option<String>,
     /// Raw vCard text.
     pub vcard: String,
+    /// Ids of the addressbooks the card is a member of, on the
+    /// backends whose cards are account-level with m:n memberships
+    /// (JMAP AddressBook ids, Google contact group ids). Empty on the
+    /// backends whose cards live in the one collection they were
+    /// listed from (CardDAV, Graph).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub books: Vec<String>,
 }

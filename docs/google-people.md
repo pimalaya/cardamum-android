@@ -37,7 +37,7 @@ Every property of RFC 6350 §6, plus the registered extensions worth a row. **Bo
 | `ORG` | **`organizations[0].name` + `.department`**: first component is the name, the rest joins into the department |
 | `MEMBER` | no slot (only meaningful on `KIND:group` vCards; People groups are not person fields) |
 | `RELATED` | **`relations[].person` + `.type`** for `spouse` and `child` (free-form `VALUE=text` names only); *candidate* to widen: People also speaks `mother`, `father`, `parent`, `brother`, `sister`, `friend`, `relative`, `domesticPartner`, `manager`, `assistant`, `partner` (vCard `sibling` and `kin` map lossily) |
-| `CATEGORIES` | *candidate*: `memberships[]` (contact group labels); needs contactGroups id-to-name resolution round trips, so it is not a pure projection |
+| `CATEGORIES` | no mapping: contact group memberships are the card's addressbook memberships ([merged-view.md](merged-view.md)), surfaced structurally rather than as vCard data |
 | `NOTE` | **`biographies[0].value`** with `contentType: TEXT_PLAIN`; multiple NOTEs join with newlines into one biography, HTML biographies (from Google profiles) are skipped on read rather than mangled |
 | `PRODID` | no slot |
 | `REV` | read-only *candidate*: `metadata.sources[].updateTime` (output-only) |
@@ -65,7 +65,7 @@ The reverse view: person fields the projection leaves unmanaged today, and where
 
 | Google People | Destination |
 |---|---|
-| `memberships` | `CATEGORIES` (portable), via group name resolution |
+| `memberships` | structural: contact groups are the card's addressbook memberships ([merged-view.md](merged-view.md)), not vCard data |
 | `photos`, `coverPhotos` | `PHOTO` (portable); upload via `updateContactPhoto` |
 | `events` | `ANNIVERSARY` for type `anniversary` (portable); the X-ABDATE convention for other dated events |
 | `genders` | `GENDER` (portable, lossy) |
@@ -102,4 +102,4 @@ The rule for projecting People-only data into the vCard, so a card moved to anot
 
 This is a deliberate exception to the "never mint X-* properties" rule of [contacts-mapping.md](contacts-mapping.md): that rule targets phone-side user data, where competing client spellings breed duplicates. Here the minting side is a backend projection with a fixed, documented vocabulary, and the data has no standard slot by definition. The policy addendum belongs in contacts-mapping.md when this lands.
 
-None of the two sections above is implemented yet; today X-* properties written to a Google account stay in the store's document of record but do not reach Google, and Google-scoped fields survive server-side without appearing in the vCard.
+Both sections above are implemented; the cross-backend behavior (shared with Microsoft Graph) is specified in [custom-data.md](custom-data.md). The stash lands in a `clientData` entry under the key `cardamum.vcard`, stash writes merge foreign `clientData` entries under the etag guard, and external ids, misc keywords and locations ride the vCard as read-only X-GOOGLE-* properties (group memberships are structural addressbook memberships instead, per [merged-view.md](merged-view.md)). The portable graduations (the *candidate* rows of the mapping table) remain future work.

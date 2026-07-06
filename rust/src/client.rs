@@ -18,13 +18,20 @@ use std::{
 use io_google_people::{
     coroutine::{PeopleCoroutine, PeopleCoroutineState, PeopleYield},
     v1::{
-        rest::people::{
-            PeoplePerson, PeoplePersonField,
-            connections::list::{PeopleConnectionsList, PeopleConnectionsListParams},
-            create_contact::PeopleContactCreate,
-            delete_contact::PeopleContactDelete,
-            get::PeoplePersonGet,
-            update_contact::PeopleContactUpdate,
+        rest::{
+            contact_groups::{
+                PeopleContactGroupType,
+                list::{PeopleContactGroupsList, PeopleContactGroupsListParams},
+                members::modify::PeopleContactGroupMembersModify,
+            },
+            people::{
+                PeoplePerson, PeoplePersonField,
+                connections::list::{PeopleConnectionsList, PeopleConnectionsListParams},
+                create_contact::PeopleContactCreate,
+                delete_contact::PeopleContactDelete,
+                get::PeoplePersonGet,
+                update_contact::PeopleContactUpdate,
+            },
         },
         send::{PEOPLE_API_BASE, PeopleSendError, PeopleSendOutput},
     },
@@ -37,9 +44,7 @@ use io_jmap::{
     rfc8620::{JmapSession, coroutine::JmapRedirectYield, session_get::*},
     rfc9610::{
         address_book::{JmapAddressBook, get::*},
-        contact_card::{
-            JmapContactCard, JmapContactCardFilter, JmapContactCardPatch, get::*, query::*, set::*,
-        },
+        contact_card::{JmapContactCard, JmapContactCardPatch, get::*, query::*, set::*},
     },
 };
 use io_msgraph::{
@@ -376,6 +381,7 @@ impl<'a, 'local> Client<'a, 'local> {
             uri: uri.to_string(),
             etag: body.etag,
             vcard: String::from_utf8_lossy(&body.data).into_owned(),
+            books: Vec::new(),
         })
     }
 
@@ -480,8 +486,10 @@ impl<'a, 'local> Client<'a, 'local> {
         let auth = HttpAuthBearer::new(token);
         let folder = (!folder.is_empty()).then_some(folder);
 
+        let expand = graph_expand();
         let params = MsgraphContactsListParams {
             top: Some(100),
+            expand: Some(&expand),
             ..Default::default()
         };
         let coroutine = MsgraphContactsList::new(&auth, "me", folder, &params)
@@ -520,13 +528,22 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let coroutine = MsgraphContactCreate::new(&auth, "me", folder, &contact)
             .map_err(|err| err.to_string())?;
-        Ok(graph_card(self.run_msgraph(coroutine)?))
+        let mut created = self.run_msgraph(coroutine)?;
+
+        // NOTE: create and update responses cannot $expand, so the
+        // stash just sent is re-attached before projecting the
+        // returned card.
+        created.single_value_extended_properties =
+            msgraph::to_contact(vcard)?.single_value_extended_properties;
+        Ok(graph_card(created))
     }
 
     /// Reads the Graph contact `id`, projected onto a vCard document.
     pub fn read_graph_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
         let auth = HttpAuthBearer::new(token);
-        let coroutine = MsgraphContactGet::new(&auth, "me", id).map_err(|err| err.to_string())?;
+        let expand = graph_expand();
+        let coroutine = MsgraphContactGet::new(&auth, "me", id, Some(&expand))
+            .map_err(|err| err.to_string())?;
         Ok(graph_card(self.run_msgraph(coroutine)?))
     }
 
@@ -551,7 +568,14 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let coroutine =
             MsgraphContactUpdate::new(&auth, "me", id, &contact).map_err(|err| err.to_string())?;
-        Ok(graph_card(self.run_msgraph(coroutine)?))
+        let mut updated = self.run_msgraph(coroutine)?;
+
+        // NOTE: create and update responses cannot $expand, so the
+        // card's full stash (unchanged deltas skip it in the body) is
+        // re-attached before projecting the returned card.
+        updated.single_value_extended_properties =
+            msgraph::to_contact(vcard)?.single_value_extended_properties;
+        Ok(graph_card(updated))
     }
 
     /// Deletes the Graph contact `id`.
@@ -591,26 +615,20 @@ impl<'a, 'local> Client<'a, 'local> {
             .collect())
     }
 
-    /// Lists the ContactCards of the AddressBook `book_id`, each
+    /// Lists the account's ContactCards across every AddressBook, each
     /// converted to a vCard document; the ContactCard id is the
-    /// addressing key and a JSON hash the ETag.
+    /// addressing key, a JSON hash the ETag, and the addressBookIds
+    /// the card's books (natively m:n).
     pub fn list_jmap_cards(
         &mut self,
         session_url: &Url,
         credentials: &Credentials,
-        book_id: &str,
     ) -> Result<Vec<Card>, String> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
 
-        let opts = JmapContactCardQueryOptions {
-            filter: Some(JmapContactCardFilter {
-                in_address_book: Some(book_id.to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+        let opts = JmapContactCardQueryOptions::default();
         let coroutine =
             JmapContactCardQuery::new(&session, &auth, opts).map_err(|err| err.to_string())?;
         let out = self.run_jmap(&api_url, coroutine)?;
@@ -664,6 +682,7 @@ impl<'a, 'local> Client<'a, 'local> {
             uri: id,
             etag: None,
             vcard: vcard.to_string(),
+            books: vec![book_id.to_string()],
         })
     }
 
@@ -731,6 +750,7 @@ impl<'a, 'local> Client<'a, 'local> {
             uri: id.to_string(),
             etag: None,
             vcard: vcard.to_string(),
+            books: Vec::new(),
         })
     }
 
@@ -760,31 +780,120 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    /// Adds and removes AddressBook memberships of the ContactCard
+    /// `id` in one patch (RFC 9610 addressBookIds is m:n: an added
+    /// book id patches to true, a removed one to null).
+    pub fn update_jmap_card_books(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let mut patch = BTreeMap::new();
+        for book in add {
+            patch.insert(
+                format!("addressBookIds/{book}"),
+                serde_json::Value::Bool(true),
+            );
+        }
+        for book in remove {
+            patch.insert(format!("addressBookIds/{book}"), serde_json::Value::Null);
+        }
+
+        let update = BTreeMap::from([(id.to_string(), JmapContactCardPatch(patch))]);
+        let args = JmapContactCardSetArgs {
+            update: Some(update),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardSet::new(&session, &auth, args).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        if let Some(err) = out.not_updated.into_values().next() {
+            return Err(format!("JMAP membership update rejected: {err:?}"));
+        }
+
+        Ok(())
+    }
+
     // ---- Google People operations -------------------------------------------
 
-    /// Lists the Google account's contacts as one addressbook (the
-    /// People API has no folders; contact groups are labels, not
-    /// containers). A one-person listing validates the token first, so
-    /// this doubles as the connection check during onboarding. The
-    /// collection URL is left empty: the caller composes it.
+    /// Lists the Google account's contact groups as addressbooks: the
+    /// myContacts system group first (as Contacts, the group every
+    /// contact belongs to), then the user's own groups. Memberships
+    /// are m:n labels, so one card can appear under several books.
+    /// Doubles as the connection check during onboarding. Collection
+    /// URLs are left empty: the caller composes them.
     pub fn list_google_addressbooks(&mut self, token: &str) -> Result<Vec<Addressbook>, String> {
         let auth = HttpAuthBearer::new(token);
 
-        let params = PeopleConnectionsListParams {
-            page_size: Some(1),
-            ..Default::default()
-        };
-        let coroutine = PeopleConnectionsList::new(&auth, &[PeoplePersonField::Names], &params)
-            .map_err(|err| err.to_string())?;
-        self.run_google(coroutine)?;
+        let mut books = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let params = PeopleContactGroupsListParams {
+                page_token: page_token.as_deref(),
+                ..Default::default()
+            };
+            let coroutine =
+                PeopleContactGroupsList::new(&auth, &[], &params).map_err(|err| err.to_string())?;
+            let page = self.run_google(coroutine)?;
 
-        Ok(vec![Addressbook {
-            id: String::new(),
-            name: "Contacts".to_string(),
-            url: String::new(),
-            description: None,
-            color: None,
-        }])
+            for group in page.contact_groups {
+                if group.metadata.as_ref().and_then(|m| m.deleted) == Some(true) {
+                    continue;
+                }
+
+                let id = group
+                    .resource_name
+                    .strip_prefix("contactGroups/")
+                    .unwrap_or(&group.resource_name)
+                    .to_string();
+                if id.is_empty() {
+                    continue;
+                }
+
+                // NOTE: of the system groups, only myContacts is a
+                // container (starred, blocked and friends-style
+                // legacy groups are not addressbooks).
+                if id == "myContacts" {
+                    books.insert(
+                        0,
+                        Addressbook {
+                            id,
+                            name: "Contacts".to_string(),
+                            url: String::new(),
+                            description: None,
+                            color: None,
+                        },
+                    );
+                } else if group.group_type == Some(PeopleContactGroupType::UserContactGroup) {
+                    let name = group
+                        .name
+                        .or(group.formatted_name)
+                        .unwrap_or_else(|| id.clone());
+                    books.push(Addressbook {
+                        id,
+                        name,
+                        url: String::new(),
+                        description: None,
+                        color: None,
+                    });
+                }
+            }
+
+            match page.next_page_token {
+                Some(next) => page_token = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(books)
     }
 
     /// Lists the account's contacts (`people.connections.list`), each
@@ -797,7 +906,7 @@ impl<'a, 'local> Client<'a, 'local> {
             page_size: Some(100),
             ..Default::default()
         };
-        let coroutine = PeopleConnectionsList::new(&auth, google::MANAGED_FIELDS, &params)
+        let coroutine = PeopleConnectionsList::new(&auth, google::READ_FIELDS, &params)
             .map_err(|err| err.to_string())?;
         let mut page = self.run_google(coroutine)?;
 
@@ -812,9 +921,8 @@ impl<'a, 'local> Client<'a, 'local> {
                         page_token: Some(&next),
                         ..Default::default()
                     };
-                    let coroutine =
-                        PeopleConnectionsList::new(&auth, google::MANAGED_FIELDS, &params)
-                            .map_err(|err| err.to_string())?;
+                    let coroutine = PeopleConnectionsList::new(&auth, google::READ_FIELDS, &params)
+                        .map_err(|err| err.to_string())?;
                     page = self.run_google(coroutine)?;
                 }
                 None => break,
@@ -830,7 +938,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let person = google::to_person(vcard)?;
         let auth = HttpAuthBearer::new(token);
 
-        let coroutine = PeopleContactCreate::new(&auth, &person, google::MANAGED_FIELDS, &[])
+        let coroutine = PeopleContactCreate::new(&auth, &person, google::READ_FIELDS, &[])
             .map_err(|err| err.to_string())?;
         Ok(google_card(self.run_google(coroutine)?))
     }
@@ -839,7 +947,7 @@ impl<'a, 'local> Client<'a, 'local> {
     pub fn read_google_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
         let auth = HttpAuthBearer::new(token);
         let coroutine =
-            PeoplePersonGet::new(&auth, &format!("people/{id}"), google::MANAGED_FIELDS, &[])
+            PeoplePersonGet::new(&auth, &format!("people/{id}"), google::READ_FIELDS, &[])
                 .map_err(|err| err.to_string())?;
 
         Ok(google_card(self.run_google(coroutine)?))
@@ -850,7 +958,9 @@ impl<'a, 'local> Client<'a, 'local> {
     /// shrinks to the fields the edit changed; without one every
     /// managed field is replaced. People requires the person's current
     /// etag on updates, so a missing one is fetched first; a stale one
-    /// fails the update (no silent last-write-wins).
+    /// fails the update (no silent last-write-wins). A stash write
+    /// (clientData in the mask) merges the server's foreign clientData
+    /// entries under the same guard.
     pub fn update_google_card(
         &mut self,
         token: &str,
@@ -864,15 +974,6 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let mut person = google::to_person(vcard)?;
         person.resource_name = resource_name.clone();
-        person.etag = match etag {
-            Some(etag) => etag.to_string(),
-            None => {
-                let coroutine =
-                    PeoplePersonGet::new(&auth, &resource_name, &[PeoplePersonField::Names], &[])
-                        .map_err(|err| err.to_string())?;
-                self.run_google(coroutine)?.etag
-            }
-        };
 
         let fields = match base_vcard {
             Some(base) => google::changed_fields(&person, &google::to_person(base)?),
@@ -883,14 +984,43 @@ impl<'a, 'local> Client<'a, 'local> {
             return Ok(Card {
                 id: id.to_string(),
                 uri: id.to_string(),
-                etag: Some(person.etag),
+                etag: etag.map(str::to_string),
                 vcard: vcard.to_string(),
+                books: Vec::new(),
             });
         }
 
-        let coroutine =
-            PeopleContactUpdate::new(&auth, &person, &fields, google::MANAGED_FIELDS, &[])
-                .map_err(|err| err.to_string())?;
+        // NOTE: a masked update replaces the whole clientData list and
+        // other clients may own entries there, so a stash write merges
+        // the server's foreign entries first (the etag guard turns a
+        // lost-update race into a clean rejection). The same fetch
+        // serves as etag source when the caller does not know it.
+        let needs_merge = fields.contains(&PeoplePersonField::ClientData);
+        if needs_merge || etag.is_none() {
+            let coroutine =
+                PeoplePersonGet::new(&auth, &resource_name, &[PeoplePersonField::ClientData], &[])
+                    .map_err(|err| err.to_string())?;
+            let current = self.run_google(coroutine)?;
+
+            if needs_merge {
+                let mut merged: Vec<_> = current
+                    .client_data
+                    .into_iter()
+                    .filter(|entry| entry.key.as_deref() != Some(google::CLIENT_DATA_KEY))
+                    .collect();
+                merged.append(&mut person.client_data);
+                person.client_data = merged;
+            }
+            person.etag = match etag {
+                Some(etag) => etag.to_string(),
+                None => current.etag,
+            };
+        } else {
+            person.etag = etag.unwrap_or_default().to_string();
+        }
+
+        let coroutine = PeopleContactUpdate::new(&auth, &person, &fields, google::READ_FIELDS, &[])
+            .map_err(|err| err.to_string())?;
         Ok(google_card(self.run_google(coroutine)?))
     }
 
@@ -900,6 +1030,65 @@ impl<'a, 'local> Client<'a, 'local> {
         let coroutine = PeopleContactDelete::new(&auth, &format!("people/{id}"))
             .map_err(|err| err.to_string())?;
         self.run_google(coroutine)?;
+
+        Ok(())
+    }
+
+    /// Adds and removes the People contact `id` from contact groups,
+    /// one members:modify call per group (the API only accepts adds
+    /// into user groups; removing a contact from its last group is
+    /// rejected server-side).
+    pub fn update_google_card_books(
+        &mut self,
+        token: &str,
+        id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), String> {
+        let auth = HttpAuthBearer::new(token);
+        let person = vec![format!("people/{id}")];
+
+        for group in add {
+            let coroutine = PeopleContactGroupMembersModify::new(
+                &auth,
+                &format!("contactGroups/{group}"),
+                &person,
+                &[],
+            )
+            .map_err(|err| err.to_string())?;
+            let out = self.run_google(coroutine)?;
+
+            if !out.not_found_resource_names.is_empty() {
+                return Err(format!(
+                    "Google group member add rejected: {:?} not found",
+                    out.not_found_resource_names
+                ));
+            }
+        }
+
+        for group in remove {
+            let coroutine = PeopleContactGroupMembersModify::new(
+                &auth,
+                &format!("contactGroups/{group}"),
+                &[],
+                &person,
+            )
+            .map_err(|err| err.to_string())?;
+            let out = self.run_google(coroutine)?;
+
+            if !out
+                .can_not_remove_last_contact_group_resource_names
+                .is_empty()
+            {
+                return Err("Google refused to remove the contact from its last group".to_string());
+            }
+            if !out.not_found_resource_names.is_empty() {
+                return Err(format!(
+                    "Google group member removal rejected: {:?} not found",
+                    out.not_found_resource_names
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -1298,28 +1487,53 @@ fn graph_card(contact: MsgraphContact) -> Card {
         uri: contact.id,
         etag: contact.change_key,
         vcard,
+        books: Vec::new(),
     }
 }
 
 /// io-google-people person to the JNI-facing card shape: the projected
 /// vCard document, the person id (resource name minus the `people/`
-/// prefix) as both display id and addressing key (uri), and the person
-/// etag as ETag.
+/// prefix) as both display id and addressing key (uri), the person
+/// etag as ETag, and the contact group memberships (minus their
+/// `contactGroups/` prefix) as the card's books.
 fn google_card(person: PeoplePerson) -> Card {
     let vcard = google::to_vcard(&person);
     let id = google::person_id(&person.resource_name).to_string();
+    let books = person
+        .memberships
+        .iter()
+        .filter_map(|membership| membership.contact_group_membership.as_ref())
+        .filter_map(|group| {
+            group
+                .contact_group_resource_name
+                .as_deref()
+                .map(|name| name.strip_prefix("contactGroups/").unwrap_or(name))
+                .or(group.contact_group_id.as_deref())
+        })
+        .map(str::to_string)
+        .collect();
 
     Card {
         uri: id.clone(),
         id,
         etag: (!person.etag.is_empty()).then_some(person.etag),
         vcard,
+        books,
     }
 }
 
 /// Parses an OData paging link served by Graph.
 fn parse_graph_url(raw: &str) -> Result<Url, String> {
     Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}"))
+}
+
+/// The `$expand` clause fetching the bridge's stash extended property
+/// along with the contact (Graph omits extended properties otherwise).
+fn graph_expand() -> String {
+    format!(
+        "singleValueExtendedProperties($filter=id eq '{}')",
+        msgraph::EXTENDED_PROP_ID
+    )
 }
 
 /// io-webdav card entry to the JNI-facing shape; vCards are text, so
@@ -1330,6 +1544,7 @@ fn into_card(entry: CardEntry) -> Card {
         id: entry.id,
         uri: entry.uri,
         etag: entry.etag,
+        books: Vec::new(),
     }
 }
 
