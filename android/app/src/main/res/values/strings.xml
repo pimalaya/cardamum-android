@@ -73,7 +73,7 @@
     <string name="sync_local">Local sync</string>
     <string name="sync_local_hint">Project contacts into this phone\'s Contacts application</string>
     <string name="sync_full">Full sync</string>
-    <string name="sync_full_hint">Local, then remote, then local again</string>
+    <string name="sync_full_hint">Local and remote together</string>
     <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
     <string name="sync_local_done">Contacts projected to this phone</string>
     <string name="contacts_add">Add</string>

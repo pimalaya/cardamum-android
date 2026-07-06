@@ -422,7 +422,10 @@ public class MainActivity extends Activity {
                                 getString(R.string.config_carddav),
                                 null,
                                 getString(R.string.config_oauth2_cardamum),
-                                this::startGoogleOauth));
+                                () ->
+                                        startGoogleOauth(
+                                                Oauth.GOOGLE_SCOPE,
+                                                Oauth.googleCardDavBase(pendingEmail))));
                 container.addView(
                         configItem(
                                 getString(R.string.config_carddav),
@@ -438,8 +441,22 @@ public class MainActivity extends Activity {
                         configItem(
                                 getString(R.string.config_google_api),
                                 null,
-                                getString(R.string.config_soon),
-                                null));
+                                getString(R.string.config_oauth2_cardamum),
+                                () ->
+                                        startGoogleOauth(
+                                                Oauth.GOOGLE_PEOPLE_SCOPE,
+                                                Oauth.googlePeopleBase(pendingEmail))));
+                container.addView(
+                        configItem(
+                                getString(R.string.config_google_api),
+                                null,
+                                getString(R.string.config_oauth2_custom),
+                                () ->
+                                        promptCustomOauth(
+                                                Oauth.googlePeopleBase(pendingEmail),
+                                                Oauth.GOOGLE_AUTH_ENDPOINT,
+                                                Oauth.GOOGLE_TOKEN_ENDPOINT,
+                                                Oauth.GOOGLE_PEOPLE_SCOPE)));
                 break;
             case MICROSOFT:
                 container.addView(
@@ -766,17 +783,18 @@ public class MainActivity extends Activity {
     // ---- OAuth 2.0 sign-in -----------------------------------------------------
 
     /**
-     * Starts the Google CardDAV OAuth grant: prepares the PKCE session,
-     * then opens the authorization URL in the browser. The redirect
-     * comes back through {@link #onNewIntent} on the reversed-client-id
-     * custom scheme.
+     * Starts a Google OAuth grant (the scope picks the backend: CardDAV
+     * against the given principal root, or the People API against a
+     * google sentinel base URL): prepares the PKCE session, then opens
+     * the authorization URL in the browser. The redirect comes back
+     * through {@link #onNewIntent} on the reversed-client-id custom
+     * scheme.
      */
-    private void startGoogleOauth() {
+    private void startGoogleOauth(String scope, String baseUrl) {
         pendingOauth =
-                new OauthSession(
-                        Oauth.GOOGLE_CLIENT_ID, null, Oauth.GOOGLE_REDIRECT_URI, Oauth.GOOGLE_SCOPE);
+                new OauthSession(Oauth.GOOGLE_CLIENT_ID, null, Oauth.GOOGLE_REDIRECT_URI, scope);
         pendingTokenEndpoint = Oauth.GOOGLE_TOKEN_ENDPOINT;
-        pendingBaseUrl = Oauth.googleCardDavBase(pendingEmail);
+        pendingBaseUrl = baseUrl;
         pendingAccountEmail = pendingEmail;
         pendingClientId = Oauth.GOOGLE_CLIENT_ID;
         pendingClientSecret = null;
@@ -1235,14 +1253,17 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(16), dp(16), dp(16), dp(16));
+            // The trailing checkbox rides in a 48dp slot with a 4dp end
+            // padding, so its centre lines up with the app-bar icon
+            // column and the account-header chevron.
+            row.setPadding(dp(16), 0, dp(4), 0);
             row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
             row.addView(name);
 
             CheckBox sync = new CheckBox(this);
             sync.setChecked(entry.subscribed);
             sync.setOnClickListener(view -> confirmToggleSync(entry, sync));
-            row.addView(sync);
+            row.addView(iconSlot(sync));
 
             // An unsynced book has nothing to open: tapping it ticks
             // the checkbox and asks to sync instead.
@@ -1320,6 +1341,23 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Centres a control in an app-bar-icon-sized slot, so trailing home
+     * controls (the header chevron, the row checkbox) share the size
+     * and centre column of the app bar's action icons.
+     */
+    private android.widget.FrameLayout iconSlot(View child) {
+        android.widget.FrameLayout slot = new android.widget.FrameLayout(this);
+        slot.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+        slot.addView(
+                child,
+                new android.widget.FrameLayout.LayoutParams(
+                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.CENTER));
+        return slot;
+    }
+
+    /**
      * A home account header collapsing its addressbooks on tap: the
      * email with a state chevron (down when expanded, right when
      * collapsed), toggling the books container's visibility.
@@ -1340,13 +1378,14 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        // 20dp end padding centres the 24dp chevron on the app bars'
-        // icon column (glyph centre 32dp from the screen edge).
-        header.setPadding(dp(16), dp(16), dp(16), dp(16));
+        // The chevron rides in a 48dp slot with a 4dp end padding, so
+        // its centre lines up with the app-bar icon column and the book
+        // rows' checkboxes.
+        header.setPadding(dp(16), 0, dp(4), 0);
         header.setBackgroundColor(getColor(R.color.surface));
         header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
         header.addView(label);
-        header.addView(chevron);
+        header.addView(iconSlot(chevron));
 
         header.setOnClickListener(view -> {
             boolean collapse = books.getVisibility() == View.VISIBLE;

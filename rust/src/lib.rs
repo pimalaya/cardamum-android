@@ -19,10 +19,15 @@
 //! document of record. JMAP servers likewise speak JSContact instead
 //! of vCard, so the `listJmap*` / `*JmapCard` entry points run
 //! io-jmap's RFC 9610 coroutines, with the jmap module converting
-//! ContactCards to and from vCards via calcard (RFC 9555).
+//! ContactCards to and from vCards via calcard (RFC 9555). Google
+//! accounts can skip CardDAV too: the `listGoogle*` / `*GoogleCard`
+//! entry points run io-google-people's contact coroutines, with the
+//! google module projecting People person resources to and from
+//! vCards.
 
 mod client;
 mod ffi;
+mod google;
 mod jmap;
 mod msgraph;
 mod oauth;

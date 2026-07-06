@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 calcard = "0.3"
+io-google-people = { version = "0.0.1", default-features = false }
 io-http = { version = "0.1", default-features = false }
 io-jmap = { version = "0.1", default-features = false }
 io-msgraph = { version = "0.0.1", default-features = false }
@@ -32,6 +33,7 @@ vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] 
 # The Pimalaya crates live in sibling repos and are wired locally (they
 # resolve via git, not crates.io); patch them to the checkouts next door.
 [patch.crates-io]
+io-google-people = { path = "../../io-google-people" }
 io-http = { path = "../../io-http" }
 io-jmap = { path = "../../io-jmap" }
 io-msgraph = { path = "../../io-msgraph" }

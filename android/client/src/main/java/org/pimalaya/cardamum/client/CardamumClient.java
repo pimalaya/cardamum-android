@@ -14,18 +14,21 @@ import org.json.JSONObject;
  * Owns the TLS sockets and the Rust bridge; the app sees neither.
  * Every call blocks, so callers must run it off the main thread.
  *
- * <p>Three backends hide behind the same operations: CardDAV,
+ * <p>Four backends hide behind the same operations: CardDAV,
  * Microsoft Graph for accounts whose {@link Account#baseUrl} carries
  * the {@link #MSGRAPH_PREFIX} sentinel (Microsoft exposes no CardDAV;
- * the Rust bridge projects Graph contacts to and from vCards), and
- * JMAP for Contacts (RFC 9610) for accounts whose base URL carries the
+ * the Rust bridge projects Graph contacts to and from vCards), JMAP
+ * for Contacts (RFC 9610) for accounts whose base URL carries the
  * {@link #JMAP_PREFIX} sentinel (the bridge converts JSContact cards
- * to and from vCards). A Graph account authenticates with its OAuth
- * access token in {@link Account#password}; its addressbook URLs are
- * the base URL plus the folder id, so they stay unique across
- * accounts. JMAP addressbook URLs likewise append the AddressBook id
- * to the base URL. Graph and JMAP updates carry no If-Match guard
- * (last-write-wins).
+ * to and from vCards), and the Google People API for accounts whose
+ * base URL carries the {@link #GOOGLE_PREFIX} sentinel (the bridge
+ * projects People persons to and from vCards). Graph and Google
+ * accounts authenticate with their OAuth access token in
+ * {@link Account#password}; their addressbook URLs are the base URL
+ * plus a folder segment, so they stay unique across accounts. JMAP
+ * addressbook URLs likewise append the AddressBook id to the base URL.
+ * Graph and JMAP updates carry no If-Match guard (last-write-wins);
+ * Google updates are guarded by the person etag.
  */
 public class CardamumClient {
     /**
@@ -33,6 +36,12 @@ public class CardamumClient {
      * {@code msgraph://<email>} instead of a CardDAV context root.
      */
     public static final String MSGRAPH_PREFIX = "msgraph://";
+
+    /**
+     * Sentinel scheme of Google People API accounts: their base URL is
+     * {@code google://<email>} instead of a CardDAV context root.
+     */
+    public static final String GOOGLE_PREFIX = "google://";
 
     /**
      * Sentinel scheme of JMAP accounts: their base URL is
@@ -44,6 +53,9 @@ public class CardamumClient {
 
     /** Path segment of the default Contacts folder (empty Graph folder id). */
     private static final String MSGRAPH_DEFAULT_FOLDER = "contacts";
+
+    /** Path segment of the single Google Contacts book (empty book id). */
+    private static final String GOOGLE_DEFAULT_BOOK = "contacts";
     /**
      * Discovers the CardDAV context root for the email through the
      * given DNS resolver (null for the default DNS-over-HTTPS one).
@@ -125,12 +137,32 @@ public class CardamumClient {
 
     /**
      * Lists the account's addressbooks: the CardDAV discovery walk,
-     * the Graph contact folders (default Contacts folder first), or
-     * the JMAP AddressBooks.
+     * the Graph contact folders (default Contacts folder first), the
+     * JMAP AddressBooks, or the single Google Contacts book.
      */
     public List<Addressbook> listAddressbooks(Account account) {
         Transport transport = new Transport();
         try {
+            if (isGoogle(account)) {
+                JSONArray reply =
+                        array(Native.listGoogleAddressbooks(transport, account.password));
+
+                List<Addressbook> books = new ArrayList<>(reply.length());
+                for (int index = 0; index < reply.length(); index++) {
+                    JSONObject book = object(reply, index);
+                    String id = string(book, "id");
+                    String segment = id.isEmpty() ? GOOGLE_DEFAULT_BOOK : id;
+                    books.add(
+                            new Addressbook(
+                                    id,
+                                    string(book, "name"),
+                                    account.baseUrl + "/" + segment,
+                                    null,
+                                    null));
+                }
+                return books;
+            }
+
             if (isGraph(account)) {
                 JSONArray reply =
                         array(Native.listGraphAddressbooks(transport, account.password));
@@ -202,23 +234,25 @@ public class CardamumClient {
         Transport transport = new Transport();
         try {
             String reply =
-                    isGraph(account)
-                            ? Native.listGraphCards(
-                                    transport,
-                                    account.password,
-                                    graphFolder(account, addressbookUrl))
-                            : isJmap(account)
-                                    ? Native.listJmapCards(
+                    isGoogle(account)
+                            ? Native.listGoogleCards(transport, account.password)
+                            : isGraph(account)
+                                    ? Native.listGraphCards(
                                             transport,
-                                            jmapSessionUrl(account),
-                                            account.login,
                                             account.password,
-                                            jmapBook(account, addressbookUrl))
-                                    : Native.listCards(
-                                            transport,
-                                            addressbookUrl,
-                                            account.login,
-                                            account.password);
+                                            graphFolder(account, addressbookUrl))
+                                    : isJmap(account)
+                                            ? Native.listJmapCards(
+                                                    transport,
+                                                    jmapSessionUrl(account),
+                                                    account.login,
+                                                    account.password,
+                                                    jmapBook(account, addressbookUrl))
+                                            : Native.listCards(
+                                                    transport,
+                                                    addressbookUrl,
+                                                    account.login,
+                                                    account.password);
 
             JSONArray parsed = array(reply);
             List<Card> cards = new ArrayList<>(parsed.length());
@@ -240,6 +274,10 @@ public class CardamumClient {
     public Card createCard(Account account, String addressbookUrl, String id, String vcard) {
         Transport transport = new Transport();
         try {
+            if (isGoogle(account)) {
+                return card(object(Native.createGoogleCard(transport, account.password, vcard)));
+            }
+
             if (isGraph(account)) {
                 return card(
                         object(
@@ -282,6 +320,10 @@ public class CardamumClient {
     public Card readCard(Account account, String addressbookUrl, String uri) {
         Transport transport = new Transport();
         try {
+            if (isGoogle(account)) {
+                return card(object(Native.readGoogleCard(transport, account.password, uri)));
+            }
+
             if (isGraph(account)) {
                 return card(object(Native.readGraphCard(transport, account.password, uri)));
             }
@@ -314,13 +356,25 @@ public class CardamumClient {
     /**
      * Updates the card in the addressbook collection, returning it with
      * its new ETag. The base vCard (the state last synced with the
-     * server, null when unknown) trims the Graph and JMAP patches to
-     * the fields the edit changed; CardDAV PUTs the full vCard and
-     * ignores it.
+     * server, null when unknown) trims the Graph, JMAP and Google
+     * patches to the fields the edit changed; CardDAV PUTs the full
+     * vCard and ignores it.
      */
     public Card updateCard(Account account, String addressbookUrl, Card card, String baseVcard) {
         Transport transport = new Transport();
         try {
+            if (isGoogle(account)) {
+                return card(
+                        object(
+                                Native.updateGoogleCard(
+                                        transport,
+                                        account.password,
+                                        bareUriOf(card),
+                                        card.vcard,
+                                        baseVcard == null ? "" : baseVcard,
+                                        card.etag == null ? "" : card.etag)));
+            }
+
             if (isGraph(account)) {
                 return card(
                         object(
@@ -340,7 +394,7 @@ public class CardamumClient {
                                         jmapSessionUrl(account),
                                         account.login,
                                         account.password,
-                                        jmapUriOf(card),
+                                        bareUriOf(card),
                                         card.vcard,
                                         baseVcard == null ? "" : baseVcard)));
             }
@@ -381,6 +435,11 @@ public class CardamumClient {
     public void deleteCard(Account account, String addressbookUrl, Card card) {
         Transport transport = new Transport();
         try {
+            if (isGoogle(account)) {
+                object(Native.deleteGoogleCard(transport, account.password, bareUriOf(card)));
+                return;
+            }
+
             if (isGraph(account)) {
                 object(Native.deleteGraphCard(transport, account.password, uriOf(card)));
                 return;
@@ -393,7 +452,7 @@ public class CardamumClient {
                                 jmapSessionUrl(account),
                                 account.login,
                                 account.password,
-                                jmapUriOf(card)));
+                                bareUriOf(card)));
                 return;
             }
 
@@ -415,13 +474,20 @@ public class CardamumClient {
         return card.uri == null ? card.id + ".vcf" : card.uri;
     }
 
-    /** The card's JMAP addressing key: the ContactCard id, no suffix. */
-    private static String jmapUriOf(Card card) {
+    /**
+     * The card's JMAP or Google addressing key: the server id, no
+     * suffix.
+     */
+    private static String bareUriOf(Card card) {
         return card.uri == null ? card.id : card.uri;
     }
 
     private static boolean isGraph(Account account) {
         return account.baseUrl != null && account.baseUrl.startsWith(MSGRAPH_PREFIX);
+    }
+
+    private static boolean isGoogle(Account account) {
+        return account.baseUrl != null && account.baseUrl.startsWith(GOOGLE_PREFIX);
     }
 
     private static boolean isJmap(Account account) {

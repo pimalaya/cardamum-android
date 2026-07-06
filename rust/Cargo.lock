@@ -102,6 +102,7 @@ name = "cardamum"
 version = "0.1.0"
 dependencies = [
  "calcard",
+ "io-google-people",
  "io-http",
  "io-jmap",
  "io-msgraph",
@@ -526,6 +527,20 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "io-google-people"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "io-http",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_variant",
+ "thiserror",
+ "url",
 ]
 
 [[package]]

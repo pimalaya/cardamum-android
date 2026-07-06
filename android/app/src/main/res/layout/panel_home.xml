@@ -28,7 +28,7 @@
             android:layout_height="@dimen/app_bar_icon"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/add_account"
-            android:src="@drawable/ic_account_add"
+            android:src="@drawable/ic_book_plus"
             android:tint="?android:attr/textColorPrimary" />
 
     </LinearLayout>

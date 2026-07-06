@@ -26,9 +26,22 @@ final class Oauth {
     /** CardDAV scope (the one DAVx5 uses); reuses the WebDAV transport. */
     static final String GOOGLE_SCOPE = "https://www.googleapis.com/auth/carddav";
 
+    /** People API scope, for the Google Contacts API backend. */
+    static final String GOOGLE_PEOPLE_SCOPE = "https://www.googleapis.com/auth/contacts";
+
     /** Google's CardDAV principal root; standard PROPFIND discovery runs from here. */
     static String googleCardDavBase(String email) {
         return "https://www.googleapis.com/carddav/v1/principals/" + email + "/";
+    }
+
+    /**
+     * A Google People account's base URL: the google sentinel plus the
+     * email, so the addressbook URL derived from it stays unique across
+     * accounts (the People API has no CardDAV context root to fill the
+     * slot).
+     */
+    static String googlePeopleBase(String email) {
+        return CardamumClient.GOOGLE_PREFIX + email;
     }
 
     /**

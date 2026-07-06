@@ -894,6 +894,173 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteJmapCard<'
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.listGoogleAddressbooks`: lists the Google account's contacts
+/// as one Contacts addressbook (the People API has no folders), after a
+/// one-person listing validated the token. Returns a JSON array; the
+/// collection URL is empty, the caller composes it.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGoogleAddressbooks<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+
+        let json = match Client::new(env, &transport).list_google_addressbooks(&token) {
+            Ok(books) => {
+                serde_json::to_string(&books).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.listGoogleCards`: lists the account's People contacts, each
+/// projected onto a vCard. Returns a JSON array of `{id, uri, etag,
+/// vcard}` objects (person id as id and uri, person etag as etag).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGoogleCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+
+        let json = match Client::new(env, &transport).list_google_cards(&token) {
+            Ok(cards) => {
+                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.createGoogleCard`: creates the vCard as a People contact.
+/// The server names the resource, so the returned `{id, uri, etag,
+/// vcard}` card carries the server-assigned id.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createGoogleCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let vcard = read_string(env, &vcard);
+
+        let json = match Client::new(env, &transport).create_google_card(&token, &vcard) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.readGoogleCard`: reads the People contact at the given id,
+/// projected onto a vCard. Returns `{id, uri, etag, vcard}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readGoogleCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+
+        let json = match Client::new(env, &transport).read_google_card(&token, &id) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.updateGoogleCard`: updates the People contact at the given
+/// id from the vCard, shrinking the update mask to the fields that
+/// differ from the base vCard when one is passed (empty means unknown).
+/// People guards updates with the person etag (empty fetches it first).
+/// Returns the updated `{id, uri, etag, vcard}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGoogleCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+    vcard: JString<'local>,
+    base_vcard: JString<'local>,
+    etag: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+        let vcard = read_string(env, &vcard);
+        let base_vcard = read_string(env, &base_vcard);
+        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
+        let etag = read_string(env, &etag);
+        let etag = (!etag.is_empty()).then_some(etag.as_str());
+
+        let json = match Client::new(env, &transport)
+            .update_google_card(&token, &id, &vcard, base, etag)
+        {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.deleteGoogleCard`: deletes the People contact at the given
+/// id. Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteGoogleCard<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    id: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let id = read_string(env, &id);
+
+        let json = match Client::new(env, &transport).delete_google_card(&token, &id) {
+            Ok(()) => "{}".to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// `Native.projectCard`: projects a vCard onto the neutral field model
 /// the app maps to ContactsContract rows (docs/contacts-mapping.md).
 /// Returns the model JSON.

@@ -260,4 +260,51 @@ final class Native {
     /** Destroys the ContactCard at the given id; returns {@code {}}. */
     static native String deleteJmapCard(
             Transport transport, String sessionUrl, String login, String password, String id);
+
+    /**
+     * Lists the Google account's contacts as one Contacts addressbook
+     * (the People API has no folders), after a one-person listing
+     * validated the token. Returns a JSON array whose collection URL is
+     * empty: the caller composes it, since only it knows the account it
+     * belongs to.
+     */
+    static native String listGoogleAddressbooks(Transport transport, String token);
+
+    /**
+     * Lists the account's People contacts, each projected onto a vCard,
+     * as a JSON array of {@code {id, uri, etag, vcard}} (person id as
+     * id and uri, person etag as etag).
+     */
+    static native String listGoogleCards(Transport transport, String token);
+
+    /**
+     * Creates the vCard as a People contact; the server names the
+     * resource, so the returned {@code {id, uri, etag, vcard}} carries
+     * the server-assigned id.
+     */
+    static native String createGoogleCard(Transport transport, String token, String vcard);
+
+    /**
+     * Reads the People contact at the given id, projected onto a
+     * vCard; returns {@code {id, uri, etag, vcard}}.
+     */
+    static native String readGoogleCard(Transport transport, String token, String id);
+
+    /**
+     * Updates the People contact at the given id from the vCard,
+     * shrinking the update mask to the fields that differ from the base
+     * vCard when one is passed (empty means unknown). People guards
+     * updates with the person etag (empty fetches it first); returns
+     * the updated {@code {id, uri, etag, vcard}}.
+     */
+    static native String updateGoogleCard(
+            Transport transport,
+            String token,
+            String id,
+            String vcard,
+            String baseVcard,
+            String etag);
+
+    /** Deletes the People contact at the given id; returns {@code {}}. */
+    static native String deleteGoogleCard(Transport transport, String token, String id);
 }

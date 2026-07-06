@@ -15,6 +15,20 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+use io_google_people::{
+    coroutine::{PeopleCoroutine, PeopleCoroutineState, PeopleYield},
+    v1::{
+        rest::people::{
+            PeoplePerson, PeoplePersonField,
+            connections::list::{PeopleConnectionsList, PeopleConnectionsListParams},
+            create_contact::PeopleContactCreate,
+            delete_contact::PeopleContactDelete,
+            get::PeoplePersonGet,
+            update_contact::PeopleContactUpdate,
+        },
+        send::{PEOPLE_API_BASE, PeopleSendError, PeopleSendOutput},
+    },
+};
 use io_http::{
     rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic, rfc9110::request::HttpRequest,
 };
@@ -89,7 +103,7 @@ use secrecy::SecretString;
 use url::Url;
 
 use crate::{
-    jmap, msgraph,
+    google, jmap, msgraph,
     oauth::parse_pkce_verifier,
     types::{Addressbook, Card, Credentials},
 };
@@ -746,6 +760,150 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    // ---- Google People operations -------------------------------------------
+
+    /// Lists the Google account's contacts as one addressbook (the
+    /// People API has no folders; contact groups are labels, not
+    /// containers). A one-person listing validates the token first, so
+    /// this doubles as the connection check during onboarding. The
+    /// collection URL is left empty: the caller composes it.
+    pub fn list_google_addressbooks(&mut self, token: &str) -> Result<Vec<Addressbook>, String> {
+        let auth = HttpAuthBearer::new(token);
+
+        let params = PeopleConnectionsListParams {
+            page_size: Some(1),
+            ..Default::default()
+        };
+        let coroutine = PeopleConnectionsList::new(&auth, &[PeoplePersonField::Names], &params)
+            .map_err(|err| err.to_string())?;
+        self.run_google(coroutine)?;
+
+        Ok(vec![Addressbook {
+            id: String::new(),
+            name: "Contacts".to_string(),
+            url: String::new(),
+            description: None,
+            color: None,
+        }])
+    }
+
+    /// Lists the account's contacts (`people.connections.list`), each
+    /// projected onto a vCard document; the person id is the addressing
+    /// key and the person etag the ETag.
+    pub fn list_google_cards(&mut self, token: &str) -> Result<Vec<Card>, String> {
+        let auth = HttpAuthBearer::new(token);
+
+        let params = PeopleConnectionsListParams {
+            page_size: Some(100),
+            ..Default::default()
+        };
+        let coroutine = PeopleConnectionsList::new(&auth, google::MANAGED_FIELDS, &params)
+            .map_err(|err| err.to_string())?;
+        let mut page = self.run_google(coroutine)?;
+
+        let mut cards = Vec::new();
+        loop {
+            cards.extend(page.connections.into_iter().map(google_card));
+
+            match page.next_page_token {
+                Some(next) => {
+                    let params = PeopleConnectionsListParams {
+                        page_size: Some(100),
+                        page_token: Some(&next),
+                        ..Default::default()
+                    };
+                    let coroutine =
+                        PeopleConnectionsList::new(&auth, google::MANAGED_FIELDS, &params)
+                            .map_err(|err| err.to_string())?;
+                    page = self.run_google(coroutine)?;
+                }
+                None => break,
+            }
+        }
+
+        Ok(cards)
+    }
+
+    /// Creates the vCard as a People contact. The server names the
+    /// resource, so the returned card carries the server-assigned id.
+    pub fn create_google_card(&mut self, token: &str, vcard: &str) -> Result<Card, String> {
+        let person = google::to_person(vcard)?;
+        let auth = HttpAuthBearer::new(token);
+
+        let coroutine = PeopleContactCreate::new(&auth, &person, google::MANAGED_FIELDS, &[])
+            .map_err(|err| err.to_string())?;
+        Ok(google_card(self.run_google(coroutine)?))
+    }
+
+    /// Reads the People contact `id`, projected onto a vCard document.
+    pub fn read_google_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
+        let auth = HttpAuthBearer::new(token);
+        let coroutine =
+            PeoplePersonGet::new(&auth, &format!("people/{id}"), google::MANAGED_FIELDS, &[])
+                .map_err(|err| err.to_string())?;
+
+        Ok(google_card(self.run_google(coroutine)?))
+    }
+
+    /// Updates the People contact `id` from the vCard. With a base
+    /// vCard (the state last synced with the server) the update mask
+    /// shrinks to the fields the edit changed; without one every
+    /// managed field is replaced. People requires the person's current
+    /// etag on updates, so a missing one is fetched first; a stale one
+    /// fails the update (no silent last-write-wins).
+    pub fn update_google_card(
+        &mut self,
+        token: &str,
+        id: &str,
+        vcard: &str,
+        base_vcard: Option<&str>,
+        etag: Option<&str>,
+    ) -> Result<Card, String> {
+        let auth = HttpAuthBearer::new(token);
+        let resource_name = format!("people/{id}");
+
+        let mut person = google::to_person(vcard)?;
+        person.resource_name = resource_name.clone();
+        person.etag = match etag {
+            Some(etag) => etag.to_string(),
+            None => {
+                let coroutine =
+                    PeoplePersonGet::new(&auth, &resource_name, &[PeoplePersonField::Names], &[])
+                        .map_err(|err| err.to_string())?;
+                self.run_google(coroutine)?.etag
+            }
+        };
+
+        let fields = match base_vcard {
+            Some(base) => google::changed_fields(&person, &google::to_person(base)?),
+            None => google::MANAGED_FIELDS.to_vec(),
+        };
+        if fields.is_empty() {
+            // NOTE: nothing differs from the base, no request to send.
+            return Ok(Card {
+                id: id.to_string(),
+                uri: id.to_string(),
+                etag: Some(person.etag),
+                vcard: vcard.to_string(),
+            });
+        }
+
+        let coroutine =
+            PeopleContactUpdate::new(&auth, &person, &fields, google::MANAGED_FIELDS, &[])
+                .map_err(|err| err.to_string())?;
+        Ok(google_card(self.run_google(coroutine)?))
+    }
+
+    /// Deletes the People contact `id`.
+    pub fn delete_google_card(&mut self, token: &str, id: &str) -> Result<(), String> {
+        let auth = HttpAuthBearer::new(token);
+        let coroutine = PeopleContactDelete::new(&auth, &format!("people/{id}"))
+            .map_err(|err| err.to_string())?;
+        self.run_google(coroutine)?;
+
+        Ok(())
+    }
+
     // ---- Discovery walk steps ---------------------------------------------
 
     /// PROPFIND the context root for `DAV:current-user-principal`.
@@ -845,6 +1003,32 @@ impl<'a, 'local> Client<'a, 'local> {
                 }
                 MsgraphCoroutineState::Yielded(MsgraphYield::WantsWrite(bytes)) => {
                     self.write(MSGRAPH_API_BASE, &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
+    /// Runs a Google People coroutine to completion, routing every
+    /// yield to the transport stream opened on the People API origin.
+    fn run_google<C, T>(&mut self, mut coroutine: C) -> Result<T, String>
+    where
+        C: PeopleCoroutine<
+                Yield = PeopleYield,
+                Return = Result<PeopleSendOutput<T>, PeopleSendError>,
+            >,
+    {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                PeopleCoroutineState::Complete(Ok(output)) => return Ok(output.response),
+                PeopleCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                PeopleCoroutineState::Yielded(PeopleYield::WantsRead) => {
+                    arg = Some(self.read(PEOPLE_API_BASE)?);
+                }
+                PeopleCoroutineState::Yielded(PeopleYield::WantsWrite(bytes)) => {
+                    self.write(PEOPLE_API_BASE, &bytes)?;
                     arg = None;
                 }
             }
@@ -1113,6 +1297,22 @@ fn graph_card(contact: MsgraphContact) -> Card {
         id: contact.id.clone(),
         uri: contact.id,
         etag: contact.change_key,
+        vcard,
+    }
+}
+
+/// io-google-people person to the JNI-facing card shape: the projected
+/// vCard document, the person id (resource name minus the `people/`
+/// prefix) as both display id and addressing key (uri), and the person
+/// etag as ETag.
+fn google_card(person: PeoplePerson) -> Card {
+    let vcard = google::to_vcard(&person);
+    let id = google::person_id(&person.resource_name).to_string();
+
+    Card {
+        uri: id.clone(),
+        id,
+        etag: (!person.etag.is_empty()).then_some(person.etag),
         vcard,
     }
 }
