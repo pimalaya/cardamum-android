@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Subscription editor: every addressbook (subscribed or not) grouped
-     by account, each with a checkbox; Save applies the new subscription
-     set, Cancel discards. -->
+<!-- Post-connect addressbook selection: the connected account's
+     addressbooks, each with a checkbox; Continue subscribes the
+     checked ones and runs the first sync. Styled like the config
+     panel (app bar, title, paragraph, list, fixed bottom Continue). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- Auth app bar: a back arrow to the previous step. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -14,17 +16,59 @@
         android:gravity="center_vertical"
         android:minHeight="56dp"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp">
+        android:paddingStart="@dimen/app_bar_padding"
+        android:paddingEnd="@dimen/app_bar_padding">
+
+        <ImageButton
+            android:id="@+id/books_back"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_arrow_back"
+            android:tint="?android:attr/textColorPrimary" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/subscriptions_title"
+            android:layout_weight="1"
+            android:paddingStart="@dimen/app_bar_title_padding"
+            android:text="@string/new_account"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
 
+        <ImageButton
+            android:id="@+id/books_cancel"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/cancel_auth"
+            android:src="@drawable/ic_close"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
     </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingStart="24dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="24dp"
+        android:text="@string/books_title"
+        android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+        android:textColor="?android:attr/textColorPrimary" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="16dp"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        android:text="@string/books_description"
+        android:textColor="?android:attr/textColorSecondary"
+        android:textSize="14sp" />
 
     <ScrollView
         android:layout_width="match_parent"
@@ -36,32 +80,34 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="8dp" />
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp" />
 
     </ScrollView>
 
-    <LinearLayout
+    <!-- Disabled while nothing is checked; while syncing the loader
+         sits on the button (disabled again, its label blanked). -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp">
+        android:layout_margin="8dp">
 
         <Button
-            android:id="@+id/books_cancel"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
+            android:id="@+id/books_continue"
+            style="@android:style/Widget.DeviceDefault.Button.Colored"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@android:string/cancel" />
+            android:text="@string/email_submit"
+            android:textAllCaps="true" />
 
-        <Button
-            android:id="@+id/books_submit"
-            style="?android:attr/buttonBarButtonStyle"
-            android:layout_width="0dp"
+        <ProgressBar
+            android:id="@+id/books_progress"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/subscriptions_save" />
+            android:layout_gravity="center"
+            android:visibility="gone" />
 
-    </LinearLayout>
+    </FrameLayout>
 
 </LinearLayout>

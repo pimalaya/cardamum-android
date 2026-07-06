@@ -3,11 +3,14 @@ package org.pimalaya.cardamum;
 import android.app.Activity;
 import android.app.DatePickerDialog;
 import android.content.res.ColorStateList;
+import android.graphics.Typeface;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
@@ -18,6 +21,7 @@ import android.widget.TabHost;
 import android.widget.TextView;
 import java.util.Calendar;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -55,9 +59,6 @@ final class ContactForm {
     private final int labelColor;
     private final int accentColor;
 
-    /** Left padding of a field, so labels line up with the text start. */
-    private final int labelIndent;
-
     private final TabHost tabs;
 
     private EditText display;
@@ -83,7 +84,6 @@ final class ContactForm {
         this.activity = activity;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
-        this.labelIndent = new EditText(activity).getPaddingStart();
 
         LinearLayout nameFields = activity.findViewById(R.id.contact_name_fields);
         LinearLayout contactFields = activity.findViewById(R.id.contact_contact_fields);
@@ -187,23 +187,19 @@ final class ContactForm {
         family.setText(name == null ? "" : name.optString("family"));
         suffix.setText(name == null ? "" : name.optString("suffix"));
 
-        // Every multi-value section keeps one trailing empty row, so
-        // there is always a blank to fill without tapping the plus.
+        // Sections hold only their real values: the Add button appends
+        // the first blank row on demand.
         fill(nicknames, safe.optJSONArray("nicknames"),
                 value -> nicknames.addView(lineRow(nicknames, value, TEXT_NAME)));
-        nicknames.addView(lineRow(nicknames, "", TEXT_NAME));
 
         fillObjects(phones, safe.optJSONArray("phones"),
                 entry -> phones.addView(phoneRow(entry)));
-        phones.addView(phoneRow(null));
 
         fillObjects(emails, safe.optJSONArray("emails"),
                 entry -> emails.addView(emailRow(entry)));
-        emails.addView(emailRow(null));
 
         fillObjects(addresses, safe.optJSONArray("addresses"),
                 entry -> addresses.addView(addressBlock(entry)));
-        addresses.addView(addressBlock(null));
 
         JSONObject organization = safe.optJSONObject("organization");
         company.setText(organization == null ? "" : organization.optString("company"));
@@ -215,11 +211,8 @@ final class ContactForm {
         fill(websites, safe.optJSONArray("websites"),
                 value -> websites.addView(lineRow(websites, value,
                         InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)));
-        websites.addView(lineRow(websites, "",
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
 
         fill(notes, safe.optJSONArray("notes"), value -> notes.addView(noteRow(value)));
-        notes.addView(noteRow(""));
 
         source.setText(vcard);
         tabs.setCurrentTab(0);
@@ -284,14 +277,13 @@ final class ContactForm {
             for (int index = 0; index < addresses.getChildCount(); index++) {
                 LinearLayout block = (LinearLayout) addresses.getChildAt(index);
                 AddressExtras extras = (AddressExtras) block.getTag();
-                String street = fieldText(block, 0);
-                String city = fieldText(block, 1);
-                String region = fieldText(block, 2);
-                String postcode = fieldText(block, 3);
-                String country = fieldText(block, 4);
-                int type =
-                        ((Spinner) ((LinearLayout) block.getChildAt(5)).getChildAt(0))
-                                .getSelectedItemPosition();
+                LinearLayout controls = (LinearLayout) block.getChildAt(0);
+                int type = ((Spinner) controls.getChildAt(0)).getSelectedItemPosition();
+                String street = fieldText(block, 1);
+                String city = fieldText(block, 2);
+                String region = fieldText(block, 3);
+                String postcode = fieldText(block, 4);
+                String country = fieldText(block, 5);
 
                 if (street.isEmpty()
                         && city.isEmpty()
@@ -362,31 +354,31 @@ final class ContactForm {
     private static final int TEXT_WORDS =
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
 
-    /** A labelled single-line field appended to the container. */
+    /** A labelled single-line field appended to the container as one block. */
     private EditText labelled(LinearLayout container, int label, int inputType) {
-        addLabel(container, label);
         EditText input = field();
         input.setInputType(inputType);
-        container.addView(input);
+        container.addView(block(label, input), blockParams(container));
         return input;
     }
 
     /** A labelled read-only field that opens a date picker on tap. */
     private EditText dateField(LinearLayout container, int label) {
-        addLabel(container, label);
         EditText input = field();
         input.setFocusable(false);
         input.setClickable(true);
         input.setInputType(InputType.TYPE_NULL);
         input.setKeyListener(null);
         input.setOnClickListener(view -> pickDate(input));
-        container.addView(input);
+        container.addView(block(label, input), blockParams(container));
         return input;
     }
 
     /** A bare field with its underline tinted the brand (app-bar) colour. */
     private EditText field() {
         EditText input = new EditText(activity);
+	input.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+        input.setPadding(dp(3), dp(3), 0, dp(12));
         input.setBackgroundTintList(ColorStateList.valueOf(accentColor));
         return input;
     }
@@ -425,47 +417,97 @@ final class ContactForm {
     private static final int GROUP_TOP = 20;
 
     /**
-     * A titled section: a header row with the small label and, right
-     * next to it (inline, not pushed to the edge), a plus button; then a
-     * vertical container for its repeating rows. Returns the container.
+     * A titled section: the small label, a vertical container for its
+     * repeating rows, and a full-width secondary Add button below that
+     * appends a row and focuses it. Returns the rows container.
      */
     private LinearLayout section(LinearLayout parent, int title, int addLabel, Runnable onAdd) {
-        LinearLayout header = new LinearLayout(activity);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        // Same top spacing as a single field's label, so groups are even.
-        header.setPadding(0, dp(GROUP_TOP), 0, 0);
-
         TextView label = smallLabel(title);
-        label.setPadding(labelIndent, 0, 0, 0);
-        header.addView(label);
-
-        header.addView(
-                iconButton(R.drawable.ic_arrow_drop_down, addLabel, accentColor, view -> onAdd.run()));
-        parent.addView(header);
+        // Same top spacing as a field block, so groups are even; a
+        // section opening its tab stays flush like a first field.
+        label.setPadding(dp(3), parent.getChildCount() == 0 ? 0 : dp(GROUP_TOP), 0, dp(3));
 
         LinearLayout rows = new LinearLayout(activity);
         rows.setOrientation(LinearLayout.VERTICAL);
+
+        Button add = new Button(activity);
+        add.setText(addLabel);
+        add.setAllCaps(true);
+        add.setOnClickListener(view -> {
+            onAdd.run();
+            focusLastInput(rows);
+        });
+
+        parent.addView(label);
         parent.addView(rows);
+        parent.addView(
+                add,
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
 
         return rows;
     }
 
-    /** A small, secondary-coloured label sitting just above its input. */
-    private void addLabel(LinearLayout container, int label) {
-        TextView view = smallLabel(label);
-        // Indent to the field's text start; top spacing separates
-        // groups, the small bottom padding keeps the label hugging its
-        // field.
-        view.setPadding(labelIndent, dp(GROUP_TOP), 0, dp(2));
-        container.addView(view);
+    /** Focuses the freshly added row's first input and pops the keyboard. */
+    private void focusLastInput(LinearLayout rows) {
+        EditText input = firstInput(rows.getChildAt(rows.getChildCount() - 1));
+        if (input != null) {
+            input.requestFocus();
+            activity.getSystemService(InputMethodManager.class)
+                    .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    /** The first EditText under the view, depth first; null when none. */
+    private static EditText firstInput(View view) {
+        if (view instanceof EditText) {
+            return (EditText) view;
+        }
+	
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                EditText input = firstInput(group.getChildAt(index));
+                if (input != null) {
+                    return input;
+                }
+            }
+        }
+	
+        return null;
+    }
+
+    /** Groups a label and its input into one field block. */
+    private LinearLayout block(int label, View input) {
+        TextView title = smallLabel(label);
+        // Indent to the field's text start, so label and input align.
+        title.setPadding(dp(3), 0, 0, 0);
+
+        LinearLayout block = new LinearLayout(activity);
+        block.setOrientation(LinearLayout.VERTICAL);
+        block.addView(title);
+        block.addView(input);
+        return block;
+    }
+
+    /** Layout params spacing a field block from whatever sits above it
+     * in the container; the container's first child stays flush. */
+    private LinearLayout.LayoutParams blockParams(LinearLayout container) {
+        LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.topMargin = container.getChildCount() == 0 ? 0 : dp(GROUP_TOP);
+        return params;
     }
 
     private TextView smallLabel(int text) {
         TextView view = new TextView(activity);
-        view.setText(text);
+        view.setText(activity.getString(text).toUpperCase(Locale.getDefault()));
         view.setTextColor(labelColor);
-        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+        view.setTypeface(view.getTypeface(), Typeface.BOLD);
         return view;
     }
 
@@ -551,31 +593,46 @@ final class ContactForm {
         block.setOrientation(LinearLayout.VERTICAL);
         block.setPadding(0, dp(8), 0, dp(16));
 
-        block.addView(blockField(R.string.hint_street, InputType.TYPE_TEXT_FLAG_MULTI_LINE));
-        block.addView(blockField(R.string.hint_city, InputType.TYPE_TEXT_FLAG_CAP_WORDS));
-        block.addView(blockField(R.string.hint_region, InputType.TYPE_TEXT_FLAG_CAP_WORDS));
-        block.addView(blockField(R.string.hint_postcode, 0));
-        block.addView(blockField(R.string.hint_country, InputType.TYPE_TEXT_FLAG_CAP_WORDS));
-
+        // Same rhythm as the Name tab: labelled blocks, the first one
+        // flush and the following ones spaced by the group margin. The
+        // type row comes first, unlabelled (the section title already
+        // names it), its stock item padding zeroed so its text aligns
+        // with the fields'.
         LinearLayout controls = new LinearLayout(activity);
         controls.setOrientation(LinearLayout.HORIZONTAL);
         controls.setGravity(Gravity.CENTER_VERTICAL);
-        Spinner type = spinner(R.array.address_types);
+        Spinner type = spinner(R.array.address_types, R.layout.spinner_form_item);
+        type.setPaddingRelative(
+                dp(3), type.getPaddingTop(), type.getPaddingEnd(), type.getPaddingBottom());
         type.setLayoutParams(
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         controls.addView(type);
         controls.addView(removeButton(block));
-        block.addView(controls);
+        block.addView(controls, blockParams(block));
+
+        block.addView(
+                blockField(R.string.hint_street, InputType.TYPE_TEXT_FLAG_MULTI_LINE),
+                blockParams(block));
+        block.addView(
+                blockField(R.string.hint_city, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
+                blockParams(block));
+        block.addView(
+                blockField(R.string.hint_region, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
+                blockParams(block));
+        block.addView(blockField(R.string.hint_postcode, 0), blockParams(block));
+        block.addView(
+                blockField(R.string.hint_country, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
+                blockParams(block));
 
         AddressExtras extras = new AddressExtras();
         block.setTag(extras);
 
         if (entry != null) {
-            fieldOf(block, 0).setText(entry.optString("street"));
-            fieldOf(block, 1).setText(entry.optString("city"));
-            fieldOf(block, 2).setText(entry.optString("region"));
-            fieldOf(block, 3).setText(entry.optString("postcode"));
-            fieldOf(block, 4).setText(entry.optString("country"));
+            fieldOf(block, 1).setText(entry.optString("street"));
+            fieldOf(block, 2).setText(entry.optString("city"));
+            fieldOf(block, 3).setText(entry.optString("region"));
+            fieldOf(block, 4).setText(entry.optString("postcode"));
+            fieldOf(block, 5).setText(entry.optString("country"));
             type.setSelection(typeIndex(entry, HOME_WORK_OTHER));
             extras.pobox = entry.optString("pobox");
             extras.ext = entry.optString("ext");
@@ -586,13 +643,9 @@ final class ContactForm {
 
     /** A labelled field inside an address block (label + input in one holder). */
     private LinearLayout blockField(int label, int inputTypeFlags) {
-        LinearLayout holder = new LinearLayout(activity);
-        holder.setOrientation(LinearLayout.VERTICAL);
-        addLabel(holder, label);
         EditText input = field();
         input.setInputType(InputType.TYPE_CLASS_TEXT | inputTypeFlags);
-        holder.addView(input);
-        return holder;
+        return block(label, input);
     }
 
     /** The EditText inside an address block's nth labelled holder. */
@@ -647,10 +700,14 @@ final class ContactForm {
     }
 
     private Spinner spinner(int entries) {
+        return spinner(entries, android.R.layout.simple_spinner_item);
+    }
+
+    /** A spinner with a custom collapsed-item layout (form alignment). */
+    private Spinner spinner(int entries, int itemLayout) {
         Spinner spinner = new Spinner(activity);
         ArrayAdapter<CharSequence> adapter =
-                ArrayAdapter.createFromResource(
-                        activity, entries, android.R.layout.simple_spinner_item);
+                ArrayAdapter.createFromResource(activity, entries, itemLayout);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
         return spinner;

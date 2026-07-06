@@ -10,10 +10,23 @@
 //! tells it which URL each yield wants.
 
 use core::fmt::Display;
-use std::{borrow::Cow, collections::BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use io_http::{
     rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic, rfc9110::request::HttpRequest,
+};
+use io_jmap::{
+    coroutine::{JmapCoroutine, JmapCoroutineState, JmapYield},
+    rfc8620::{JmapSession, coroutine::JmapRedirectYield, session_get::*},
+    rfc9610::{
+        address_book::{JmapAddressBook, get::*},
+        contact_card::{
+            JmapContactCard, JmapContactCardFilter, JmapContactCardPatch, get::*, query::*, set::*,
+        },
+    },
 };
 use io_msgraph::{
     coroutine::*,
@@ -72,17 +85,20 @@ use pimconf::{
         types::{Service, ServiceConfig},
     },
 };
+use secrecy::SecretString;
 use url::Url;
 
 use crate::{
-    msgraph,
+    jmap, msgraph,
     oauth::parse_pkce_verifier,
     types::{Addressbook, Card, Credentials},
 };
 
-/// DNS-over-TCP resolver used for the RFC 6764 SRV/TXT lookups when the
-/// device did not expose its own.
-const DNS_RESOLVER: &str = "tcp://1.1.1.1:53";
+/// RFC 8484 DNS-over-HTTPS resolver used for the discovery DNS lookups
+/// (SRV, TXT, MX) when the caller passed none. DoH rides the same TLS
+/// transport as every other request, so it works on mobile networks
+/// that block outbound DNS over TCP.
+const DNS_RESOLVER: &str = "https://cloudflare-dns.com/dns-query";
 
 /// Sent as the `User-Agent` on every WebDAV request.
 const USER_AGENT: &str = concat!("cardamum-android/", env!("CARGO_PKG_VERSION"));
@@ -103,11 +119,11 @@ impl<'a, 'local> Client<'a, 'local> {
     // ---- Operations -------------------------------------------------------
 
     /// Resolves the email's domain to a CardDAV context root via
-    /// RFC 6764: SRV and TXT over the given `tcp://host:port` resolver
-    /// (the device's own when the caller found one), then `.well-known`.
-    /// When the resolver is unreachable (mobile networks routinely block
-    /// outbound DNS) it retries with the `.well-known` probe alone,
-    /// whose HTTPS socket resolves the domain through the OS.
+    /// RFC 6764: SRV and TXT over the given resolver (`tcp://host:port`,
+    /// or an RFC 8484 `https://…/dns-query` one; DoH by default), then
+    /// `.well-known`. When the resolver is unreachable it retries with
+    /// the `.well-known` probe alone, whose HTTPS socket resolves the
+    /// domain through the OS.
     pub fn discover(&mut self, email: &str, resolver: Option<&str>) -> Result<Url, String> {
         let domain = email.rsplit('@').next().unwrap_or(email).trim();
 
@@ -138,12 +154,12 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
-    /// Searches every pimconf mechanism for CardDAV service configs:
-    /// fixed provider rules (Google/Microsoft, matched by domain then
-    /// by MX records), PACC, then the RFC 6764 resolve. Each config
-    /// carries its endpoint and authentication methods (password,
-    /// OAuth 2.0 grants). With `first`, stops at the first mechanism
-    /// yielding a config.
+    /// Searches every pimconf mechanism for CardDAV and JMAP service
+    /// configs: fixed provider rules (Google/Microsoft, matched by
+    /// domain then by MX records), PACC, the RFC 6764 CardDAV resolve
+    /// and the RFC 8620 JMAP resolve. Each config carries its endpoint
+    /// and authentication methods (password, OAuth 2.0 grants). With
+    /// `first`, stops at the first mechanism yielding a config.
     pub fn search(
         &mut self,
         email: &str,
@@ -154,7 +170,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let resolver = Url::parse(resolver)
             .map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))?;
 
-        let services = BTreeSet::from([Service::Carddav]);
+        let services = BTreeSet::from([Service::Carddav, Service::Jmap]);
 
         if first {
             let coroutine =
@@ -169,11 +185,13 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Exchanges an authorization code for OAuth 2.0 tokens against
     /// the token endpoint (RFC 6749 §4.1.3), carrying the PKCE
-    /// verifier of the authorization request.
+    /// verifier of the authorization request and the client secret
+    /// when the registration issued one (Google desktop clients).
     pub fn oauth_request_access_token(
         &mut self,
         token_endpoint: &Url,
         client_id: &str,
+        client_secret: Option<&str>,
         code: &str,
         redirect_uri: &str,
         pkce_verifier: &str,
@@ -183,6 +201,7 @@ impl<'a, 'local> Client<'a, 'local> {
             code: code.into(),
             redirect_uri: Some(redirect_uri.into()),
             client_id: client_id.into(),
+            client_secret: client_secret.map(SecretString::from),
             pkce_code_verifier: Some(Cow::Owned(verifier)),
         };
 
@@ -208,15 +227,18 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Refreshes OAuth 2.0 tokens against the token endpoint
     /// (RFC 6749 §6). `scope` is the space-separated scope list of
-    /// the original grant (empty keeps the server default).
+    /// the original grant (empty keeps the server default); the client
+    /// secret rides along when the registration issued one.
     pub fn oauth_refresh_access_token(
         &mut self,
         token_endpoint: &Url,
         client_id: &str,
+        client_secret: Option<&str>,
         refresh_token: &str,
         scope: &str,
     ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
         let mut params = Oauth20RefreshAccessTokenParams::new(client_id, refresh_token);
+        params.client_secret = client_secret.map(SecretString::from);
         params.scopes = scope.split_whitespace().map(Cow::Borrowed).collect();
 
         let mut coroutine =
@@ -249,6 +271,24 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
     ) -> Result<Vec<Addressbook>, String> {
         let auth = auth(credentials);
+
+        // RFC 6764 §5: a bare origin (e.g. the carddav.example.com a
+        // PACC document advertises) is not necessarily the context
+        // root; probe .well-known/carddav for the real one first
+        // (fastmail 404s every request outside /dav/*). No redirect or
+        // a failed probe keeps the origin, which plenty of servers
+        // serve directly.
+        let base_url = match base_url.path() {
+            "" | "/" => {
+                let probe = WellKnown::new(base_url.clone(), DavService::Carddav);
+                match self.run_discovery(probe) {
+                    Ok(Some(root)) => root,
+                    _ => base_url.clone(),
+                }
+            }
+            _ => base_url.clone(),
+        };
+        let base_url = &base_url;
 
         // Some servers expose the home-set straight off the context
         // root, so a missing principal is not fatal.
@@ -510,6 +550,202 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    // ---- JMAP operations ----------------------------------------------------
+
+    /// Lists the account's JMAP AddressBooks (RFC 9610 §2.1).
+    /// Collection URLs are left empty: the caller composes them, since
+    /// only it knows the account they belong to. Doubles as the
+    /// connection check during onboarding.
+    pub fn list_jmap_addressbooks(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+    ) -> Result<Vec<Addressbook>, String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let coroutine =
+            JmapAddressBookGet::new(&session, &auth, JmapAddressBookGetOptions::default())
+                .map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        Ok(out
+            .address_books
+            .into_iter()
+            .map(jmap_addressbook)
+            .collect())
+    }
+
+    /// Lists the ContactCards of the AddressBook `book_id`, each
+    /// converted to a vCard document; the ContactCard id is the
+    /// addressing key and a JSON hash the ETag.
+    pub fn list_jmap_cards(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        book_id: &str,
+    ) -> Result<Vec<Card>, String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let opts = JmapContactCardQueryOptions {
+            filter: Some(JmapContactCardFilter {
+                in_address_book: Some(book_id.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardQuery::new(&session, &auth, opts).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        out.cards.into_iter().map(jmap::to_card).collect()
+    }
+
+    /// Creates the vCard as a ContactCard in the AddressBook
+    /// `book_id`. The server names the card, so the returned card
+    /// carries the server-assigned id.
+    pub fn create_jmap_card(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        book_id: &str,
+        vcard: &str,
+    ) -> Result<Card, String> {
+        let card = jmap::to_jscontact(vcard)?;
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let create = BTreeMap::from([(
+            "c0".to_string(),
+            JmapContactCard {
+                id: None,
+                address_book_ids: BTreeMap::from([(book_id.to_string(), true)]),
+                card,
+            },
+        )]);
+        let args = JmapContactCardSetArgs {
+            create: Some(create),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardSet::new(&session, &auth, args).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        if let Some(err) = out.not_created.into_values().next() {
+            return Err(format!("JMAP ContactCard create rejected: {err:?}"));
+        }
+        let id = out
+            .created
+            .into_values()
+            .next()
+            .and_then(|created| created.id)
+            .ok_or_else(|| "JMAP create response is missing the card id".to_string())?;
+
+        Ok(Card {
+            id: id.clone(),
+            uri: id,
+            etag: None,
+            vcard: vcard.to_string(),
+        })
+    }
+
+    /// Reads the ContactCard `id`, converted to a vCard document.
+    pub fn read_jmap_card(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        id: &str,
+    ) -> Result<Card, String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let opts = JmapContactCardGetOptions {
+            ids: Some(vec![id.to_string()]),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardGet::new(&session, &auth, opts).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        let card = out
+            .cards
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("JMAP ContactCard `{id}` not found"))?;
+
+        jmap::to_card(card)
+    }
+
+    /// Updates the ContactCard `id` from the vCard. With a base vCard
+    /// (the state last synced with the server) the patch shrinks to
+    /// the properties the edit changed, plus nulls for the removed
+    /// ones; without one it replaces every property the vCard carries.
+    /// There is no If-Match guard, updates are last-write-wins.
+    pub fn update_jmap_card(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        id: &str,
+        vcard: &str,
+        base_vcard: Option<&str>,
+    ) -> Result<Card, String> {
+        let patch = jmap::to_patch(vcard, base_vcard)?;
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let update = BTreeMap::from([(id.to_string(), JmapContactCardPatch(patch))]);
+        let args = JmapContactCardSetArgs {
+            update: Some(update),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardSet::new(&session, &auth, args).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        if let Some(err) = out.not_updated.into_values().next() {
+            return Err(format!("JMAP ContactCard update rejected: {err:?}"));
+        }
+
+        Ok(Card {
+            id: id.to_string(),
+            uri: id.to_string(),
+            etag: None,
+            vcard: vcard.to_string(),
+        })
+    }
+
+    /// Destroys the ContactCard `id`.
+    pub fn delete_jmap_card(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        id: &str,
+    ) -> Result<(), String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let args = JmapContactCardSetArgs {
+            destroy: Some(vec![id.to_string()]),
+            ..Default::default()
+        };
+        let coroutine =
+            JmapContactCardSet::new(&session, &auth, args).map_err(|err| err.to_string())?;
+        let out = self.run_jmap(&api_url, coroutine)?;
+
+        if let Some(err) = out.not_destroyed.into_values().next() {
+            return Err(format!("JMAP ContactCard destroy rejected: {err:?}"));
+        }
+
+        Ok(())
+    }
+
     // ---- Discovery walk steps ---------------------------------------------
 
     /// PROPFIND the context root for `DAV:current-user-principal`.
@@ -609,6 +845,66 @@ impl<'a, 'local> Client<'a, 'local> {
                 }
                 MsgraphCoroutineState::Yielded(MsgraphYield::WantsWrite(bytes)) => {
                     self.write(MSGRAPH_API_BASE, &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
+    /// Fetches the JMAP session (RFC 8620 §2) from the session URL
+    /// (a bare origin triggers /.well-known/jmap discovery), rebuilding
+    /// the coroutine whenever the server answers 3xx.
+    fn jmap_session(
+        &mut self,
+        session_url: &Url,
+        http_auth: &SecretString,
+    ) -> Result<JmapSession, String> {
+        let mut target = session_url.clone();
+
+        loop {
+            let mut coroutine = JmapSessionGet::new(http_auth, &target);
+            let mut arg: Option<Vec<u8>> = None;
+
+            loop {
+                match coroutine.resume(arg.as_deref()) {
+                    JmapCoroutineState::Complete(Ok(out)) => return Ok(out.session),
+                    JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                    JmapCoroutineState::Yielded(JmapRedirectYield::WantsWrite(bytes)) => {
+                        self.write(target.as_str(), &bytes)?;
+                        arg = None;
+                    }
+                    JmapCoroutineState::Yielded(JmapRedirectYield::WantsRead) => {
+                        arg = Some(self.read(target.as_str())?);
+                    }
+                    JmapCoroutineState::Yielded(JmapRedirectYield::WantsRedirect {
+                        url, ..
+                    }) => {
+                        target = url;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Runs a JMAP method coroutine to completion, routing every yield
+    /// to the transport stream opened on the session's API URL.
+    fn run_jmap<C, T, E>(&mut self, api_url: &Url, mut coroutine: C) -> Result<T, String>
+    where
+        C: JmapCoroutine<Yield = JmapYield, Return = Result<T, E>>,
+        E: Display,
+    {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                JmapCoroutineState::Complete(Ok(value)) => return Ok(value),
+                JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                JmapCoroutineState::Yielded(JmapYield::WantsRead) => {
+                    arg = Some(self.read(api_url.as_str())?);
+                }
+                JmapCoroutineState::Yielded(JmapYield::WantsWrite(bytes)) => {
+                    self.write(api_url.as_str(), &bytes)?;
                     arg = None;
                 }
             }
@@ -733,6 +1029,34 @@ fn auth(credentials: &Credentials) -> WebdavAuth {
         WebdavAuth::Bearer(HttpAuthBearer::new(credentials.password))
     } else {
         WebdavAuth::Basic(HttpAuthBasic::new(credentials.login, credentials.password))
+    }
+}
+
+/// Authorization header value from the credentials, following the same
+/// convention as [`auth`]: an empty login means the password field
+/// carries an OAuth 2.0 access token (Bearer), otherwise HTTP Basic.
+fn jmap_auth(credentials: &Credentials) -> SecretString {
+    let value = if credentials.login.is_empty() {
+        HttpAuthBearer::new(credentials.password).to_authorization()
+    } else {
+        HttpAuthBasic::new(credentials.login, credentials.password).to_authorization()
+    };
+
+    SecretString::from(value)
+}
+
+/// io-jmap AddressBook to the JNI-facing shape: the display name
+/// defaults to the id when the server returned none, and the absolute
+/// collection URL is left empty, composed by the caller.
+fn jmap_addressbook(book: JmapAddressBook) -> Addressbook {
+    let id = book.id.unwrap_or_default();
+
+    Addressbook {
+        name: book.name.unwrap_or_else(|| id.clone()),
+        id,
+        url: String::new(),
+        description: book.description,
+        color: None,
     }
 }
 

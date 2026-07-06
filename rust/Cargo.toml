@@ -15,12 +15,15 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+calcard = "0.3"
 io-http = { version = "0.1", default-features = false }
+io-jmap = { version = "0.1", default-features = false }
 io-msgraph = { version = "0.0.1", default-features = false }
 io-oauth = { version = "0.0.4", default-features = false }
 io-webdav = { version = "0.0.1", default-features = false }
 jni = "0.22"
 pimconf = { version = "0.1", default-features = false, features = ["search"] }
+secrecy = { version = "0.10", default-features = false }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 url = { version = "2", default-features = false }
@@ -30,6 +33,7 @@ vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] 
 # resolve via git, not crates.io); patch them to the checkouts next door.
 [patch.crates-io]
 io-http = { path = "../../io-http" }
+io-jmap = { path = "../../io-jmap" }
 io-msgraph = { path = "../../io-msgraph" }
 io-oauth = { path = "../../io-oauth" }
 io-webdav = { path = "../../io-webdav" }

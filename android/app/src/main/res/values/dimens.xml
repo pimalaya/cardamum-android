@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One app-bar geometry shared by every panel, so the title and the
+     icons never shift from one screen to the next. A 48dp icon button
+     with 4dp bar padding puts the glyph 16dp from the edge (the
+     framework default); the title sits 8dp after the leading icon. -->
+<resources>
+    <dimen name="app_bar_padding">4dp</dimen>
+    <dimen name="app_bar_icon">48dp</dimen>
+    <dimen name="app_bar_title_padding">8dp</dimen>
+    <!-- Top-level bars (home) have no leading icon, so the title takes
+         the icon's place to stay aligned with the detail screens. -->
+    <dimen name="app_bar_title_inset">16dp</dimen>
+</resources>

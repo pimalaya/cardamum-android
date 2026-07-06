@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lucide archive-x (ISC); stroke-based, tinted at use site. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?android:attr/textColorSecondary">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M3,3 h18 a1,1 0 0 1 1,1 v3 a1,1 0 0 1 -1,1 h-18 a1,1 0 0 1 -1,-1 v-3 a1,1 0 0 1 1,-1 z" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M4,8 v11 a2,2 0 0 0 2,2 h12 a2,2 0 0 0 2,-2 V8" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M9.5,17 l5,-5" />
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M9.5,12 l5,5" />
+</vector>

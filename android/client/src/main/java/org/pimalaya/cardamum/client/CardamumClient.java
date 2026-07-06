@@ -14,14 +14,18 @@ import org.json.JSONObject;
  * Owns the TLS sockets and the Rust bridge; the app sees neither.
  * Every call blocks, so callers must run it off the main thread.
  *
- * <p>Two backends hide behind the same operations: CardDAV, and
+ * <p>Three backends hide behind the same operations: CardDAV,
  * Microsoft Graph for accounts whose {@link Account#baseUrl} carries
  * the {@link #MSGRAPH_PREFIX} sentinel (Microsoft exposes no CardDAV;
- * the Rust bridge projects Graph contacts to and from vCards). A Graph
- * account authenticates with its OAuth access token in
- * {@link Account#password}; its addressbook URLs are the base URL plus
- * the folder id, so they stay unique across accounts. Graph updates
- * carry no If-Match guard (last-write-wins).
+ * the Rust bridge projects Graph contacts to and from vCards), and
+ * JMAP for Contacts (RFC 9610) for accounts whose base URL carries the
+ * {@link #JMAP_PREFIX} sentinel (the bridge converts JSContact cards
+ * to and from vCards). A Graph account authenticates with its OAuth
+ * access token in {@link Account#password}; its addressbook URLs are
+ * the base URL plus the folder id, so they stay unique across
+ * accounts. JMAP addressbook URLs likewise append the AddressBook id
+ * to the base URL. Graph and JMAP updates carry no If-Match guard
+ * (last-write-wins).
  */
 public class CardamumClient {
     /**
@@ -30,11 +34,19 @@ public class CardamumClient {
      */
     public static final String MSGRAPH_PREFIX = "msgraph://";
 
+    /**
+     * Sentinel scheme of JMAP accounts: their base URL is
+     * {@code jmap://<host>[/path]} instead of a CardDAV context root.
+     * The part after the sentinel is the HTTPS session URL (a bare host
+     * triggers {@code /.well-known/jmap} discovery).
+     */
+    public static final String JMAP_PREFIX = "jmap://";
+
     /** Path segment of the default Contacts folder (empty Graph folder id). */
     private static final String MSGRAPH_DEFAULT_FOLDER = "contacts";
     /**
-     * Discovers the CardDAV context root for the email, preferring the
-     * given {@code tcp://host:port} DNS resolver (null for the default).
+     * Discovers the CardDAV context root for the email through the
+     * given DNS resolver (null for the default DNS-over-HTTPS one).
      * Throws when none is found.
      */
     public String discover(String email, String resolver) {
@@ -48,11 +60,11 @@ public class CardamumClient {
     }
 
     /**
-     * Searches every discovery mechanism for CardDAV service configs
-     * (fixed provider rules, PACC, RFC 6764 resolve), each carrying
-     * its endpoint and authentication methods, so the connection
-     * screen can list them for the user to choose. Resolver as in
-     * {@link #discover}.
+     * Searches every discovery mechanism for CardDAV and JMAP service
+     * configs (fixed provider rules, PACC, RFC 6764 CardDAV resolve,
+     * RFC 8620 JMAP resolve), each carrying its endpoint and
+     * authentication methods, so the connection screen can list them
+     * for the user to choose. Resolver as in {@link #discover}.
      */
     public List<ServiceConfig> searchAll(String email, String resolver) {
         Transport transport = new Transport();
@@ -78,11 +90,17 @@ public class CardamumClient {
 
     /**
      * Refreshes OAuth 2.0 tokens; {@code scope} is the space-separated
-     * scope list of the original grant (null keeps the server
-     * default). The code-exchange side lives on {@link OauthSession}.
+     * scope list of the original grant (null keeps the server default)
+     * and {@code clientSecret} rides along when the registration
+     * issued one (null for none). The code-exchange side lives on
+     * {@link OauthSession}.
      */
     public OauthTokens oauthRefresh(
-            String tokenEndpoint, String clientId, String refreshToken, String scope) {
+            String tokenEndpoint,
+            String clientId,
+            String clientSecret,
+            String refreshToken,
+            String scope) {
         Transport transport = new Transport();
         try {
             JSONObject reply =
@@ -91,6 +109,7 @@ public class CardamumClient {
                                     transport,
                                     tokenEndpoint,
                                     clientId,
+                                    clientSecret == null ? "" : clientSecret,
                                     refreshToken,
                                     scope == null ? "" : scope));
             return OauthTokens.from(reply);
@@ -105,8 +124,9 @@ public class CardamumClient {
     }
 
     /**
-     * Lists the account's addressbooks: the CardDAV discovery walk, or
-     * the Graph contact folders (default Contacts folder first).
+     * Lists the account's addressbooks: the CardDAV discovery walk,
+     * the Graph contact folders (default Contacts folder first), or
+     * the JMAP AddressBooks.
      */
     public List<Addressbook> listAddressbooks(Account account) {
         Transport transport = new Transport();
@@ -126,6 +146,30 @@ public class CardamumClient {
                                     string(book, "name"),
                                     account.baseUrl + "/" + segment,
                                     null,
+                                    null));
+                }
+                return books;
+            }
+
+            if (isJmap(account)) {
+                JSONArray reply =
+                        array(
+                                Native.listJmapAddressbooks(
+                                        transport,
+                                        jmapSessionUrl(account),
+                                        account.login,
+                                        account.password));
+
+                List<Addressbook> books = new ArrayList<>(reply.length());
+                for (int index = 0; index < reply.length(); index++) {
+                    JSONObject book = object(reply, index);
+                    String id = string(book, "id");
+                    books.add(
+                            new Addressbook(
+                                    id,
+                                    string(book, "name"),
+                                    account.baseUrl + "/" + id,
+                                    optString(book, "description"),
                                     null));
                 }
                 return books;
@@ -163,8 +207,18 @@ public class CardamumClient {
                                     transport,
                                     account.password,
                                     graphFolder(account, addressbookUrl))
-                            : Native.listCards(
-                                    transport, addressbookUrl, account.login, account.password);
+                            : isJmap(account)
+                                    ? Native.listJmapCards(
+                                            transport,
+                                            jmapSessionUrl(account),
+                                            account.login,
+                                            account.password,
+                                            jmapBook(account, addressbookUrl))
+                                    : Native.listCards(
+                                            transport,
+                                            addressbookUrl,
+                                            account.login,
+                                            account.password);
 
             JSONArray parsed = array(reply);
             List<Card> cards = new ArrayList<>(parsed.length());
@@ -196,6 +250,18 @@ public class CardamumClient {
                                         vcard)));
             }
 
+            if (isJmap(account)) {
+                return card(
+                        object(
+                                Native.createJmapCard(
+                                        transport,
+                                        jmapSessionUrl(account),
+                                        account.login,
+                                        account.password,
+                                        jmapBook(account, addressbookUrl),
+                                        vcard)));
+            }
+
             JSONObject reply =
                     object(
                             Native.createCard(
@@ -220,6 +286,17 @@ public class CardamumClient {
                 return card(object(Native.readGraphCard(transport, account.password, uri)));
             }
 
+            if (isJmap(account)) {
+                return card(
+                        object(
+                                Native.readJmapCard(
+                                        transport,
+                                        jmapSessionUrl(account),
+                                        account.login,
+                                        account.password,
+                                        uri)));
+            }
+
             JSONObject reply =
                     object(
                             Native.readCard(
@@ -237,8 +314,9 @@ public class CardamumClient {
     /**
      * Updates the card in the addressbook collection, returning it with
      * its new ETag. The base vCard (the state last synced with the
-     * server, null when unknown) trims the Graph PATCH to the fields
-     * the edit changed; CardDAV PUTs the full vCard and ignores it.
+     * server, null when unknown) trims the Graph and JMAP patches to
+     * the fields the edit changed; CardDAV PUTs the full vCard and
+     * ignores it.
      */
     public Card updateCard(Account account, String addressbookUrl, Card card, String baseVcard) {
         Transport transport = new Transport();
@@ -250,6 +328,19 @@ public class CardamumClient {
                                         transport,
                                         account.password,
                                         uriOf(card),
+                                        card.vcard,
+                                        baseVcard == null ? "" : baseVcard)));
+            }
+
+            if (isJmap(account)) {
+                return card(
+                        object(
+                                Native.updateJmapCard(
+                                        transport,
+                                        jmapSessionUrl(account),
+                                        account.login,
+                                        account.password,
+                                        jmapUriOf(card),
                                         card.vcard,
                                         baseVcard == null ? "" : baseVcard)));
             }
@@ -295,6 +386,17 @@ public class CardamumClient {
                 return;
             }
 
+            if (isJmap(account)) {
+                object(
+                        Native.deleteJmapCard(
+                                transport,
+                                jmapSessionUrl(account),
+                                account.login,
+                                account.password,
+                                jmapUriOf(card)));
+                return;
+            }
+
             object(
                     Native.deleteCard(
                             transport,
@@ -313,8 +415,36 @@ public class CardamumClient {
         return card.uri == null ? card.id + ".vcf" : card.uri;
     }
 
+    /** The card's JMAP addressing key: the ContactCard id, no suffix. */
+    private static String jmapUriOf(Card card) {
+        return card.uri == null ? card.id : card.uri;
+    }
+
     private static boolean isGraph(Account account) {
         return account.baseUrl != null && account.baseUrl.startsWith(MSGRAPH_PREFIX);
+    }
+
+    private static boolean isJmap(Account account) {
+        return account.baseUrl != null && account.baseUrl.startsWith(JMAP_PREFIX);
+    }
+
+    /**
+     * The HTTPS session URL behind a JMAP account's base URL (the part
+     * after the {@link #JMAP_PREFIX} sentinel).
+     */
+    private static String jmapSessionUrl(Account account) {
+        return "https://" + account.baseUrl.substring(JMAP_PREFIX.length());
+    }
+
+    /**
+     * The JMAP AddressBook id addressed by an addressbook URL (the
+     * segment after the account's base URL).
+     */
+    private static String jmapBook(Account account, String addressbookUrl) {
+        String prefix = account.baseUrl + "/";
+        return addressbookUrl.startsWith(prefix)
+                ? addressbookUrl.substring(prefix.length())
+                : addressbookUrl;
     }
 
     /**

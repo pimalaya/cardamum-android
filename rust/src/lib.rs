@@ -16,10 +16,14 @@
 //! representation, so the `listGraph*` / `*GraphCard` entry points
 //! run io-msgraph's contact coroutines instead, with the msgraph
 //! module projecting Graph contact resources to and from the vCard
-//! document of record.
+//! document of record. JMAP servers likewise speak JSContact instead
+//! of vCard, so the `listJmap*` / `*JmapCard` entry points run
+//! io-jmap's RFC 9610 coroutines, with the jmap module converting
+//! ContactCards to and from vCards via calcard (RFC 9555).
 
 mod client;
 mod ffi;
+mod jmap;
 mod msgraph;
 mod oauth;
 mod project;

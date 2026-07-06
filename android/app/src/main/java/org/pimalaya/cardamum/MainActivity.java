@@ -6,9 +6,6 @@ import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
-import android.net.LinkProperties;
-import android.net.Network;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,7 +24,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ViewFlipper;
-import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
@@ -42,11 +38,13 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Addressbook;
+import org.pimalaya.cardamum.client.AuthMethod;
 import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardamumClient;
 import org.pimalaya.cardamum.client.OauthSession;
 import org.pimalaya.cardamum.client.OauthTokens;
 import org.pimalaya.cardamum.client.Provider;
+import org.pimalaya.cardamum.client.ServiceConfig;
 
 /**
  * Single-activity host walking the app's screens through a ViewFlipper.
@@ -66,11 +64,10 @@ public class MainActivity extends Activity {
     private static final int PANEL_CONFIG = 1;
     private static final int PANEL_PASSWORD = 2;
     private static final int PANEL_BOOKS = 3;
-    private static final int PANEL_SYNC = 4;
-    private static final int PANEL_CONTACTS = 5;
-    private static final int PANEL_CONTACT = 6;
-    private static final int PANEL_SETTINGS = 7;
-    private static final int PANEL_HOME = 8;
+    private static final int PANEL_CONTACTS = 4;
+    private static final int PANEL_CONTACT = 5;
+    private static final int PANEL_SETTINGS = 6;
+    private static final int PANEL_HOME = 7;
 
     private static final int REQUEST_CONTACTS = 1;
 
@@ -97,9 +94,12 @@ public class MainActivity extends Activity {
     /** Every connected account (multi-account). */
     private final List<AccountEntry> accounts = new ArrayList<>();
 
-    /** Onboarding state: the entered email and its discovered context root. */
+    /** Onboarding state: the entered email and its searched service configs. */
     private String pendingEmail;
-    private String discoveredUrl;
+    private List<ServiceConfig> searchedConfigs = new ArrayList<>();
+
+    /** Action of the config option currently picked (null until one is). */
+    private Runnable selectedConfig;
 
     /** True while the auth flow adds a further account (shows a back arrow). */
     private boolean addingAccount;
@@ -110,6 +110,16 @@ public class MainActivity extends Activity {
     private String pendingBaseUrl;
     private String pendingAccountEmail;
     private String pendingClientId;
+    private String pendingClientSecret;
+
+    /** Loopback listener of a custom-client grant; closed once redeemed. */
+    private java.net.ServerSocket loopbackServer;
+
+    /** Email of the just-connected account, awaiting its book selection. */
+    private String connectedEmail;
+
+    /** Addressbook checkboxes of the post-connect selection, tagged with their url. */
+    private List<CheckBox> bookBoxes = new ArrayList<>();
 
     /** Subscribed addressbooks grouped for the home screen. */
     private List<BookEntry> homeBooks = new ArrayList<>();
@@ -123,9 +133,6 @@ public class MainActivity extends Activity {
     /** The open addressbook's cards. */
     private List<Entry> contacts = new ArrayList<>();
 
-    /** Checkboxes of the subscription editor, tagged with their book url. */
-    private List<CheckBox> subscriptionBoxes = new ArrayList<>();
-
     /** The contacts list, sorted; backs the recycling adapter. */
     private List<Entry> sortedContacts = new ArrayList<>();
     private ContactsAdapter adapter;
@@ -135,6 +142,9 @@ public class MainActivity extends Activity {
 
     /** Debounced search refresh, so typing does not re-render per keystroke. */
     private Runnable pendingSearch;
+
+    /** Sync to re-run once the contacts permission is granted, if any. */
+    private Runnable afterContactsPermission;
 
     /** Multi-select state on the contacts list, keyed by book url + id. */
     private boolean selectionMode;
@@ -158,7 +168,6 @@ public class MainActivity extends Activity {
         form = new ContactForm(this);
 
         setUpEmailPanel();
-        setUpPasswordPanel();
         setUpBooksPanel();
         setUpContactsPanel();
         setUpContactPanel();
@@ -190,13 +199,29 @@ public class MainActivity extends Activity {
         handleOauthRedirect(getIntent());
     }
 
-    /** Enters the connection flow, with a back arrow only when adding. */
+    /**
+     * Enters the connection flow. The email view's back arrow shows
+     * only when adding a further account: the first-run onboarding
+     * starts here with no account, so it has no way back. The later
+     * steps (config, books) always keep their back arrow.
+     */
     private void startAuth(boolean adding) {
         addingAccount = adding;
         pendingEmail = null;
-        discoveredUrl = null;
+        searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
-        findViewById(R.id.email_back).setVisibility(adding ? View.VISIBLE : View.GONE);
+
+        // The email back arrow and every step's cross only exist when an
+        // account is already configured (adding); the first-run flow is
+        // a forced, one-way path.
+        int nav = adding ? View.VISIBLE : View.GONE;
+        for (int id :
+                new int[] {
+                    R.id.email_back, R.id.email_cancel, R.id.config_cancel, R.id.books_cancel,
+                }) {
+            findViewById(id).setVisibility(nav);
+        }
+
         show(PANEL_EMAIL);
     }
 
@@ -242,11 +267,10 @@ public class MainActivity extends Activity {
             case PANEL_CONFIG:
                 show(PANEL_EMAIL);
                 break;
-            case PANEL_PASSWORD:
-                show(PANEL_CONFIG);
-                break;
             case PANEL_BOOKS:
-                show(PANEL_HOME);
+                // The account is already stored (all-subscribed) by the
+                // time this step shows, so leaving it is safe.
+                goHome();
                 break;
             case PANEL_CONTACTS:
                 goHome();
@@ -269,86 +293,124 @@ public class MainActivity extends Activity {
 
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
-        findViewById(R.id.email_back).setOnClickListener(view -> show(PANEL_HOME));
-        findViewById(R.id.email_submit)
+        findViewById(R.id.email_back).setOnClickListener(view -> goHome());
+        findViewById(R.id.email_cancel).setOnClickListener(view -> goHome());
+        findViewById(R.id.config_back).setOnClickListener(view -> show(PANEL_EMAIL));
+        findViewById(R.id.config_cancel).setOnClickListener(view -> goHome());
+        findViewById(R.id.config_continue)
                 .setOnClickListener(
                         view -> {
-                            String address = email.getText().toString().trim();
-                            if (address.isEmpty() || !address.contains("@")) {
-                                toast(getString(R.string.email_invalid));
-                                return;
-                            }
-
-                            pendingEmail = address;
-                            if (Provider.detect(address) == Provider.OTHER) {
-                                discover();
-                            } else {
-                                showConfigs(Provider.detect(address));
+                            if (selectedConfig != null) {
+                                selectedConfig.run();
                             }
                         });
-    }
 
-    /** Resolves the CardDAV context root for the email, then proposes configs. */
-    private void discover() {
         Button submit = findViewById(R.id.email_submit);
-        ProgressBar progress = findViewById(R.id.email_progress);
+        // Continue stays disabled until the field holds a plausible
+        // address, so an empty or malformed one is simply not
+        // submittable (no toast).
         submit.setEnabled(false);
-        progress.setVisibility(View.VISIBLE);
+        email.addTextChangedListener(
+                new android.text.TextWatcher() {
+                    @Override
+                    public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
 
-        String resolver = dnsResolver();
-        io.execute(
-                () -> {
-                    try {
-                        String url = client.discover(pendingEmail, resolver);
-                        main.post(
-                                () -> {
-                                    submit.setEnabled(true);
-                                    progress.setVisibility(View.GONE);
-                                    discoveredUrl = url;
-                                    showConfigs(Provider.OTHER);
-                                });
-                    } catch (Exception error) {
-                        main.post(
-                                () -> {
-                                    submit.setEnabled(true);
-                                    progress.setVisibility(View.GONE);
-                                    showError(error, R.string.discover_failed);
-                                });
+                    @Override
+                    public void onTextChanged(CharSequence s, int a, int b, int c) {}
+
+                    @Override
+                    public void afterTextChanged(android.text.Editable s) {
+                        String address = s.toString().trim();
+                        submit.setEnabled(!address.isEmpty() && address.contains("@"));
+                    }
+                });
+
+        submit.setOnClickListener(
+                view -> {
+                    // The panel stays visible while the search runs;
+                    // drop the field's focus so the keyboard leaves.
+                    hideKeyboard();
+
+                    String address = email.getText().toString().trim();
+                    pendingEmail = address;
+                    if (Provider.detect(address) == Provider.OTHER) {
+                        search();
+                    } else {
+                        showConfigs(Provider.detect(address));
                     }
                 });
     }
 
     /**
-     * The active network's first usable DNS server as a tcp:// URL, or
-     * null. Discovery prefers it over a public resolver: mobile
-     * networks routinely block outbound DNS to third parties.
+     * Searches every pimconf mechanism for the email's CardDAV and
+     * JMAP service configs, then proposes them. Only protocols the
+     * server actually speaks end up on the config screen; a failing
+     * search surfaces as an error dialog and stays on the email panel.
      */
-    private String dnsResolver() {
-        ConnectivityManager connectivity =
-                (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-        Network network = connectivity.getActiveNetwork();
-        LinkProperties link = network == null ? null : connectivity.getLinkProperties(network);
-        if (link == null) {
-            return null;
-        }
+    private void search() {
+        setAuthLoading(R.id.email_submit, R.id.email_progress, true);
 
-        for (InetAddress dns : link.getDnsServers()) {
-            String host = dns.getHostAddress();
-            // Scoped link-local addresses (fe80::1%wlan0) do not fit in
-            // a URL.
-            if (host == null || host.contains("%")) {
-                continue;
-            }
-            boolean bracketed = dns instanceof Inet6Address;
-            return "tcp://" + (bracketed ? "[" + host + "]" : host) + ":53";
-        }
-        return null;
+        io.execute(
+                () -> {
+                    List<ServiceConfig> configs = new ArrayList<>();
+                    Exception failure = null;
+                    try {
+                        // A null resolver falls back to the bridge's
+                        // DNS-over-HTTPS default, which works on mobile
+                        // networks that block outbound DNS over TCP.
+                        configs = client.searchAll(pendingEmail, null);
+                    } catch (Exception error) {
+                        // Failing mechanisms are already skipped inside
+                        // the search; this is the whole search dying.
+                        Log.w("cardamum", "config search failed", error);
+                        failure = error;
+                    }
+
+                    List<ServiceConfig> found = configs;
+                    Exception searchFailure = failure;
+                    main.post(
+                            () -> {
+                                setAuthLoading(R.id.email_submit, R.id.email_progress, false);
+                                if (searchFailure != null) {
+                                    showError(searchFailure, R.string.discover_failed);
+                                    return;
+                                }
+                                searchedConfigs = found;
+                                showConfigs(Provider.OTHER);
+                            });
+                });
     }
 
-    /** Fills the config screen with the proposals matching the provider. */
+    /**
+     * Toggles an auth Continue button between its label and an
+     * in-button loader, the button disabled while loading.
+     */
+    private void setAuthLoading(int buttonId, int progressId, boolean loading) {
+        Button button = findViewById(buttonId);
+        button.setEnabled(!loading);
+        button.setText(loading ? "" : getString(R.string.email_submit));
+        findViewById(progressId).setVisibility(loading ? View.VISIBLE : View.GONE);
+    }
+
+    /** The config Continue back to idle: enabled once an option is picked. */
+    private void resetConfigContinue() {
+        setAuthLoading(R.id.config_continue, R.id.config_progress, false);
+        findViewById(R.id.config_continue).setEnabled(selectedConfig != null);
+    }
+
+    /**
+     * Fills the config screen with the proposals matching the provider,
+     * as a radio list: one option per protocol and authentication
+     * variant. Picking an option reveals the Continue button, which
+     * runs it: OAuth starts the browser grant, password pops the
+     * credentials dialog.
+     */
     private void showConfigs(Provider provider) {
         TextView email = findViewById(R.id.config_email);
         email.setText(pendingEmail);
+
+        selectedConfig = null;
+        resetConfigContinue();
 
         LinearLayout container = findViewById(R.id.config_container);
         container.removeAllViews();
@@ -356,98 +418,235 @@ public class MainActivity extends Activity {
         switch (provider) {
             case GOOGLE:
                 container.addView(
-                        configRow(
+                        configItem(
+                                getString(R.string.config_carddav),
+                                null,
+                                getString(R.string.config_oauth2_cardamum),
+                                this::startGoogleOauth));
+                container.addView(
+                        configItem(
+                                getString(R.string.config_carddav),
+                                null,
+                                getString(R.string.config_oauth2_custom),
+                                () ->
+                                        promptCustomOauth(
+                                                Oauth.googleCardDavBase(pendingEmail),
+                                                Oauth.GOOGLE_AUTH_ENDPOINT,
+                                                Oauth.GOOGLE_TOKEN_ENDPOINT,
+                                                Oauth.GOOGLE_SCOPE)));
+                container.addView(
+                        configItem(
                                 getString(R.string.config_google_api),
+                                null,
                                 getString(R.string.config_soon),
                                 null));
-                container.addView(
-                        configRow(
-                                getString(R.string.config_google_carddav),
-                                getString(R.string.config_oauth),
-                                view -> startGoogleOauth()));
                 break;
             case MICROSOFT:
                 container.addView(
-                        configRow(
+                        configItem(
                                 getString(R.string.config_msgraph),
-                                getString(R.string.config_oauth),
-                                view -> startMicrosoftOauth()));
+                                null,
+                                getString(R.string.config_oauth2_cardamum),
+                                this::startMicrosoftOauth));
+                container.addView(
+                        configItem(
+                                getString(R.string.config_msgraph),
+                                null,
+                                getString(R.string.config_oauth2_custom),
+                                () ->
+                                        promptCustomOauth(
+                                                Oauth.msgraphBase(pendingEmail),
+                                                Oauth.MICROSOFT_AUTH_ENDPOINT,
+                                                Oauth.MICROSOFT_TOKEN_ENDPOINT,
+                                                Oauth.MICROSOFT_SCOPE)));
                 break;
             case OTHER:
-                container.addView(
-                        configRow(
-                                getString(R.string.config_carddav),
-                                hostOf(discoveredUrl),
-                                view -> openPasswordPanel()));
-                container.addView(
-                        configRow(
-                                getString(R.string.config_jmap),
-                                getString(R.string.config_soon),
-                                null));
+                if (searchedConfigs.isEmpty()) {
+                    container.addView(
+                            configItem(getString(R.string.discover_failed), null, null, null));
+                }
+                for (ServiceConfig config : searchedConfigs) {
+                    addConfigItems(container, config);
+                }
                 break;
         }
 
         show(PANEL_CONFIG);
     }
 
-    private View configRow(String title, String subtitle, View.OnClickListener onClick) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(8), dp(14), dp(8), dp(14));
+    /**
+     * One radio option per authentication variant of a searched config:
+     * password variants prompt for the credentials, OAuth code grants
+     * prompt for a custom client (the endpoints prefilled from the
+     * discovery), the rest stay disabled (no discovered client to use).
+     */
+    private void addConfigItems(LinearLayout container, ServiceConfig config) {
+        String protocol = protocolName(config.service);
+        String host = hostOf(config.url);
+        String baseUrl =
+                "jmap".equals(config.service)
+                        ? CardamumClient.JMAP_PREFIX + config.url.replaceFirst("^https?://", "")
+                        : config.url;
 
-        TextView titleView = new TextView(this);
-        titleView.setText(title);
-        row.addView(titleView);
+        for (AuthMethod method : config.auth) {
+            switch (method.type) {
+                case PASSWORD:
+                    String login = config.username != null ? config.username : pendingEmail;
+                    container.addView(
+                            configItem(
+                                    protocol,
+                                    host,
+                                    getString(R.string.config_password),
+                                    () ->
+                                            promptPassword(
+                                                    baseUrl,
+                                                    host,
+                                                    login,
+                                                    R.string.password_hint)));
+                    break;
+                case BEARER:
+                    // Empty login: the secret is sent as a Bearer token
+                    // instead of Basic credentials.
+                    container.addView(
+                            configItem(
+                                    protocol,
+                                    host,
+                                    getString(R.string.config_token),
+                                    () ->
+                                            promptPassword(
+                                                    baseUrl, host, "", R.string.config_token)));
+                    break;
+                case OAUTH_AUTHORIZATION_CODE_GRANT:
+                    container.addView(
+                            configItem(
+                                    protocol,
+                                    host,
+                                    getString(R.string.config_oauth2_custom),
+                                    () ->
+                                            promptCustomOauth(
+                                                    baseUrl,
+                                                    method.authorizationEndpoint,
+                                                    method.tokenEndpoint,
+                                                    method.scope)));
+                    break;
+                default:
+                    container.addView(
+                            configItem(protocol, host, getString(R.string.config_oauth2), null));
+            }
+        }
+    }
 
-        TextView subtitleView = new TextView(this);
-        subtitleView.setText(subtitle);
-        subtitleView.setTextColor(getResources().getColor(android.R.color.darker_gray, getTheme()));
-        row.addView(subtitleView);
+    /** The user-facing name of a searched service kind. */
+    private String protocolName(String service) {
+        switch (service) {
+            case "carddav":
+                return getString(R.string.config_carddav);
+            case "jmap":
+                return getString(R.string.config_jmap);
+            default:
+                return service;
+        }
+    }
 
-        if (onClick == null) {
-            row.setAlpha(0.4f);
+    /**
+     * A config option as a two-line radio: the protocol with its server
+     * host in parentheses, then the authentication method diminished
+     * below. Picking it arms the Continue button with `action`; a null
+     * action renders the option disabled.
+     */
+    private View configItem(String title, String detail, String subtitle, Runnable action) {
+        android.widget.RadioButton option = new android.widget.RadioButton(this);
+        String main = detail == null ? title : title + " (" + detail + ")";
+
+        if (subtitle == null) {
+            option.setText(main);
         } else {
-            row.setOnClickListener(onClick);
+            android.text.SpannableString text =
+                    new android.text.SpannableString(main + "\n" + subtitle);
+            int start = main.length() + 1;
+            text.setSpan(
+                    new android.text.style.RelativeSizeSpan(0.8f),
+                    start,
+                    text.length(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            text.setSpan(
+                    new android.text.style.ForegroundColorSpan(
+                            resolveColor(android.R.attr.textColorSecondary)),
+                    start,
+                    text.length(),
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            option.setText(text);
         }
 
-        return row;
+        option.setTextSize(16);
+        option.setPadding(dp(8), dp(12), dp(8), dp(12));
+
+        if (action == null) {
+            option.setEnabled(false);
+        } else {
+            option.setOnClickListener(
+                    view -> {
+                        selectedConfig = action;
+                        findViewById(R.id.config_continue).setEnabled(true);
+                    });
+        }
+
+        return option;
     }
 
-    private void openPasswordPanel() {
-        TextView server = findViewById(R.id.password_server);
-        server.setText(getString(R.string.password_server, pendingEmail, hostOf(discoveredUrl)));
+    /**
+     * Prompts for the secret in a dialog (a password, or an API token
+     * when the login is empty: the empty login makes the backends send
+     * it as Bearer instead of Basic), then verifies and persists the
+     * account.
+     */
+    private void promptPassword(String baseUrl, String host, String login, int hint) {
+        EditText input = new EditText(this);
+        input.setInputType(
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint(hint);
 
-        EditText password = findViewById(R.id.password_input);
-        password.setText("");
+        // Inset the field from the dialog edges (setView is flush).
+        LinearLayout wrapper = new LinearLayout(this);
+        wrapper.setPadding(dp(24), dp(8), dp(24), 0);
+        wrapper.addView(
+                input,
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        show(PANEL_PASSWORD);
-    }
-
-    private void setUpPasswordPanel() {
-        findViewById(R.id.password_submit)
-                .setOnClickListener(
-                        view -> {
-                            String password =
-                                    ((EditText) findViewById(R.id.password_input))
-                                            .getText()
-                                            .toString();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.password_title)
+                .setMessage(
+                        getString(
+                                R.string.password_server,
+                                login.isEmpty() ? pendingEmail : login,
+                                host))
+                .setView(wrapper)
+                .setPositiveButton(
+                        R.string.password_submit,
+                        (dialog, which) -> {
+                            String password = input.getText().toString();
                             if (password.isEmpty()) {
                                 toast(getString(R.string.password_empty));
                                 return;
                             }
-
                             connect(
-                                    new Account(discoveredUrl, pendingEmail, password),
+                                    new Account(baseUrl, login, password),
                                     pendingEmail,
                                     null,
                                     null,
+                                    null,
                                     null);
-                        });
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     /**
      * Verifies the account connects before persisting it and selecting
-     * books. The last three parameters carry the refresh material of an
+     * books. The last four parameters carry the refresh material of an
      * OAuth account (all null for a password one), so expired access
      * tokens can be refreshed on later syncs.
      */
@@ -456,11 +655,9 @@ public class MainActivity extends Activity {
             String email,
             String refreshToken,
             String tokenEndpoint,
-            String clientId) {
-        Button submit = findViewById(R.id.password_submit);
-        ProgressBar progress = findViewById(R.id.password_progress);
-        submit.setEnabled(false);
-        progress.setVisibility(View.VISIBLE);
+            String clientId,
+            String clientSecret) {
+        setAuthLoading(R.id.config_continue, R.id.config_progress, true);
 
         io.execute(
                 () -> {
@@ -468,8 +665,7 @@ public class MainActivity extends Activity {
                         List<Addressbook> fetched = client.listAddressbooks(candidate);
                         main.post(
                                 () -> {
-                                    submit.setEnabled(true);
-                                    progress.setVisibility(View.GONE);
+                                    resetConfigContinue();
                                     accounts.removeIf(entry -> entry.email.equals(email));
                                     AccountEntry entry =
                                             new AccountEntry(
@@ -477,24 +673,94 @@ public class MainActivity extends Activity {
                                                     email,
                                                     refreshToken,
                                                     tokenEndpoint,
-                                                    clientId);
+                                                    clientId,
+                                                    clientSecret);
                                     accounts.add(entry);
                                     store.add(entry);
-                                    // Every addressbook of a new account is
-                                    // subscribed by default; the filter edits it.
+                                    // Stored all-subscribed; the selection
+                                    // step trims the set before the first sync.
                                     base.replaceAddressbooks(email, fetched);
-                                    syncRemote(true);
+                                    openBooksSelection(email, fetched);
                                 });
                     } catch (Exception error) {
                         Log.w("cardamum", "connect failed", error);
                         main.post(
                                 () -> {
-                                    submit.setEnabled(true);
-                                    progress.setVisibility(View.GONE);
+                                    resetConfigContinue();
                                     showError(error, R.string.connect_failed);
                                 });
                     }
                 });
+    }
+
+    // ---- Addressbook selection -------------------------------------------------
+
+    private void setUpBooksPanel() {
+        findViewById(R.id.books_back).setOnClickListener(view -> goHome());
+        findViewById(R.id.books_cancel).setOnClickListener(view -> goHome());
+        findViewById(R.id.books_continue).setOnClickListener(view -> confirmBooks());
+    }
+
+    /**
+     * Lists the just-connected account's addressbooks with a checkbox
+     * each (all checked), so the user picks which to sync before the
+     * first sync runs. Same chrome as the config panel.
+     */
+    private void openBooksSelection(String email, List<Addressbook> books) {
+        connectedEmail = email;
+        bookBoxes = new ArrayList<>();
+
+        LinearLayout container = findViewById(R.id.books_container);
+        container.removeAllViews();
+
+        if (books.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(R.string.books_none);
+            empty.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+            empty.setPadding(0, dp(16), 0, dp(16));
+            container.addView(empty);
+        }
+
+        for (Addressbook book : books) {
+            CheckBox box = new CheckBox(this);
+            box.setText(book.name);
+            box.setTextSize(16);
+            box.setChecked(true);
+            box.setTag(book.url);
+            box.setPadding(dp(8), dp(12), dp(8), dp(12));
+            box.setOnClickListener(view -> updateBooksContinue());
+            container.addView(box);
+            bookBoxes.add(box);
+        }
+
+        updateBooksContinue();
+        setAuthLoading(R.id.books_continue, R.id.books_progress, false);
+        show(PANEL_BOOKS);
+    }
+
+    /** Continue is enabled only while at least one addressbook is checked. */
+    private void updateBooksContinue() {
+        boolean any = false;
+        for (CheckBox box : bookBoxes) {
+            if (box.isChecked()) {
+                any = true;
+                break;
+            }
+        }
+        findViewById(R.id.books_continue).setEnabled(any);
+    }
+
+    /** Applies the checked subscriptions, then runs the account's first sync. */
+    private void confirmBooks() {
+        java.util.Set<String> subscribed = new java.util.HashSet<>();
+        for (CheckBox box : bookBoxes) {
+            if (box.isChecked()) {
+                subscribed.add((String) box.getTag());
+            }
+        }
+        base.setSubscriptions(subscribed);
+        setAuthLoading(R.id.books_continue, R.id.books_progress, true);
+        syncRemote(true);
     }
 
     // ---- OAuth 2.0 sign-in -----------------------------------------------------
@@ -507,11 +773,13 @@ public class MainActivity extends Activity {
      */
     private void startGoogleOauth() {
         pendingOauth =
-                new OauthSession(Oauth.GOOGLE_CLIENT_ID, Oauth.GOOGLE_REDIRECT_URI, Oauth.GOOGLE_SCOPE);
+                new OauthSession(
+                        Oauth.GOOGLE_CLIENT_ID, null, Oauth.GOOGLE_REDIRECT_URI, Oauth.GOOGLE_SCOPE);
         pendingTokenEndpoint = Oauth.GOOGLE_TOKEN_ENDPOINT;
         pendingBaseUrl = Oauth.googleCardDavBase(pendingEmail);
         pendingAccountEmail = pendingEmail;
         pendingClientId = Oauth.GOOGLE_CLIENT_ID;
+        pendingClientSecret = null;
 
         // access_type=offline + prompt=consent make Google issue a
         // refresh token; login_hint preselects the entered account.
@@ -527,10 +795,12 @@ public class MainActivity extends Activity {
         try {
             String url = pendingOauth.authorizeUrl(Oauth.GOOGLE_AUTH_ENDPOINT, extras);
             persistPendingOauth(Oauth.GOOGLE_CLIENT_ID, Oauth.GOOGLE_REDIRECT_URI);
+            setAuthLoading(R.id.config_continue, R.id.config_progress, true);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
             pendingOauth = null;
             clearPendingOauth();
+            resetConfigContinue();
             showError(error, R.string.connect_failed);
         }
     }
@@ -547,6 +817,7 @@ public class MainActivity extends Activity {
         getSharedPreferences(OAUTH_PREFS, MODE_PRIVATE)
                 .edit()
                 .putString("clientId", clientId)
+                .putString("clientSecret", pendingClientSecret == null ? "" : pendingClientSecret)
                 .putString("redirectUri", redirectUri)
                 .putString("state", pendingOauth.state())
                 .putString("verifier", pendingOauth.pkceVerifier())
@@ -564,9 +835,11 @@ public class MainActivity extends Activity {
             return;
         }
 
+        String secret = prefs.getString("clientSecret", "");
         pendingOauth =
                 new OauthSession(
                         prefs.getString("clientId", ""),
+                        secret,
                         prefs.getString("redirectUri", ""),
                         "",
                         state,
@@ -575,6 +848,7 @@ public class MainActivity extends Activity {
         pendingBaseUrl = prefs.getString("baseUrl", "");
         pendingAccountEmail = prefs.getString("email", "");
         pendingClientId = prefs.getString("clientId", "");
+        pendingClientSecret = secret.isEmpty() ? null : secret;
     }
 
     /** Drops the persisted grant (redeemed, or aborted). */
@@ -593,12 +867,14 @@ public class MainActivity extends Activity {
         pendingOauth =
                 new OauthSession(
                         Oauth.MICROSOFT_CLIENT_ID,
+                        null,
                         Oauth.MICROSOFT_REDIRECT_URI,
                         Oauth.MICROSOFT_SCOPE);
         pendingTokenEndpoint = Oauth.MICROSOFT_TOKEN_ENDPOINT;
         pendingBaseUrl = Oauth.msgraphBase(pendingEmail);
         pendingAccountEmail = pendingEmail;
         pendingClientId = Oauth.MICROSOFT_CLIENT_ID;
+        pendingClientSecret = null;
 
         // login_hint preselects the entered account in the Microsoft
         // sign-in page; the refresh token comes from the offline_access
@@ -613,10 +889,12 @@ public class MainActivity extends Activity {
         try {
             String url = pendingOauth.authorizeUrl(Oauth.MICROSOFT_AUTH_ENDPOINT, extras);
             persistPendingOauth(Oauth.MICROSOFT_CLIENT_ID, Oauth.MICROSOFT_REDIRECT_URI);
+            setAuthLoading(R.id.config_continue, R.id.config_progress, true);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
             pendingOauth = null;
             clearPendingOauth();
+            resetConfigContinue();
             showError(error, R.string.connect_failed);
         }
     }
@@ -645,6 +923,7 @@ public class MainActivity extends Activity {
         String baseUrl = pendingBaseUrl;
         String email = pendingAccountEmail;
         String clientId = pendingClientId;
+        String clientSecret = pendingClientSecret;
         String redirectUrl = data.toString();
         pendingOauth = null;
         clearPendingOauth();
@@ -660,29 +939,265 @@ public class MainActivity extends Activity {
                                                 email,
                                                 tokens.refreshToken,
                                                 tokenEndpoint,
-                                                clientId));
+                                                clientId,
+                                                clientSecret));
                     } catch (Exception error) {
-                        main.post(() -> showError(error, R.string.connect_failed));
+                        main.post(
+                                () -> {
+                                    resetConfigContinue();
+                                    showError(error, R.string.connect_failed);
+                                });
                     }
                 });
+    }
+
+    // ---- Custom OAuth 2.0 client (loopback redirect) ---------------------------
+
+    /**
+     * Prompts for a custom OAuth client (the fields prefilled from what
+     * discovery knows) and, on confirm, runs the authorization code
+     * grant against a loopback redirect. Unlike the built-in clients,
+     * a custom app's redirect is not one the OS routes back to us, so
+     * the grant lands on a local HTTP listener instead of an intent.
+     */
+    private void promptCustomOauth(
+            String baseUrl, String authEndpoint, String tokenEndpoint, String scope) {
+        EditText clientId = customOauthField(R.string.oauth_client_id, "");
+        EditText clientSecret = customOauthField(R.string.oauth_client_secret, "");
+        EditText authField = customOauthField(R.string.oauth_authorization_endpoint, authEndpoint);
+        EditText tokenField = customOauthField(R.string.oauth_token_endpoint, tokenEndpoint);
+        EditText scopeField = customOauthField(R.string.oauth_scope, scope == null ? "" : scope);
+        EditText portField = customOauthField(R.string.oauth_port, Integer.toString(freePort()));
+        portField.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(24), dp(8), dp(24), 0);
+        for (EditText field : new EditText[] {
+            clientId, clientSecret, authField, tokenField, scopeField, portField
+        }) {
+            fields.addView(field);
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(fields);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.oauth_custom_title)
+                .setView(scroll)
+                .setPositiveButton(
+                        R.string.email_submit,
+                        (dialog, which) -> {
+                            String id = clientId.getText().toString().trim();
+                            if (id.isEmpty()) {
+                                toast(getString(R.string.oauth_client_id_empty));
+                                return;
+                            }
+                            int port;
+                            try {
+                                port = Integer.parseInt(portField.getText().toString().trim());
+                            } catch (NumberFormatException error) {
+                                toast(getString(R.string.oauth_port_invalid));
+                                return;
+                            }
+                            startLoopbackOauth(
+                                    id,
+                                    clientSecret.getText().toString().trim(),
+                                    authField.getText().toString().trim(),
+                                    tokenField.getText().toString().trim(),
+                                    scopeField.getText().toString().trim(),
+                                    baseUrl,
+                                    port);
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** One labelled field of the custom-OAuth dialog. */
+    private EditText customOauthField(int hint, String value) {
+        EditText field = new EditText(this);
+        field.setHint(hint);
+        field.setText(value);
+        field.setInputType(
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        return field;
+    }
+
+    /** A free loopback TCP port, for the redirect prefill. */
+    private int freePort() {
+        try (java.net.ServerSocket probe =
+                new java.net.ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            return probe.getLocalPort();
+        } catch (Exception error) {
+            // A sensible default in the ephemeral range; the bind at
+            // grant time surfaces a clash as an error.
+            return 8117;
+        }
+    }
+
+    /**
+     * Runs a custom-client grant: binds the loopback port, opens the
+     * browser, and serves the single redirect the browser lands on,
+     * reconstructing its URL to redeem for tokens. The listener lives
+     * on its own thread until the redirect arrives or the wait times
+     * out; it dies with the process (a custom grant is not persisted,
+     * having no OS-routed redirect to resume through).
+     */
+    private void startLoopbackOauth(
+            String clientId,
+            String clientSecret,
+            String authEndpoint,
+            String tokenEndpoint,
+            String scope,
+            String baseUrl,
+            int port) {
+        String secret = clientSecret.isEmpty() ? null : clientSecret;
+        String redirectUri = "http://127.0.0.1:" + port;
+
+        java.net.ServerSocket server;
+        try {
+            server = new java.net.ServerSocket(port, 1, InetAddress.getByName("127.0.0.1"));
+            server.setSoTimeout(300_000);
+        } catch (Exception error) {
+            showError(error, R.string.oauth_port_taken);
+            return;
+        }
+        loopbackServer = server;
+
+        OauthSession session = new OauthSession(clientId, secret, redirectUri, scope);
+
+        // login_hint preselects the account; access_type=offline +
+        // prompt=consent make Google-style servers issue a refresh
+        // token (ignored by servers that do not use them).
+        JSONObject extras = new JSONObject();
+        try {
+            extras.put("access_type", "offline");
+            extras.put("prompt", "consent");
+            extras.put("login_hint", pendingEmail);
+        } catch (JSONException ignored) {
+            // A malformed extras object just omits the hints.
+        }
+
+        String email = pendingEmail;
+        io.execute(
+                () -> {
+                    try {
+                        String authUrl = session.authorizeUrl(authEndpoint, extras);
+                        main.post(
+                                () -> {
+                                    setAuthLoading(
+                                            R.id.config_continue, R.id.config_progress, true);
+                                    startActivity(
+                                            new Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)));
+                                });
+
+                        String redirectUrl = awaitLoopbackRedirect(server, redirectUri);
+                        OauthTokens tokens = session.redeem(tokenEndpoint, redirectUrl);
+                        main.post(
+                                () ->
+                                        connect(
+                                                new Account(baseUrl, "", tokens.accessToken),
+                                                email,
+                                                tokens.refreshToken,
+                                                tokenEndpoint,
+                                                clientId,
+                                                secret));
+                    } catch (Exception error) {
+                        Log.w("cardamum", "custom oauth failed", error);
+                        main.post(
+                                () -> {
+                                    resetConfigContinue();
+                                    showError(error, R.string.connect_failed);
+                                });
+                    } finally {
+                        closeLoopback();
+                    }
+                });
+    }
+
+    /**
+     * Accepts the one browser redirect on the loopback socket, answers
+     * a close-this-tab page, and rebuilds the redirect URL from the
+     * request target so it can be validated and redeemed.
+     */
+    private String awaitLoopbackRedirect(java.net.ServerSocket server, String redirectUri)
+            throws java.io.IOException {
+        try (java.net.Socket socket = server.accept()) {
+            java.io.BufferedReader reader =
+                    new java.io.BufferedReader(
+                            new java.io.InputStreamReader(
+                                    socket.getInputStream(),
+                                    java.nio.charset.StandardCharsets.UTF_8));
+            String requestLine = reader.readLine();
+
+            String body =
+                    "<html><body style='font-family:sans-serif;text-align:center;"
+                            + "margin-top:4em'>"
+                            + getString(R.string.oauth_loopback_done)
+                            + "</body></html>";
+            String response =
+                    "HTTP/1.1 200 OK\r\n"
+                            + "Content-Type: text/html; charset=utf-8\r\n"
+                            + "Content-Length: "
+                            + body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                            + "\r\n"
+                            + "Connection: close\r\n\r\n"
+                            + body;
+            socket.getOutputStream()
+                    .write(response.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+            // "GET /?code=..&state=.. HTTP/1.1" -> the request target is
+            // the path and query the browser hit.
+            String target = "/";
+            if (requestLine != null) {
+                String[] parts = requestLine.split(" ");
+                if (parts.length >= 2) {
+                    target = parts[1];
+                }
+            }
+            return redirectUri + target;
+        }
+    }
+
+    /** Closes the loopback listener, if one is open. */
+    private void closeLoopback() {
+        java.net.ServerSocket server = loopbackServer;
+        loopbackServer = null;
+        if (server != null) {
+            try {
+                server.close();
+            } catch (java.io.IOException ignored) {
+                // Already closed or never bound.
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Coming back from the browser without a redirect (the user
+        // cancelled the grant) must not leave the config Continue stuck
+        // on its loader; a real redirect re-enters loading right after.
+        if (flipper != null && flipper.getDisplayedChild() == PANEL_CONFIG) {
+            resetConfigContinue();
+        }
     }
 
     // ---- Home screen ----------------------------------------------------------
 
     private void setUpHomePanel() {
         findViewById(R.id.home_add).setOnClickListener(view -> startAuth(true));
-        findViewById(R.id.home_filter).setOnClickListener(view -> openSubscriptions());
-
-        // The add-account button sits on the accent; contrast its icon.
-        int accent = resolveColor(android.R.attr.colorAccent);
-        int onAccent = android.graphics.Color.luminance(accent) > 0.5f ? 0xFF000000 : 0xFFFFFFFF;
-        ((android.widget.ImageButton) findViewById(R.id.home_add))
-                .setImageTintList(android.content.res.ColorStateList.valueOf(onAccent));
     }
 
-    /** Rebuilds the home listing: subscribed addressbooks grouped by account. */
+    /**
+     * Rebuilds the home listing: every addressbook grouped by account,
+     * unsynced ones flagged with a crossed-sync icon. Long-pressing a
+     * header offers to delete the account, long-pressing a book to
+     * toggle its sync.
+     */
     private void reloadHome() {
-        homeBooks = base.loadSubscribedAddressbooks();
+        homeBooks = base.loadAllAddressbooks();
 
         LinearLayout container = findViewById(R.id.home_container);
         container.removeAllViews();
@@ -691,7 +1206,7 @@ public class MainActivity extends Activity {
             TextView empty = new TextView(this);
             empty.setText(R.string.home_empty);
             empty.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            empty.setPadding(dp(24), dp(24), dp(24), dp(24));
+            empty.setPadding(dp(16), dp(16), dp(16), dp(16));
             container.addView(empty);
             return;
         }
@@ -709,15 +1224,99 @@ public class MainActivity extends Activity {
                 container.addView(books);
             }
 
-            TextView row = new TextView(this);
-            row.setText(entry.book.name);
-            row.setTextSize(14);
-            row.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-            row.setPadding(dp(14), dp(16), dp(14), dp(16));
+            TextView name = new TextView(this);
+            name.setText(entry.book.name);
+            name.setTextSize(16);
+            name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            name.setLayoutParams(
+                    new LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), dp(16), dp(16), dp(16));
             row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-            row.setOnClickListener(view -> openBook(entry));
+            row.addView(name);
+
+            CheckBox sync = new CheckBox(this);
+            sync.setChecked(entry.subscribed);
+            sync.setOnClickListener(view -> confirmToggleSync(entry, sync));
+            row.addView(sync);
+
+            // An unsynced book has nothing to open: tapping it ticks
+            // the checkbox and asks to sync instead.
+            row.setOnClickListener(
+                    view -> {
+                        if (entry.subscribed) {
+                            openBook(entry);
+                        } else {
+                            sync.setChecked(true);
+                            confirmToggleSync(entry, sync);
+                        }
+                    });
             books.addView(row);
         }
+    }
+
+    /**
+     * Confirms the sync checkbox's fresh state (the tap already flipped
+     * it visually), reverting the checkbox when declined.
+     */
+    private void confirmToggleSync(BookEntry entry, CheckBox sync) {
+        int message =
+                entry.subscribed ? R.string.book_unsync_confirm : R.string.book_sync_confirm;
+        new AlertDialog.Builder(this)
+                .setMessage(getString(message, entry.book.name))
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> toggleSync(entry))
+                .setNegativeButton(
+                        android.R.string.cancel,
+                        (dialog, which) -> sync.setChecked(entry.subscribed))
+                .setOnCancelListener(dialog -> sync.setChecked(entry.subscribed))
+                .show();
+    }
+
+    private void toggleSync(BookEntry entry) {
+        java.util.Set<String> subscribed = new java.util.HashSet<>();
+        for (BookEntry candidate : base.loadAllAddressbooks()) {
+            boolean keep =
+                    candidate.book.url.equals(entry.book.url)
+                            ? !entry.subscribed
+                            : candidate.subscribed;
+            if (keep) {
+                subscribed.add(candidate.book.url);
+            }
+        }
+        base.setSubscriptions(subscribed);
+        reloadHome();
+    }
+
+    /** Confirms, then removes the account and everything under it. */
+    private void confirmDeleteAccount(String email) {
+        new AlertDialog.Builder(this)
+                .setMessage(getString(R.string.delete_account_confirm, email))
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> deleteAccount(email))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void deleteAccount(String email) {
+        store.remove(email);
+        base.removeAccount(email);
+        accounts.removeIf(entry -> entry.email.equals(email));
+        collapsedAccounts.remove(email);
+        reloadHome();
+
+        // Reconciling against the remaining subscribed set purges the
+        // deleted account's Android accounts (and their raw contacts).
+        List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
+        io.execute(() -> {
+            try {
+                Accounts.reconcile(this, subscribed);
+            } catch (Exception error) {
+                Log.w("cardamum", "account purge failed for " + email + ": " + error);
+            }
+        });
     }
 
     /**
@@ -741,15 +1340,15 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(14), dp(16), dp(14), dp(16));
+        // 20dp end padding centres the 24dp chevron on the app bars'
+        // icon column (glyph centre 32dp from the screen edge).
+        header.setPadding(dp(16), dp(16), dp(16), dp(16));
         header.setBackgroundColor(getColor(R.color.surface));
         header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
         header.addView(label);
         header.addView(chevron);
 
         header.setOnClickListener(view -> {
-            android.transition.TransitionManager.beginDelayedTransition(
-                    findViewById(R.id.home_container));
             boolean collapse = books.getVisibility() == View.VISIBLE;
             if (collapse) {
                 collapsedAccounts.add(email);
@@ -758,6 +1357,10 @@ public class MainActivity extends Activity {
             }
             books.setVisibility(collapse ? View.GONE : View.VISIBLE);
             chevron.setRotation(collapse ? 0 : 90);
+        });
+        header.setOnLongClickListener(view -> {
+            confirmDeleteAccount(email);
+            return true;
         });
 
         return header;
@@ -780,73 +1383,14 @@ public class MainActivity extends Activity {
         show(PANEL_CONTACTS);
     }
 
-    // ---- Subscription editor --------------------------------------------------
-
-    /** Lists every addressbook (subscribed or not) with a checkbox to edit subscriptions. */
-    private void openSubscriptions() {
-        LinearLayout container = findViewById(R.id.books_container);
-        container.removeAllViews();
-        subscriptionBoxes = new ArrayList<>();
-
-        String group = null;
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            if (!entry.accountEmail.equals(group)) {
-                group = entry.accountEmail;
-                TextView header = new TextView(this);
-                header.setText(group);
-                header.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-                header.setPadding(dp(8), dp(16), dp(8), dp(4));
-                container.addView(header);
-            }
-
-            // Name left, checkbox on the right edge, matching the
-            // contacts list rows; the whole row toggles.
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(8), dp(4), dp(8), dp(4));
-            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-
-            TextView name = new TextView(this);
-            name.setText(entry.book.name);
-            name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-            name.setLayoutParams(
-                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            row.addView(name);
-
-            CheckBox box = new CheckBox(this);
-            box.setChecked(entry.subscribed);
-            box.setTag(entry.book.url);
-            row.addView(box);
-
-            row.setOnClickListener(view -> box.toggle());
-            container.addView(row);
-            subscriptionBoxes.add(box);
-        }
-
-        show(PANEL_BOOKS);
-    }
-
-    private void setUpBooksPanel() {
-        findViewById(R.id.books_cancel).setOnClickListener(view -> show(PANEL_HOME));
-        findViewById(R.id.books_submit)
-                .setOnClickListener(
-                        view -> {
-                            java.util.Set<String> subscribed = new java.util.HashSet<>();
-                            for (CheckBox box : subscriptionBoxes) {
-                                if (box.isChecked()) {
-                                    subscribed.add((String) box.getTag());
-                                }
-                            }
-                            base.setSubscriptions(subscribed);
-                            goHome();
-                        });
-    }
-
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         if (request == REQUEST_CONTACTS && hasContactsPermission()) {
-            syncLocal();
+            Runnable retry = afterContactsPermission;
+            afterContactsPermission = null;
+            if (retry != null) {
+                retry.run();
+            }
         }
     }
 
@@ -857,77 +1401,141 @@ public class MainActivity extends Activity {
                         == PackageManager.PERMISSION_GRANTED;
     }
 
-    // ---- Sync screen --------------------------------------------------------
+    // ---- Sync -----------------------------------------------------------------
+
+    /**
+     * Outcome of a remote sync pass: what was pulled from the server,
+     * pushed to it and left merged (kept local on a conflict), plus the
+     * first failure.
+     */
+    private static final class SyncOutcome {
+        int pulled;
+        int pushed;
+        int merged;
+        Exception failure;
+    }
+
+    /**
+     * Toggles the contacts app-bar sync icon between the glyph and an
+     * in-place spinner while a sync runs.
+     */
+    private void setSyncing(boolean syncing) {
+        findViewById(R.id.contacts_sync).setVisibility(syncing ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_sync_progress)
+                .setVisibility(syncing ? View.VISIBLE : View.GONE);
+    }
 
     /**
      * Store-to-remote spoke: per addressbook, fetches the remote into
      * the store, pushes the staged local changes, and re-fetches the
      * pushed state. The phone is not touched; that is the local sync.
+     * When `toHome`, this is the onboarding's first sync (the books
+     * Continue button owns the spinner); otherwise it is a manual sync
+     * from the contacts screen (the app-bar sync icon owns it).
      */
     private void syncRemote(boolean toHome) {
-        show(PANEL_SYNC);
-        TextView status = findViewById(R.id.sync_status);
-        status.setText(R.string.sync_addressbooks);
+        if (!toHome) {
+            setSyncing(true);
+        }
 
         io.execute(
                 () -> {
-                    int conflicts = 0;
-                    Exception failure = null;
-
-                    for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-                        AccountEntry account = accountFor(entry.accountEmail);
-                        if (account == null) {
-                            continue;
-                        }
-
-                        try {
-                            conflicts += syncBook(account.account, entry, status);
-                        } catch (Exception error) {
-                            // An expired OAuth access token: refresh it
-                            // and retry the addressbook once.
-                            if (expiredToken(error) && account.refreshToken != null) {
-                                try {
-                                    conflicts += syncBook(refreshAccount(account), entry, status);
-                                    continue;
-                                } catch (Exception retryError) {
-                                    error = retryError;
-                                }
-                            }
-
-                            // One addressbook failing (revoked account,
-                            // server down) must not block the others.
-                            Log.w("cardamum", "sync failed for " + entry.book.name, error);
-                            if (failure == null) {
-                                failure = error;
-                            }
-                        }
-                    }
-
-                    int unpushed = conflicts;
-                    Exception firstFailure = failure;
+                    SyncOutcome outcome = runRemoteSync();
                     main.post(
                             () -> {
-                                // Offline fallback: the store of the last
-                                // sync keeps failing addressbooks usable.
-                                finishSync(toHome);
-                                if (firstFailure != null) {
-                                    showError(firstFailure, R.string.sync_failed);
+                                if (toHome) {
+                                    finishSync(true);
+                                } else {
+                                    setSyncing(false);
+                                    finishSync(false);
                                 }
-                                if (unpushed > 0) {
-                                    toast(getString(R.string.sync_conflicts, unpushed));
-                                }
+                                reportSync(outcome);
                             });
                 });
     }
 
-    /** One addressbook's fetch-push-refetch cycle; returns push conflicts. */
-    private int syncBook(Account acc, BookEntry entry, TextView status) {
+    /** The remote sync pass itself, off the main thread. */
+    private SyncOutcome runRemoteSync() {
+        SyncOutcome outcome = new SyncOutcome();
+
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            AccountEntry account = accountFor(entry.accountEmail);
+            if (account == null) {
+                continue;
+            }
+
+            try {
+                syncBook(account.account, entry, outcome);
+            } catch (Exception error) {
+                // An expired OAuth access token: refresh it and retry
+                // the addressbook once.
+                if (expiredToken(error) && account.refreshToken != null) {
+                    try {
+                        syncBook(refreshAccount(account), entry, outcome);
+                        continue;
+                    } catch (Exception retryError) {
+                        error = retryError;
+                    }
+                }
+
+                // One addressbook failing (revoked account, server down)
+                // must not block the others.
+                Log.w("cardamum", "sync failed for " + entry.book.name, error);
+                if (outcome.failure == null) {
+                    outcome.failure = error;
+                }
+            }
+        }
+
+        return outcome;
+    }
+
+    /** Surfaces a sync outcome: an error dialog, or a pull/push/merge toast. */
+    private void reportSync(SyncOutcome outcome) {
+        if (outcome.failure != null) {
+            // Offline fallback: the store of the last sync keeps failing
+            // addressbooks usable.
+            showError(outcome.failure, R.string.sync_failed);
+        } else {
+            toast(
+                    getString(
+                            R.string.sync_done,
+                            outcome.pulled,
+                            outcome.pushed,
+                            outcome.merged));
+        }
+    }
+
+    /**
+     * One addressbook's fetch-push-refetch cycle, accumulating what it
+     * pulled, pushed and merged into `outcome`.
+     */
+    private void syncBook(Account acc, BookEntry entry, SyncOutcome outcome) {
         Addressbook book = entry.book;
-        main.post(() -> status.setText(getString(R.string.sync_cards, book.name)));
+
+        // The store as of the last sync, to count what the fetch brings.
+        Map<String, String> before = new HashMap<>();
+        for (Card card : base.loadCards(book.url)) {
+            before.put(card.id, card.etag);
+        }
 
         // Fetch first, so staged rows learn the server's resource names
         // before the push addresses them.
         List<Card> fetched = client.listCards(acc, book.url);
+
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Card card : fetched) {
+            seen.add(card.id);
+            if (!java.util.Objects.equals(before.get(card.id), card.etag)) {
+                outcome.pulled++;
+            }
+        }
+        for (String id : before.keySet()) {
+            if (!seen.contains(id)) {
+                outcome.pulled++;
+            }
+        }
+
         base.replaceCards(book.url, fetched);
 
         Map<String, String> serverEtags = new HashMap<>();
@@ -936,15 +1544,12 @@ public class MainActivity extends Activity {
         }
 
         List<CardStore.Pending> pending = base.loadPending(book.url);
-        int conflicts = 0;
         if (!pending.isEmpty()) {
-            main.post(() -> status.setText(getString(R.string.sync_push, book.name)));
-            conflicts = push(acc, book, pending, serverEtags);
+            push(acc, book, pending, serverEtags, outcome);
 
             // The push changed the remote; re-fetch its resulting state.
             base.replaceCards(book.url, client.listCards(acc, book.url));
         }
-        return conflicts;
     }
 
     /**
@@ -954,14 +1559,24 @@ public class MainActivity extends Activity {
      */
     private Account refreshAccount(AccountEntry entry) {
         OauthTokens tokens =
-                client.oauthRefresh(entry.tokenEndpoint, entry.clientId, entry.refreshToken, null);
+                client.oauthRefresh(
+                        entry.tokenEndpoint,
+                        entry.clientId,
+                        entry.clientSecret,
+                        entry.refreshToken,
+                        null);
 
         String refreshToken =
                 tokens.refreshToken != null ? tokens.refreshToken : entry.refreshToken;
         Account fresh = new Account(entry.account.baseUrl, "", tokens.accessToken);
         AccountEntry updated =
                 new AccountEntry(
-                        fresh, entry.email, refreshToken, entry.tokenEndpoint, entry.clientId);
+                        fresh,
+                        entry.email,
+                        refreshToken,
+                        entry.tokenEndpoint,
+                        entry.clientId,
+                        entry.clientSecret);
 
         accounts.removeIf(candidate -> candidate.email.equals(entry.email));
         accounts.add(updated);
@@ -997,54 +1612,123 @@ public class MainActivity extends Activity {
      * the io-offline engine, see docs/design.md.
      */
     private void syncLocal() {
-        if (!hasContactsPermission()) {
-            requestPermissions(
-                    new String[] {
-                        Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS,
-                    },
-                    REQUEST_CONTACTS);
+        if (!ensureContactsPermission(this::syncLocal)) {
             return;
         }
 
+        setSyncing(true);
         io.execute(
                 () -> {
-                    List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
-
-                    try {
-                        // The full subscribed set at once: reconcile purges
-                        // accounts no longer in it, across all accounts.
-                        Accounts.reconcile(this, subscribed);
-                    } catch (Exception error) {
-                        main.post(() -> showError(error, R.string.accounts_failed));
-                        return;
-                    }
-
-                    for (BookEntry entry : subscribed) {
-                        android.accounts.Account target = Accounts.find(this, entry.book);
-                        if (target != null) {
-                            Bundle extras = new Bundle();
-                            extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
-                            extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
-                            ContentResolver.requestSync(
-                                    target, ContactsContract.AUTHORITY, extras);
-                        }
-                    }
-
-                    main.post(() -> toast(getString(R.string.sync_local_requested)));
+                    Exception failure = runLocalSync();
+                    main.post(
+                            () -> {
+                                setSyncing(false);
+                                if (failure != null) {
+                                    showError(failure, R.string.accounts_failed);
+                                } else {
+                                    toast(getString(R.string.sync_local_done));
+                                }
+                            });
                 });
     }
 
     /**
-     * Pushes the addressbook's staged local changes to the remote and
-     * returns the number of conflicts. A 412 means the remote changed
-     * under the staged edit: the change stays staged and retries next
-     * sync (NOTE: keep-both resolution lands with the io-offline
-     * engine). Any other failure aborts the sync (offline fallback).
+     * Full sync: the phone spoke, then the remote spoke, then the phone
+     * spoke again (so remote changes reach the phone in one pass), per
+     * the hub-and-spoke topology. One spinner spans the whole run.
      */
-    private int push(Account account, Addressbook book, List<CardStore.Pending> changes,
-            Map<String, String> serverEtags) {
-        int conflicts = 0;
+    private void syncFull() {
+        if (!ensureContactsPermission(this::syncFull)) {
+            return;
+        }
 
+        setSyncing(true);
+        io.execute(
+                () -> {
+                    Exception localFailure = runLocalSync();
+                    SyncOutcome remote = runRemoteSync();
+                    if (localFailure == null) {
+                        localFailure = runLocalSync();
+                    }
+
+                    Exception firstFailure =
+                            localFailure != null ? localFailure : remote.failure;
+                    main.post(
+                            () -> {
+                                setSyncing(false);
+                                finishSync(false);
+                                if (firstFailure != null) {
+                                    showError(firstFailure, R.string.sync_failed);
+                                } else {
+                                    reportSync(remote);
+                                }
+                            });
+                });
+    }
+
+    /**
+     * The phone spoke: reconciles the per-addressbook Android accounts
+     * and hands the projection to Android's sync scheduler (one manual
+     * expedited request per account; the work itself runs in
+     * SyncService.onPerformSync, same path as the system's per-account
+     * "sync now"). Automatic sync stays off. Returns a reconcile
+     * failure, or null.
+     *
+     * <p>NOTE: one-way for now; ingesting phone-side edits lands with
+     * the io-offline engine, see docs/design.md.
+     */
+    private Exception runLocalSync() {
+        List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
+
+        try {
+            // The full subscribed set at once: reconcile purges accounts
+            // no longer in it, across all accounts.
+            Accounts.reconcile(this, subscribed);
+        } catch (Exception error) {
+            return error;
+        }
+
+        for (BookEntry entry : subscribed) {
+            android.accounts.Account target = Accounts.find(this, entry.book);
+            if (target != null) {
+                Bundle extras = new Bundle();
+                extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
+                extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
+                ContentResolver.requestSync(target, ContactsContract.AUTHORITY, extras);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Ensures the contacts permission before a phone-touching sync;
+     * when it must be requested, remembers `retry` to run once granted
+     * and returns false.
+     */
+    private boolean ensureContactsPermission(Runnable retry) {
+        if (hasContactsPermission()) {
+            return true;
+        }
+        afterContactsPermission = retry;
+        requestPermissions(
+                new String[] {
+                    Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS,
+                },
+                REQUEST_CONTACTS);
+        return false;
+    }
+
+    /**
+     * Pushes the addressbook's staged local changes to the remote,
+     * accumulating the pushed and merged counts into `outcome`. A 412
+     * means the remote changed under the staged edit: the change stays
+     * staged (merged) and retries next sync (NOTE: keep-both resolution
+     * lands with the io-offline engine). Any other failure aborts the
+     * sync (offline fallback).
+     */
+    private void push(Account account, Addressbook book, List<CardStore.Pending> changes,
+            Map<String, String> serverEtags, SyncOutcome outcome) {
         for (CardStore.Pending pending : changes) {
             try {
                 if (pending.deleted) {
@@ -1066,6 +1750,7 @@ public class MainActivity extends Activity {
                             client.updateCard(
                                     account, book.url, pending.card, pending.baseVcard));
                 }
+                outcome.pushed++;
             } catch (Exception error) {
                 String message = error.getMessage();
                 if (message != null && message.contains("HTTP 412")) {
@@ -1098,8 +1783,9 @@ public class MainActivity extends Activity {
                                     client.updateCard(
                                             account, book.url, unguarded, pending.baseVcard));
                         }
+                        outcome.pushed++;
                     } else {
-                        conflicts++;
+                        outcome.merged++;
                         Log.w(
                                 "cardamum",
                                 "push conflict on "
@@ -1116,8 +1802,6 @@ public class MainActivity extends Activity {
                 }
             }
         }
-
-        return conflicts;
     }
 
     // ---- Contacts screen ----------------------------------------------------
@@ -1192,15 +1876,9 @@ public class MainActivity extends Activity {
                     }
                 });
 
-        // The FAB sits on the accent; tint its icon to contrast it.
-        int accent = resolveColor(android.R.attr.colorAccent);
-        int onAccent = android.graphics.Color.luminance(accent) > 0.5f ? 0xFF000000 : 0xFFFFFFFF;
-        ((android.widget.ImageButton) findViewById(R.id.contacts_add))
-                .setImageTintList(android.content.res.ColorStateList.valueOf(onAccent));
-
     }
 
-    /** Shows the two-line sync menu anchored to the sync button. */
+    /** Shows the sync menu anchored to the sync button. */
     private void showSyncMenu(View anchor) {
         View content = getLayoutInflater().inflate(R.layout.menu_sync, null);
         android.widget.PopupWindow popup =
@@ -1224,12 +1902,17 @@ public class MainActivity extends Activity {
                             popup.dismiss();
                             syncLocal();
                         });
+        content.findViewById(R.id.menu_sync_full)
+                .setOnClickListener(
+                        view -> {
+                            popup.dismiss();
+                            syncFull();
+                        });
         popup.showAsDropDown(anchor);
     }
 
     /** Sorts the open addressbook's cards (search-filtered) and refreshes the list. */
     private void renderContacts() {
-        TextView status = findViewById(R.id.contacts_status);
         TextView sticky = findViewById(R.id.contacts_sticky_letter);
         updateSelectionUi();
 
@@ -1247,9 +1930,16 @@ public class MainActivity extends Activity {
         adapter.notifyDataSetChanged();
 
         boolean empty = sortedContacts.isEmpty();
-        status.setVisibility(empty ? View.VISIBLE : View.GONE);
+        findViewById(R.id.contacts_empty).setVisibility(empty ? View.VISIBLE : View.GONE);
         if (empty) {
-            status.setText(R.string.contacts_empty);
+            // Distinguish a search miss from a genuinely empty addressbook.
+            boolean searching = !searchQuery.isEmpty();
+            ((android.widget.ImageView) findViewById(R.id.contacts_empty_icon))
+                    .setImageResource(
+                            searching ? R.drawable.ic_search_x : R.drawable.ic_folder_open);
+            ((TextView) findViewById(R.id.contacts_empty_title))
+                    .setText(
+                            searching ? R.string.empty_search_title : R.string.empty_book_title);
         }
         sticky.setText(empty ? "" : letterOf(sortedContacts.get(0).card));
     }

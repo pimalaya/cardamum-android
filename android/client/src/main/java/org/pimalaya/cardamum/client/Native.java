@@ -18,8 +18,9 @@ final class Native {
     /**
      * RFC 6764 discovery: email to CardDAV context root, as
      * {@code {"url": ".."}}. The resolver is a {@code tcp://host:port}
-     * DNS server (the device's own when known); empty or null falls
-     * back to a public one.
+     * DNS server or an RFC 8484 {@code https://…/dns-query} URL; empty
+     * or null falls back to a public DNS-over-HTTPS one, which works on
+     * mobile networks that block outbound DNS over TCP.
      */
     static native String discover(Transport transport, String email, String resolver);
 
@@ -61,15 +62,17 @@ final class Native {
 
     /**
      * Exchanges an authorization code for tokens against the token
-     * endpoint, with the PKCE verifier of the authorization request.
-     * Returns the RFC 6749 success params as JSON ({@code access_token},
-     * {@code token_type}, {@code expires_in}, {@code refresh_token},
-     * {@code scope}, {@code issued_at}).
+     * endpoint, with the PKCE verifier of the authorization request
+     * and the client secret when the registration issued one (empty
+     * means none). Returns the RFC 6749 success params as JSON
+     * ({@code access_token}, {@code token_type}, {@code expires_in},
+     * {@code refresh_token}, {@code scope}, {@code issued_at}).
      */
     static native String oauthRequestAccessToken(
             Transport transport,
             String tokenEndpoint,
             String clientId,
+            String clientSecret,
             String code,
             String redirectUri,
             String pkceVerifier);
@@ -77,13 +80,15 @@ final class Native {
     /**
      * Refreshes tokens against the token endpoint; {@code scope} is
      * the space-separated scope list of the original grant (empty
-     * keeps the server default). Same JSON shape as
-     * {@link #oauthRequestAccessToken}.
+     * keeps the server default) and the client secret rides along when
+     * the registration issued one (empty means none). Same JSON shape
+     * as {@link #oauthRequestAccessToken}.
      */
     static native String oauthRefreshAccessToken(
             Transport transport,
             String tokenEndpoint,
             String clientId,
+            String clientSecret,
             String refreshToken,
             String scope);
 
@@ -199,4 +204,60 @@ final class Native {
 
     /** Deletes the Graph contact at the given id; returns {@code {}}. */
     static native String deleteGraphCard(Transport transport, String token, String id);
+
+    /**
+     * Lists the JMAP AddressBooks (RFC 9610) of the account behind the
+     * session URL as a JSON array of addressbooks whose collection URLs
+     * are empty: the caller composes them, since only it knows the
+     * account they belong to.
+     */
+    static native String listJmapAddressbooks(
+            Transport transport, String sessionUrl, String login, String password);
+
+    /**
+     * Lists the ContactCards of the JMAP AddressBook, each converted
+     * to a vCard, as a JSON array of {@code {id, uri, etag, vcard}}
+     * (ContactCard id as id and uri, a JSON hash as etag).
+     */
+    static native String listJmapCards(
+            Transport transport, String sessionUrl, String login, String password, String book);
+
+    /**
+     * Creates the vCard as a ContactCard in the JMAP AddressBook; the
+     * server names the card, so the returned {@code {id, uri, etag,
+     * vcard}} carries the server-assigned id.
+     */
+    static native String createJmapCard(
+            Transport transport,
+            String sessionUrl,
+            String login,
+            String password,
+            String book,
+            String vcard);
+
+    /**
+     * Reads the ContactCard at the given id, converted to a vCard;
+     * returns {@code {id, uri, etag, vcard}}.
+     */
+    static native String readJmapCard(
+            Transport transport, String sessionUrl, String login, String password, String id);
+
+    /**
+     * Updates the ContactCard at the given id from the vCard, patching
+     * only the properties that differ from the base vCard when one is
+     * passed (empty means unknown; no If-Match guard); returns the
+     * updated {@code {id, uri, etag, vcard}}.
+     */
+    static native String updateJmapCard(
+            Transport transport,
+            String sessionUrl,
+            String login,
+            String password,
+            String id,
+            String vcard,
+            String baseVcard);
+
+    /** Destroys the ContactCard at the given id; returns {@code {}}. */
+    static native String deleteJmapCard(
+            Transport transport, String sessionUrl, String login, String password, String id);
 }

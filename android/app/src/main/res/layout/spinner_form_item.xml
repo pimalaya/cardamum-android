@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Collapsed spinner view for form blocks: the stock spinnerItemStyle
+     carries its own start padding, which breaks the alignment with the
+     fields' text start; this one is flush. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/text1"
+    style="?android:attr/spinnerItemStyle"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:ellipsize="marquee"
+    android:paddingStart="0dp"
+    android:paddingEnd="0dp"
+    android:singleLine="true" />

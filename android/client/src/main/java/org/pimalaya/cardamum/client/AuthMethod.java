@@ -11,6 +11,8 @@ public final class AuthMethod {
     public enum Type {
         /** Username and password login (possibly an app password). */
         PASSWORD,
+        /** Bearer token (RFC 6750), e.g. a provider-issued API token. */
+        BEARER,
         /** OAuth 2.0 authorization code grant (RFC 6749). */
         OAUTH_AUTHORIZATION_CODE_GRANT,
         /** OAuth 2.0 device authorization grant (RFC 8628). */
@@ -53,9 +55,14 @@ public final class AuthMethod {
 
     /**
      * Parses one method from the bridge's JSON shape: {@code "password"}
-     * as a plain string, the OAuth variants as single-key objects.
+     * and {@code "bearer"} as plain strings, the OAuth variants as
+     * single-key objects.
      */
     static AuthMethod from(Object json) {
+        if ("bearer".equals(json)) {
+            return new AuthMethod(Type.BEARER, null, null, null, null, null);
+        }
+
         if (!(json instanceof JSONObject)) {
             return new AuthMethod(Type.PASSWORD, null, null, null, null, null);
         }

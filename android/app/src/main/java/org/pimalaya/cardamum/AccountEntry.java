@@ -21,8 +21,15 @@ final class AccountEntry {
     /** OAuth client the tokens were issued to; null without a refresh token. */
     final String clientId;
 
+    /**
+     * Secret of the OAuth client, when its registration issued one
+     * (Google desktop-type clients require it in every exchange); null
+     * for secret-less clients and password accounts.
+     */
+    final String clientSecret;
+
     AccountEntry(Account account, String email) {
-        this(account, email, null, null, null);
+        this(account, email, null, null, null, null);
     }
 
     AccountEntry(
@@ -30,11 +37,13 @@ final class AccountEntry {
             String email,
             String refreshToken,
             String tokenEndpoint,
-            String clientId) {
+            String clientId,
+            String clientSecret) {
         this.account = account;
         this.email = email;
         this.refreshToken = refreshToken;
         this.tokenEndpoint = tokenEndpoint;
         this.clientId = clientId;
+        this.clientSecret = clientSecret;
     }
 }

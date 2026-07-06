@@ -3,6 +3,8 @@
 
     <string name="app_name">Cardamum</string>
 
+    <string name="new_account">New account</string>
+    <string name="cancel_auth">Cancel</string>
     <string name="welcome">Welcome</string>
     <string name="welcome_description">Enter your email address to get started. Cardamum finds your contacts server settings automatically.</string>
     <string name="email_hint">you@example.org</string>
@@ -14,10 +16,26 @@
     <string name="config_carddav">CardDAV</string>
     <string name="config_jmap">JMAP</string>
     <string name="config_google_api">Google Contacts API</string>
-    <string name="config_google_carddav">Google CardDAV (OAuth)</string>
     <string name="config_msgraph">Microsoft Graph</string>
     <string name="config_soon">Coming soon</string>
+    <string name="config_password">Password</string>
+    <string name="config_token">API token</string>
+    <string name="config_oauth2">OAuth 2.0</string>
+    <string name="config_oauth2_cardamum">OAuth 2.0 (Cardamum)</string>
+    <string name="config_oauth2_custom">OAuth 2.0 (custom client)</string>
     <string name="config_oauth">Sign in with your browser</string>
+
+    <string name="oauth_custom_title">Custom OAuth 2.0 client</string>
+    <string name="oauth_client_id">Client ID</string>
+    <string name="oauth_client_secret">Client secret (optional)</string>
+    <string name="oauth_authorization_endpoint">Authorization endpoint</string>
+    <string name="oauth_token_endpoint">Token endpoint</string>
+    <string name="oauth_scope">Scope</string>
+    <string name="oauth_port">Loopback port</string>
+    <string name="oauth_client_id_empty">Enter the client ID</string>
+    <string name="oauth_port_invalid">Enter a valid port number</string>
+    <string name="oauth_port_taken">Could not bind the loopback port; try another</string>
+    <string name="oauth_loopback_done">Signed in. You can close this tab and return to Cardamum.</string>
 
     <string name="password_title">Sign in</string>
     <string name="password_server">%1$s at %2$s</string>
@@ -27,11 +45,17 @@
     <string name="error_title">Error</string>
     <string name="connect_failed">Could not connect</string>
 
+    <string name="books_title">Choose addressbooks</string>
+    <string name="books_description">Pick the addressbooks to sync on this device. You can change this later from the home screen.</string>
+    <string name="books_none">This account has no addressbook.</string>
     <string name="subscriptions_title">Addressbooks</string>
     <string name="subscriptions_save">Save</string>
     <string name="accounts_failed">Could not create the accounts</string>
     <string name="add_account">Add account</string>
-    <string name="home_empty">No addressbook subscribed. Tap the filter to choose some.</string>
+    <string name="home_empty">No addressbook yet. Add an account to get started.</string>
+    <string name="book_sync_confirm">Sync %1$s?</string>
+    <string name="book_unsync_confirm">Stop syncing %1$s? Its local contacts are dropped; the server keeps them.</string>
+    <string name="delete_account_confirm">Delete the account %1$s and its local data?</string>
 
     <string name="sync_title">Synchronizing</string>
     <string name="sync_addressbooks">Fetching addressbooks</string>
@@ -45,12 +69,17 @@
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>
     <string name="sync_remote">Remote sync</string>
-    <string name="sync_remote_hint">Push and fetch changes with the server</string>
+    <string name="sync_remote_hint">Push and fetch changes with the remote server</string>
     <string name="sync_local">Local sync</string>
-    <string name="sync_local_hint">Project contacts into this phone\'s Contacts app</string>
+    <string name="sync_local_hint">Project contacts into this phone\'s Contacts application</string>
+    <string name="sync_full">Full sync</string>
+    <string name="sync_full_hint">Local, then remote, then local again</string>
+    <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
+    <string name="sync_local_done">Contacts projected to this phone</string>
     <string name="contacts_add">Add</string>
     <string name="contacts_search">Search</string>
-    <string name="contacts_empty">No contact yet.</string>
+    <string name="empty_search_title">Empty result</string>
+    <string name="empty_book_title">Empty addressbook</string>
 
     <string name="back">Back</string>
     <string name="more">More</string>
@@ -98,6 +127,7 @@
     <string name="section_websites">Websites</string>
     <string name="section_notes">Notes</string>
 
+    <string name="add">Add more</string>
     <string name="add_nickname">Add nickname</string>
     <string name="add_phone">Add phone</string>
     <string name="add_email">Add email</string>

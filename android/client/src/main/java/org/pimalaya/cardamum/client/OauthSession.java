@@ -18,6 +18,7 @@ public final class OauthSession {
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 
     private final String clientId;
+    private final String clientSecret;
     private final String redirectUri;
     private final String scope;
     private final String state;
@@ -25,11 +26,14 @@ public final class OauthSession {
 
     /**
      * Prepares a grant for the app's OAuth client. The redirect URI is
-     * the app link or custom scheme the app intercepts; the scope
-     * usually comes from the matching {@link AuthMethod#scope}.
+     * the app link, custom scheme or loopback URL the app intercepts;
+     * the scope usually comes from the matching
+     * {@link AuthMethod#scope}. The client secret is null unless the
+     * registration issued one (Google desktop-type clients require it
+     * in the exchange).
      */
-    public OauthSession(String clientId, String redirectUri, String scope) {
-        this(clientId, redirectUri, scope, random(32), random(64));
+    public OauthSession(String clientId, String clientSecret, String redirectUri, String scope) {
+        this(clientId, clientSecret, redirectUri, scope, random(32), random(64));
     }
 
     /**
@@ -39,8 +43,14 @@ public final class OauthSession {
      * authorization request, so it may be empty here).
      */
     public OauthSession(
-            String clientId, String redirectUri, String scope, String state, String pkceVerifier) {
+            String clientId,
+            String clientSecret,
+            String redirectUri,
+            String scope,
+            String state,
+            String pkceVerifier) {
         this.clientId = clientId;
+        this.clientSecret = clientSecret == null ? "" : clientSecret;
         this.redirectUri = redirectUri;
         this.scope = scope == null ? "" : scope;
         this.state = state;
@@ -94,6 +104,7 @@ public final class OauthSession {
                                     transport,
                                     tokenEndpoint,
                                     clientId,
+                                    clientSecret,
                                     code,
                                     redirectUri,
                                     pkceVerifier));

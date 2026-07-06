@@ -128,6 +128,9 @@ public class SecureStore {
                     object.put("refreshToken", entry.refreshToken)
                             .put("tokenEndpoint", entry.tokenEndpoint)
                             .put("clientId", entry.clientId);
+                    if (entry.clientSecret != null) {
+                        object.put("clientSecret", entry.clientSecret);
+                    }
                 }
                 array.put(object);
             }
@@ -158,7 +161,10 @@ public class SecureStore {
                                 object.isNull("tokenEndpoint")
                                         ? null
                                         : object.optString("tokenEndpoint"),
-                                object.isNull("clientId") ? null : object.optString("clientId")));
+                                object.isNull("clientId") ? null : object.optString("clientId"),
+                                object.isNull("clientSecret")
+                                        ? null
+                                        : object.optString("clientSecret")));
             }
             return entries;
         } catch (JSONException error) {

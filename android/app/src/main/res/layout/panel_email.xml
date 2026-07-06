@@ -4,24 +4,45 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Back to home; shown only when adding a further account (the
-         first-run onboarding has no way back, you must connect one). -->
+    <!-- Auth app bar: a back arrow, hidden only on the first-run
+         onboarding email view (no account yet, so no way back). -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
         android:minHeight="56dp"
         android:orientation="horizontal"
-        android:paddingStart="8dp">
+        android:paddingStart="@dimen/app_bar_padding"
+        android:paddingEnd="@dimen/app_bar_padding">
 
         <ImageButton
             android:id="@+id/email_back"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="@string/back"
             android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorSecondary"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:paddingStart="@dimen/app_bar_title_padding"
+            android:text="@string/new_account"
+            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+            android:textColor="?android:attr/textColorPrimary" />
+
+        <ImageButton
+            android:id="@+id/email_cancel"
+            android:layout_width="@dimen/app_bar_icon"
+            android:layout_height="@dimen/app_bar_icon"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/cancel_auth"
+            android:src="@drawable/ic_close"
+            android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
     </LinearLayout>
@@ -38,14 +59,17 @@
             android:layout_width="96dp"
             android:layout_height="96dp"
             android:layout_marginBottom="16dp"
+            android:background="@drawable/logo_circle"
             android:contentDescription="@string/app_name"
+            android:padding="16dp"
             android:src="@drawable/ic_launcher" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/welcome"
-            android:textStyle="bold" />
+            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+            android:textColor="?android:attr/textColorPrimary" />
 
         <TextView
             android:layout_width="match_parent"
@@ -53,7 +77,9 @@
             android:layout_marginTop="8dp"
             android:layout_marginBottom="24dp"
             android:gravity="center"
-            android:text="@string/welcome_description" />
+            android:text="@string/welcome_description"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="14sp" />
 
         <EditText
             android:id="@+id/email_input"
@@ -62,20 +88,31 @@
             android:hint="@string/email_hint"
             android:inputType="textEmailAddress" />
 
+    </LinearLayout>
+
+    <!-- The loader sits on the button itself while the search runs
+         (the button disabled, its label blanked). -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="8dp">
+
         <Button
             android:id="@+id/email_submit"
+            style="@android:style/Widget.DeviceDefault.Button.Colored"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/email_submit" />
+            android:text="@string/email_submit"
+            android:textAllCaps="true" />
 
         <ProgressBar
             android:id="@+id/email_progress"
+            style="?android:attr/progressBarStyleSmall"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_gravity="center"
             android:visibility="gone" />
 
-    </LinearLayout>
+    </FrameLayout>
 
 </LinearLayout>

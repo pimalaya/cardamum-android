@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lucide folder-open (ISC); stroke-based, tinted at use site. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?android:attr/textColorSecondary">
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M6,14 l1.5,-2.9 A2,2 0 0 1 9.24,10 H20 a2,2 0 0 1 1.94,2.5 l-1.54,6 a2,2 0 0 1 -1.95,1.5 H4 a2,2 0 0 1 -2,-2 V5 a2,2 0 0 1 2,-2 h3.9 a2,2 0 0 1 1.69,0.9 l0.81,1.2 a2,2 0 0 0 1.67,0.9 H18 a2,2 0 0 1 2,2 v2" />
+</vector>
