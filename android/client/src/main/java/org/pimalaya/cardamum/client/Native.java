@@ -145,6 +145,28 @@ final class Native {
     static native String indexCard(String vcard);
 
     /**
+     * Merges several vCards (a JSON string array) into one union
+     * document with its field model and per-field alternatives; pure
+     * computation, no transport. Returns
+     * {@code {vcard, model, alternatives}}.
+     */
+    static native String mergeCards(String cards);
+
+    /**
+     * Three-way merges a conflicted push: the staged local edit and
+     * the fetched remote card against their common base, the local
+     * side winning same-field collisions; pure computation, no
+     * transport. Returns {@code {vcard, conflicts}}.
+     */
+    static native String mergeCardChanges(String base, String local, String remote);
+
+    /**
+     * Rewrites the card's UID (a plain copy is a new identity); pure
+     * computation, no transport. Returns {@code {"vcard": ".."}}.
+     */
+    static native String setCardUid(String vcard, String uid);
+
+    /**
      * Projects a vCard onto the neutral field model the app maps to
      * ContactsContract rows; pure computation, no transport.
      */

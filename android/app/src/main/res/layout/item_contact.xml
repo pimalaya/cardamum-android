@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The min height fits the fullest row (name plus email plus phone),
+     so a third text line never grows the row past its siblings. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="?android:attr/selectableItemBackground"
     android:gravity="center_vertical"
+    android:minHeight="76dp"
     android:orientation="horizontal"
     android:paddingStart="64dp"
     android:paddingTop="12dp"
-    android:paddingEnd="0dp"
+    android:paddingEnd="4dp"
     android:paddingBottom="12dp">
 
     <TextView
@@ -25,12 +28,40 @@
         android:orientation="vertical"
         android:paddingStart="16dp">
 
-        <TextView
-            android:id="@+id/contact_name"
+        <!-- Name row: the display name, plus a link glyph and the
+             linked-cards count when several physical cards back it. -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textSize="16sp" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/contact_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp" />
+
+            <ImageView
+                android:id="@+id/contact_link_icon"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:layout_marginStart="8dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_link_add"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/contact_links"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="2dp"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+        </LinearLayout>
 
         <TextView
             android:id="@+id/contact_email"
@@ -48,24 +79,39 @@
             android:textSize="12sp"
             android:visibility="gone" />
 
-        <!-- Merged row: how many places back this contact. -->
-        <TextView
-            android:id="@+id/contact_accounts"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="?android:attr/textColorSecondary"
-            android:textSize="12sp"
-            android:textStyle="italic"
-            android:visibility="gone" />
-
     </LinearLayout>
 
-    <CheckBox
-        android:id="@+id/contact_check"
+    <!-- Trailing 48dp-wide slot centred under the app bar's last icon
+         (the bar's 4dp end padding matches the row's): the selection
+         checkbox, or the divergence flag outside selection. The slot
+         hugs its content so showing it never changes the row height,
+         and the flag mirrors the checkbox's 32dp box and centre. -->
+    <FrameLayout
+        android:id="@+id/contact_end_slot"
         android:layout_width="48dp"
         android:layout_height="wrap_content"
-        android:clickable="false"
-        android:focusable="false"
-        android:visibility="gone" />
+        android:visibility="gone">
+
+        <CheckBox
+            android:id="@+id/contact_check"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:clickable="false"
+            android:focusable="false"
+            android:visibility="gone" />
+
+        <!-- Tinted in code: the theme's error colour when the platform
+             defines it, the secondary tone otherwise. -->
+        <ImageView
+            android:id="@+id/contact_diverged"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_gravity="center"
+            android:contentDescription="@string/contact_diverged"
+            android:src="@drawable/ic_diverged"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </LinearLayout>

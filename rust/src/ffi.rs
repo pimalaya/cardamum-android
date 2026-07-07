@@ -17,7 +17,7 @@ use url::Url;
 use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
-    project::{apply, index, project},
+    project::{apply, index, merge_cards, merge_conflict, project, set_uid},
     types::Credentials,
 };
 
@@ -1169,6 +1169,84 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_indexCard<'local
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.mergeCards`: merges several vCards (a JSON string array)
+/// into one union document with its field model and the per-field
+/// alternatives for the merge form (docs/merged-view.md); pure
+/// computation, no transport. Returns
+/// `{"vcard", "model", "alternatives"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_mergeCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    cards: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let cards = read_string(env, &cards);
+
+        let json = match parse_strings(&cards) {
+            Err(err) => error_json(&err),
+            Ok(cards) => match merge_cards(&cards) {
+                Ok(merged) => merged.to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.mergeCardChanges`: three-way merges a conflicted push (the
+/// staged local edit and the fetched remote card against their common
+/// base; the local side wins same-field collisions); pure computation,
+/// no transport. Returns `{"vcard", "conflicts"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_mergeCardChanges<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    base: JString<'local>,
+    local: JString<'local>,
+    remote: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base = read_string(env, &base);
+        let local = read_string(env, &local);
+        let remote = read_string(env, &remote);
+
+        let json = match merge_conflict(&base, &local, &remote) {
+            Ok(merged) => merged.to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.setCardUid`: rewrites the card's UID (a plain copy is a new
+/// identity); pure computation, no transport. Returns
+/// `{"vcard": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_setCardUid<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+    uid: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+        let uid = read_string(env, &uid);
+
+        let json = match set_uid(&vcard, &uid) {
+            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// `Native.projectCard`: projects a vCard onto the neutral field model
 /// the app maps to ContactsContract rows (docs/contacts-mapping.md).
 /// Returns the model JSON.
@@ -1254,6 +1332,11 @@ fn parse_books(raw: &str) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     serde_json::from_str(raw).map_err(|err| format!("Invalid book id list `{raw}`: {err}"))
+}
+
+/// Parses a JSON string array of vCards.
+fn parse_strings(raw: &str) -> Result<Vec<String>, String> {
+    serde_json::from_str(raw).map_err(|err| format!("Invalid vCard list: {err}"))
 }
 
 fn etag_json(etag: Option<String>) -> String {

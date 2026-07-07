@@ -55,19 +55,21 @@ import org.pimalaya.cardamum.client.ServiceConfig;
  * on the app's root: the merged contacts list across every subscribed
  * addressbook of every account, contact-first per docs/merged-view.md
  * (replicas sharing a vCard UID collapse into one row; storage and sync
- * stay strictly per-replica). Addressbooks live behind a management
- * screen and as an optional filter on the list; syncs are manual, from
+ * stay strictly per-replica). A merged row opens one edit form for the
+ * whole contact and saving fans the form out onto every replica.
+ * Addressbooks live behind a management screen; syncs are manual, from
  * the Sync menu.
  */
 public class MainActivity extends Activity {
-    private static final int PANEL_EMAIL = 0;
-    private static final int PANEL_CONFIG = 1;
-    private static final int PANEL_PASSWORD = 2;
-    private static final int PANEL_BOOKS = 3;
-    private static final int PANEL_CONTACTS = 4;
-    private static final int PANEL_CONTACT = 5;
-    private static final int PANEL_SETTINGS = 6;
-    private static final int PANEL_HOME = 7;
+    private static final int PANEL_AUTH = 0;
+    private static final int PANEL_CONTACTS = 1;
+    private static final int PANEL_CONTACT = 2;
+    private static final int PANEL_HOME = 3;
+
+    /** The auth flow's steps, inside its own flipper under one bar. */
+    private static final int STEP_EMAIL = 0;
+    private static final int STEP_CONFIG = 1;
+    private static final int STEP_BOOKS = 2;
 
     private static final int REQUEST_CONTACTS = 1;
 
@@ -118,6 +120,7 @@ public class MainActivity extends Activity {
     private SecureStore store;
     private CardStore base;
     private ViewFlipper flipper;
+    private ViewFlipper authFlipper;
     private ContactForm form;
 
     /** Every connected account (multi-account). */
@@ -156,10 +159,7 @@ public class MainActivity extends Activity {
     /** Accounts collapsed on the home screen (all expanded by default). */
     private final java.util.Set<String> collapsedAccounts = new java.util.HashSet<>();
 
-    /** The addressbook filtering the contacts screen; null shows all. */
-    private BookEntry currentBook;
-
-    /** The replica pool of the contacts screen (filtered or all). */
+    /** The replica pool of the contacts screen. */
     private List<Entry> contacts = new ArrayList<>();
 
     /** The merged rows, sorted; backs the recycling adapter. */
@@ -192,6 +192,15 @@ public class MainActivity extends Activity {
     /** The vCard the editor patches: the card's, or a fresh template. */
     private String editingVcard;
 
+    /** The merged group's replicas behind the editor; saving fans out. */
+    private List<Entry> editingReplicas = new ArrayList<>();
+
+    /** The replica the Merge action keeps; every other card is removed. */
+    private Entry mergeSurvivor;
+
+    /** The addressbooks dialog's desired state, applied on save. */
+    private Map<String, Boolean> pendingBookState;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -200,6 +209,7 @@ public class MainActivity extends Activity {
         store = new SecureStore(this);
         base = new CardStore(this);
         flipper = findViewById(R.id.flipper);
+        authFlipper = findViewById(R.id.auth_flipper);
         form = new ContactForm(this);
 
         setUpEmailPanel();
@@ -207,6 +217,18 @@ public class MainActivity extends Activity {
         setUpContactsPanel();
         setUpContactPanel();
         setUpHomePanel();
+
+        for (int id :
+                new int[] {
+                    R.id.email_submit,
+                    R.id.config_continue,
+                    R.id.books_continue,
+                    R.id.contacts_add,
+                    R.id.contact_save,
+                    R.id.home_add,
+                }) {
+            setUpFab(id);
+        }
 
         accounts.addAll(store.loadAll());
         if (accounts.isEmpty()) {
@@ -234,29 +256,67 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Enters the connection flow. The email view's back arrow shows
-     * only when adding a further account: the first-run onboarding
-     * starts here with no account, so it has no way back. The later
-     * steps (config, books) always keep their back arrow.
+     * Enters the connection flow. The bar's cross only exists when an
+     * account is already configured (adding); the first-run onboarding
+     * starts with no account, so it has no way out.
      */
     private void startAuth(boolean adding) {
         addingAccount = adding;
         pendingEmail = null;
         searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
+        findViewById(R.id.auth_cancel).setVisibility(adding ? View.VISIBLE : View.GONE);
 
-        // The email back arrow and every step's cross only exist when an
-        // account is already configured (adding); the first-run flow is
-        // a forced, one-way path.
-        int nav = adding ? View.VISIBLE : View.GONE;
-        for (int id :
-                new int[] {
-                    R.id.email_back, R.id.email_cancel, R.id.config_cancel, R.id.books_cancel,
-                }) {
-            findViewById(id).setVisibility(nav);
+        showAuth(STEP_EMAIL);
+    }
+
+    /** Navigates the auth flow forward: the step slides in from the right. */
+    private void showAuth(int step) {
+        showAuth(step, false);
+    }
+
+    /** Navigates the auth flow back: the step slides in from the left. */
+    private void showAuthBack(int step) {
+        showAuth(step, true);
+    }
+
+    /**
+     * Shows an auth step under the flow's one persistent bar: only the
+     * inner step view transitions. Entering the flow from outside
+     * jumps the inner flipper without animation (the outer panel slide
+     * is the transition), and the bar hides on the first-run welcome.
+     */
+    private void showAuth(int step, boolean back) {
+        boolean inside = flipper.getDisplayedChild() == PANEL_AUTH;
+        if (inside) {
+            hideKeyboard();
+            authFlipper.setInAnimation(this, back ? R.anim.slide_in_left : R.anim.slide_in_right);
+            authFlipper.setOutAnimation(
+                    this, back ? R.anim.slide_out_right : R.anim.slide_out_left);
+        } else {
+            authFlipper.setInAnimation(null);
+            authFlipper.setOutAnimation(null);
         }
 
-        show(PANEL_EMAIL);
+        findViewById(R.id.auth_bar)
+                .setVisibility(step == STEP_EMAIL && !addingAccount ? View.GONE : View.VISIBLE);
+        authFlipper.setDisplayedChild(step);
+
+        if (!inside) {
+            show(PANEL_AUTH);
+        }
+    }
+
+    /** The auth bar's back arrow, per step. */
+    private void authBack() {
+        if (authFlipper.getDisplayedChild() == STEP_CONFIG) {
+            showAuthBack(STEP_EMAIL);
+        } else {
+            // The email step (only reachable when adding an account)
+            // and the books step (the account is already stored by
+            // then, all-subscribed) both leave the flow.
+            goHome();
+        }
     }
 
     /** The account entry matching an email, or null. */
@@ -290,33 +350,20 @@ public class MainActivity extends Activity {
         }
 
         switch (flipper.getDisplayedChild()) {
-            case PANEL_EMAIL:
-                // Only reachable with a back arrow when adding an account.
-                if (addingAccount) {
-                    goHome();
-                } else {
+            case PANEL_AUTH:
+                if (authFlipper.getDisplayedChild() == STEP_EMAIL && !addingAccount) {
+                    // The first-run onboarding has no way back.
                     super.onBackPressed();
+                } else {
+                    authBack();
                 }
-                break;
-            case PANEL_CONFIG:
-                show(PANEL_EMAIL);
-                break;
-            case PANEL_BOOKS:
-                // The account is already stored (all-subscribed) by the
-                // time this step shows, so leaving it is safe.
-                goHome();
                 break;
             case PANEL_CONTACTS:
-                // A filtered list backs out to the merged root, which
-                // is the app's root itself.
-                if (currentBook != null) {
-                    goHome();
-                } else {
-                    super.onBackPressed();
-                }
+                // The merged list is the app's root itself.
+                super.onBackPressed();
                 break;
             case PANEL_CONTACT:
-                show(PANEL_CONTACTS);
+                closeContact();
                 break;
             case PANEL_HOME:
                 goHome();
@@ -328,7 +375,14 @@ public class MainActivity extends Activity {
 
     /** The app's root: the merged contacts list across every account. */
     private void goHome() {
-        openAllContacts();
+        searchQuery = "";
+        clearSearch();
+        exitSelection();
+
+        contacts = loadEntries();
+        renderContacts();
+        // Landing on the root is always a return.
+        showBack(PANEL_CONTACTS);
     }
 
     /** Refreshes the addressbooks management screen and shows it. */
@@ -341,10 +395,8 @@ public class MainActivity extends Activity {
 
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
-        findViewById(R.id.email_back).setOnClickListener(view -> goHome());
-        findViewById(R.id.email_cancel).setOnClickListener(view -> goHome());
-        findViewById(R.id.config_back).setOnClickListener(view -> show(PANEL_EMAIL));
-        findViewById(R.id.config_cancel).setOnClickListener(view -> goHome());
+        findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
+        findViewById(R.id.auth_cancel).setOnClickListener(view -> goHome());
         findViewById(R.id.config_continue)
                 .setOnClickListener(
                         view -> {
@@ -353,11 +405,11 @@ public class MainActivity extends Activity {
                             }
                         });
 
-        Button submit = findViewById(R.id.email_submit);
+        View submit = findViewById(R.id.email_submit);
         // Continue stays disabled until the field holds a plausible
         // address, so an empty or malformed one is simply not
         // submittable (no toast).
-        submit.setEnabled(false);
+        setFabEnabled(R.id.email_submit, false);
         email.addTextChangedListener(
                 new android.text.TextWatcher() {
                     @Override
@@ -369,7 +421,9 @@ public class MainActivity extends Activity {
                     @Override
                     public void afterTextChanged(android.text.Editable s) {
                         String address = s.toString().trim();
-                        submit.setEnabled(!address.isEmpty() && address.contains("@"));
+                        setFabEnabled(
+                                R.id.email_submit,
+                                !address.isEmpty() && address.contains("@"));
                     }
                 });
 
@@ -430,20 +484,41 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Toggles an auth Continue button between its label and an
-     * in-button loader, the button disabled while loading.
+     * Toggles an auth continue FAB between its arrow and an on-disc
+     * loader, the button disabled while loading.
      */
     private void setAuthLoading(int buttonId, int progressId, boolean loading) {
-        Button button = findViewById(buttonId);
+        android.widget.ImageButton button = findViewById(buttonId);
         button.setEnabled(!loading);
-        button.setText(loading ? "" : getString(R.string.email_submit));
+        button.setImageAlpha(loading ? 0 : 255);
         findViewById(progressId).setVisibility(loading ? View.VISIBLE : View.GONE);
+    }
+
+    /** Enables or disables an auth continue FAB, dimming its disc. */
+    private void setFabEnabled(int id, boolean enabled) {
+        View fab = findViewById(id);
+        fab.setEnabled(enabled);
+        fab.setAlpha(enabled ? 1f : 0.4f);
+    }
+
+    /**
+     * Styles a floating action button: its icon tinted to contrast the
+     * accent disc's luminance.
+     */
+    private void setUpFab(int id) {
+        android.widget.ImageButton fab = findViewById(id);
+        int accent = resolveColor(android.R.attr.colorAccent);
+        int tint =
+                android.graphics.Color.luminance(accent) > 0.5f
+                        ? android.graphics.Color.BLACK
+                        : android.graphics.Color.WHITE;
+        fab.setImageTintList(android.content.res.ColorStateList.valueOf(tint));
     }
 
     /** The config Continue back to idle: enabled once an option is picked. */
     private void resetConfigContinue() {
         setAuthLoading(R.id.config_continue, R.id.config_progress, false);
-        findViewById(R.id.config_continue).setEnabled(selectedConfig != null);
+        setFabEnabled(R.id.config_continue, selectedConfig != null);
     }
 
     /**
@@ -536,7 +611,70 @@ public class MainActivity extends Activity {
                 break;
         }
 
-        show(PANEL_CONFIG);
+        // Manual configuration is always on offer: discovery can miss
+        // a server, and users may want to override what it found.
+        container.addView(
+                configItem(
+                        getString(R.string.config_custom),
+                        null,
+                        getString(R.string.config_password),
+                        this::promptCustomConfig));
+
+        showAuth(STEP_CONFIG);
+    }
+
+    /**
+     * Manual configuration: the protocol, server URL and login typed
+     * directly, for servers discovery cannot see or to override what
+     * it proposed. An empty login sends the secret as a Bearer token.
+     */
+    private void promptCustomConfig() {
+        android.widget.RadioGroup protocols = new android.widget.RadioGroup(this);
+        protocols.setOrientation(LinearLayout.HORIZONTAL);
+        String[] labels = {getString(R.string.config_carddav), getString(R.string.config_jmap)};
+        for (int index = 0; index < labels.length; index++) {
+            android.widget.RadioButton option = new android.widget.RadioButton(this);
+            option.setText(labels[index]);
+            option.setId(index + 1);
+            protocols.addView(option);
+        }
+        protocols.check(1);
+
+        EditText url = customOauthField(R.string.custom_url, "");
+        EditText login = customOauthField(R.string.custom_login, pendingEmail);
+
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(24), dp(8), dp(24), 0);
+        fields.addView(protocols);
+        fields.addView(url);
+        fields.addView(login);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.config_custom)
+                .setView(fields)
+                .setPositiveButton(
+                        R.string.email_submit,
+                        (dialog, which) -> {
+                            String address = url.getText().toString().trim();
+                            if (address.isEmpty()) {
+                                toast(getString(R.string.custom_url_empty));
+                                return;
+                            }
+                            boolean jmap = protocols.getCheckedRadioButtonId() == 2;
+                            String baseUrl =
+                                    jmap
+                                            ? CardamumClient.JMAP_PREFIX
+                                                    + address.replaceFirst("^https?://", "")
+                                            : address;
+                            promptPassword(
+                                    baseUrl,
+                                    hostOf(address),
+                                    login.getText().toString().trim(),
+                                    R.string.password_hint);
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     /**
@@ -652,7 +790,7 @@ public class MainActivity extends Activity {
             option.setOnClickListener(
                     view -> {
                         selectedConfig = action;
-                        findViewById(R.id.config_continue).setEnabled(true);
+                        setFabEnabled(R.id.config_continue, true);
                     });
         }
 
@@ -761,8 +899,6 @@ public class MainActivity extends Activity {
     // ---- Addressbook selection -------------------------------------------------
 
     private void setUpBooksPanel() {
-        findViewById(R.id.books_back).setOnClickListener(view -> goHome());
-        findViewById(R.id.books_cancel).setOnClickListener(view -> goHome());
         findViewById(R.id.books_continue).setOnClickListener(view -> confirmBooks());
     }
 
@@ -800,7 +936,7 @@ public class MainActivity extends Activity {
 
         updateBooksContinue();
         setAuthLoading(R.id.books_continue, R.id.books_progress, false);
-        show(PANEL_BOOKS);
+        showAuth(STEP_BOOKS);
     }
 
     /** Continue is enabled only while at least one addressbook is checked. */
@@ -812,7 +948,7 @@ public class MainActivity extends Activity {
                 break;
             }
         }
-        findViewById(R.id.books_continue).setEnabled(any);
+        setFabEnabled(R.id.books_continue, any);
     }
 
     /** Applies the checked subscriptions, then runs the account's first sync. */
@@ -823,7 +959,7 @@ public class MainActivity extends Activity {
                 subscribed.add((String) box.getTag());
             }
         }
-        base.setSubscriptions(subscribed);
+        base.setSubscriptions(connectedEmail, subscribed);
         setAuthLoading(R.id.books_continue, R.id.books_progress, true);
         syncRemote(true);
     }
@@ -869,27 +1005,6 @@ public class MainActivity extends Activity {
             resetConfigContinue();
             showError(error, R.string.connect_failed);
         }
-    }
-
-    /** Name of the preferences holding the app settings. */
-    private static final String SETTINGS_PREFS = "cardamum.settings";
-
-    /** Settings key of the default save addressbook (its URL). */
-    private static final String DEFAULT_BOOK = "defaultBookUrl";
-
-    /** The default save addressbook's URL, or null when unset. */
-    private String defaultBookUrl() {
-        return getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE).getString(DEFAULT_BOOK, null);
-    }
-
-    /** Remembers the default save addressbook for new contacts. */
-    private void setDefaultBook(BookEntry entry) {
-        getSharedPreferences(SETTINGS_PREFS, MODE_PRIVATE)
-                .edit()
-                .putString(DEFAULT_BOOK, entry.book.url)
-                .apply();
-        toast(getString(R.string.default_set, entry.book.name));
-        reloadHome();
     }
 
     /** Name of the preferences holding the in-flight OAuth grant. */
@@ -1266,7 +1381,9 @@ public class MainActivity extends Activity {
         // Coming back from the browser without a redirect (the user
         // cancelled the grant) must not leave the config Continue stuck
         // on its loader; a real redirect re-enters loading right after.
-        if (flipper != null && flipper.getDisplayedChild() == PANEL_CONFIG) {
+        if (flipper != null
+                && flipper.getDisplayedChild() == PANEL_AUTH
+                && authFlipper.getDisplayedChild() == STEP_CONFIG) {
             resetConfigContinue();
         }
     }
@@ -1279,10 +1396,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Rebuilds the home listing: every addressbook grouped by account,
-     * unsynced ones flagged with a crossed-sync icon. Long-pressing a
-     * header offers to delete the account, long-pressing a book to
-     * toggle its sync.
+     * Rebuilds the addressbooks listing: every addressbook grouped by
+     * account with its subscription checkbox; tapping anywhere on a row
+     * toggles it, instantly and without confirmation (the store and the
+     * phone catch up on the next sync passes). Long-pressing a header
+     * offers to delete the account.
      */
     private void reloadHome() {
         homeBooks = base.loadAllAddressbooks();
@@ -1313,10 +1431,7 @@ public class MainActivity extends Activity {
             }
 
             TextView name = new TextView(this);
-            name.setText(
-                    entry.book.url.equals(defaultBookUrl())
-                            ? getString(R.string.default_marker, entry.book.name)
-                            : entry.book.name);
+            name.setText(entry.book.name);
             name.setTextSize(16);
             name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
             name.setLayoutParams(
@@ -1335,49 +1450,27 @@ public class MainActivity extends Activity {
 
             CheckBox sync = new CheckBox(this);
             sync.setChecked(entry.subscribed);
-            sync.setOnClickListener(view -> confirmToggleSync(entry, sync));
+            sync.setOnClickListener(view -> toggleSync(entry));
             row.addView(iconSlot(sync));
 
-            // An unsynced book has nothing to open: tapping it ticks
-            // the checkbox and asks to sync instead.
-            row.setOnClickListener(
-                    view -> {
-                        if (entry.subscribed) {
-                            openBook(entry);
-                        } else {
-                            sync.setChecked(true);
-                            confirmToggleSync(entry, sync);
-                        }
-                    });
-            row.setOnLongClickListener(
-                    view -> {
-                        setDefaultBook(entry);
-                        return true;
-                    });
+            // The whole row is the checkbox's tap target: subscribing
+            // is the only action a book row carries.
+            row.setOnClickListener(view -> toggleSync(entry));
             books.addView(row);
         }
     }
 
     /**
-     * Confirms the sync checkbox's fresh state (the tap already flipped
-     * it visually), reverting the checkbox when declined.
+     * Flips one addressbook's subscription within its account. A pure
+     * view filter: the cached cards stay and reappear on re-check;
+     * syncs and the phone projection only cover subscribed books.
      */
-    private void confirmToggleSync(BookEntry entry, CheckBox sync) {
-        int message =
-                entry.subscribed ? R.string.book_unsync_confirm : R.string.book_sync_confirm;
-        new AlertDialog.Builder(this)
-                .setMessage(getString(message, entry.book.name))
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> toggleSync(entry))
-                .setNegativeButton(
-                        android.R.string.cancel,
-                        (dialog, which) -> sync.setChecked(entry.subscribed))
-                .setOnCancelListener(dialog -> sync.setChecked(entry.subscribed))
-                .show();
-    }
-
     private void toggleSync(BookEntry entry) {
         java.util.Set<String> subscribed = new java.util.HashSet<>();
         for (BookEntry candidate : base.loadAllAddressbooks()) {
+            if (!candidate.accountEmail.equals(entry.accountEmail)) {
+                continue;
+            }
             boolean keep =
                     candidate.book.url.equals(entry.book.url)
                             ? !entry.subscribed
@@ -1386,7 +1479,7 @@ public class MainActivity extends Activity {
                 subscribed.add(candidate.book.url);
             }
         }
-        base.setSubscriptions(subscribed);
+        base.setSubscriptions(entry.accountEmail, subscribed);
         reloadHome();
     }
 
@@ -1483,39 +1576,13 @@ public class MainActivity extends Activity {
         return header;
     }
 
-    /** Opens the contacts list filtered to one addressbook. */
-    private void openBook(BookEntry entry) {
-        openContacts(entry);
-    }
-
-    /** Opens the merged contacts list across every subscribed addressbook. */
-    private void openAllContacts() {
-        openContacts(null);
-    }
-
-    /** Opens the contacts list, filtered to `only` or merged when null. */
-    private void openContacts(BookEntry only) {
-        currentBook = only;
-        searchQuery = "";
-        closeSearch();
-        exitSelection();
-
-        contacts = loadEntries(only);
-        renderContacts();
-        show(PANEL_CONTACTS);
-    }
-
     /**
      * The replica pool from the store: every subscribed addressbook's
-     * cards (tagged with their book and account), or one addressbook's
-     * when a filter is given.
+     * cards, tagged with their book and account.
      */
-    private List<Entry> loadEntries(BookEntry only) {
+    private List<Entry> loadEntries() {
         List<Entry> entries = new ArrayList<>();
         for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-            if (only != null && !only.book.url.equals(entry.book.url)) {
-                continue;
-            }
             for (CardStore.Indexed indexed : base.loadIndexedCards(entry.book.url)) {
                 entries.add(new Entry(entry.book, entry.accountEmail, indexed));
             }
@@ -1677,7 +1744,7 @@ public class MainActivity extends Activity {
             boolean pushed = false;
             List<CardStore.Pending> pending = base.loadPending(email);
             if (!pending.isEmpty()) {
-                push(acc, email, pending, etagsOf(rowCards(rows)), outcome);
+                push(acc, email, pending, cardsById(rowCards(rows)), outcome);
                 pushed = true;
             }
 
@@ -1747,7 +1814,7 @@ public class MainActivity extends Activity {
 
         List<CardStore.Pending> pending = base.loadPendingForBook(email, book.url);
         if (!pending.isEmpty()) {
-            push(acc, email, pending, etagsOf(fetched), outcome);
+            push(acc, email, pending, cardsById(fetched), outcome);
 
             // The push changed the remote; re-fetch its resulting state.
             base.replaceBookCards(email, book.url, client.listCards(acc, book.url));
@@ -1761,6 +1828,15 @@ public class MainActivity extends Activity {
             etags.put(card.id, card.etag);
         }
         return etags;
+    }
+
+    /** The fetched cards keyed by id. */
+    private static Map<String, Card> cardsById(List<Card> cards) {
+        Map<String, Card> byId = new HashMap<>();
+        for (Card card : cards) {
+            byId.put(card.id, card);
+        }
+        return byId;
     }
 
     /** Counts fetched-vs-known ETag differences (added, changed, removed). */
@@ -1917,39 +1993,6 @@ public class MainActivity extends Activity {
                 });
     }
 
-    /**
-     * Full sync: the phone spoke, then the remote spoke, then the phone
-     * spoke again (so remote changes reach the phone in one pass), per
-     * the hub-and-spoke topology. One spinner spans the whole run.
-     */
-    private void syncFull() {
-        if (!ensureContactsPermission(this::syncFull)) {
-            return;
-        }
-
-        setSyncing(true);
-        io.execute(
-                () -> {
-                    Exception localFailure = runLocalSync();
-                    SyncOutcome remote = runRemoteSync();
-                    if (localFailure == null) {
-                        localFailure = runLocalSync();
-                    }
-
-                    Exception firstFailure =
-                            localFailure != null ? localFailure : remote.failure;
-                    main.post(
-                            () -> {
-                                setSyncing(false);
-                                finishSync(false);
-                                if (firstFailure != null) {
-                                    showError(firstFailure, R.string.sync_failed);
-                                } else {
-                                    reportSync(remote);
-                                }
-                            });
-                });
-    }
 
     /**
      * The phone spoke: reconciles the per-addressbook Android accounts
@@ -2010,12 +2053,14 @@ public class MainActivity extends Activity {
      * against its collection (the first membership URL; per-collection
      * backends have exactly one, account-level backends only need it
      * for creates). A 412 means the remote changed under the staged
-     * edit: the change stays staged (merged) and retries next sync
-     * (NOTE: keep-both resolution lands with the io-offline engine).
-     * Any other failure aborts the sync (offline fallback).
+     * edit: both sides three-way merge against the staged base (the
+     * local side wins same-field collisions, an update beats a
+     * removal) and the merged card pushes against the fresh server
+     * state, counted as merged. Any other failure aborts the sync
+     * (offline fallback).
      */
     private void push(Account account, String email, List<CardStore.Pending> changes,
-            Map<String, String> serverEtags, SyncOutcome outcome) {
+            Map<String, Card> serverCards, SyncOutcome outcome) {
         for (CardStore.Pending pending : changes) {
             String bookUrl = pending.books.isEmpty() ? null : pending.books.get(0);
             if (bookUrl == null) {
@@ -2046,15 +2091,18 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 String message = error.getMessage();
                 if (message != null && message.contains("HTTP 412")) {
-                    // Server quirk (posteo's SabreDAV): some resources
-                    // carry no internal ETag, so their If-Match always
-                    // fails even though the listing serves one. The
-                    // listing was fetched moments ago; when it still
-                    // matches the staged base, the remote is provably
-                    // unchanged and the write is safe without If-Match
-                    // (the same guarantee, enforced by us instead).
-                    String server = serverEtags.get(pending.card.id);
-                    if (server != null && server.equals(pending.card.etag)) {
+                    Card server = serverCards.get(pending.card.id);
+                    String serverEtag = server == null ? null : server.etag;
+
+                    if (serverEtag != null && serverEtag.equals(pending.card.etag)) {
+                        // Server quirk (posteo's SabreDAV): some
+                        // resources carry no internal ETag, so their
+                        // If-Match always fails even though the listing
+                        // serves one. The listing was fetched moments
+                        // ago; when it still matches the staged base,
+                        // the remote is provably unchanged and the
+                        // write is safe without If-Match (the same
+                        // guarantee, enforced by us instead).
                         Log.w(
                                 "cardamum",
                                 "If-Match rejected but listing unchanged, retrying without it: "
@@ -2079,7 +2127,65 @@ public class MainActivity extends Activity {
                                     updated);
                         }
                         outcome.pushed++;
+                    } else if (server != null && pending.deleted) {
+                        // The remote updated what the delete targeted:
+                        // the update wins over the removal, the staged
+                        // delete is dropped and the server card adopted.
+                        Log.w(
+                                "cardamum",
+                                "delete conflict on " + pending.card.id + ": remote update wins");
+                        base.confirmPush(
+                                email,
+                                pending.key,
+                                cardKey(account, bookUrl, server.id),
+                                server);
+                        outcome.merged++;
+                    } else if (server != null && pending.baseVcard != null) {
+                        // The remote genuinely changed under the staged
+                        // edit: three-way merge both sides against the
+                        // staged base and push the merged card against
+                        // the fresh server state.
+                        Log.w(
+                                "cardamum",
+                                "push conflict on " + pending.card.id + ": three-way merging");
+                        String merged =
+                                client.mergeCardChanges(
+                                        pending.baseVcard, pending.card.vcard, server.vcard);
+                        Card resolved =
+                                new Card(pending.card.id, server.uri, server.etag, merged);
+                        Card updated;
+                        try {
+                            updated = client.updateCard(account, bookUrl, resolved, server.vcard);
+                        } catch (Exception retry) {
+                            String retryMessage = retry.getMessage();
+                            if (retryMessage == null || !retryMessage.contains("HTTP 412")) {
+                                throw retry;
+                            }
+                            // The no-internal-ETag quirk again: the
+                            // merge just reconciled against the state
+                            // fetched moments ago, so the unguarded
+                            // write carries the same guarantee.
+                            updated =
+                                    client.updateCard(
+                                            account,
+                                            bookUrl,
+                                            new Card(
+                                                    pending.card.id,
+                                                    server.uri,
+                                                    null,
+                                                    merged),
+                                            server.vcard);
+                        }
+                        base.confirmPush(
+                                email,
+                                pending.key,
+                                cardKey(account, bookUrl, updated.id),
+                                updated);
+                        outcome.merged++;
                     } else {
+                        // No server state to reconcile against (the
+                        // resource vanished, or no base was captured):
+                        // the change stays staged for the next sync.
                         outcome.merged++;
                         Log.w(
                                 "cardamum",
@@ -2088,7 +2194,7 @@ public class MainActivity extends Activity {
                                         + ": staged etag "
                                         + pending.card.etag
                                         + ", server etag "
-                                        + server);
+                                        + serverEtag);
                     }
                 } else {
                     throw error instanceof RuntimeException
@@ -2106,12 +2212,11 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_back).setOnClickListener(view -> goHome());
         findViewById(R.id.contacts_books).setOnClickListener(view -> openBooksManager());
         findViewById(R.id.contacts_add).setOnClickListener(view -> addContact());
-        findViewById(R.id.contacts_link).setOnClickListener(view -> linkSelected());
+        findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
 
-        findViewById(R.id.contacts_search).setOnClickListener(view -> openSearch());
-        findViewById(R.id.contacts_search_close).setOnClickListener(view -> closeSearch());
+        findViewById(R.id.contacts_search_close).setOnClickListener(view -> clearSearch());
         ((EditText) findViewById(R.id.contacts_search_input))
                 .addTextChangedListener(
                         new android.text.TextWatcher() {
@@ -2175,142 +2280,39 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Opens a merged row: straight into the editor for a single
-     * replica, through an account chooser when the contact lives in
-     * several places (editing is strictly per-replica, one vCard
-     * document at a time).
+     * Opens a merged row in the editor: one form for the whole contact
+     * (docs/merged-view.md), the union of the replicas' documents with
+     * per-field alternative chips when they diverge. Saving fans the
+     * form out onto every replica.
      */
     private void openGroup(Group group) {
-        if (group.replicas.size() == 1) {
-            Entry entry = group.primary();
-            openContact(entry.book, entry.accountEmail, entry.card);
-            return;
-        }
-
-        String[] labels = new String[group.replicas.size()];
-        for (int index = 0; index < labels.length; index++) {
-            Entry entry = group.replicas.get(index);
-            labels[index] = entry.book.name + " (" + entry.accountEmail + ")";
-        }
-
-        AlertDialog.Builder builder =
-                new AlertDialog.Builder(this)
-                        .setTitle(displayName(group.primary()))
-                        .setItems(
-                                labels,
-                                (dialog, which) -> {
-                                    Entry entry = group.replicas.get(which);
-                                    openContact(entry.book, entry.accountEmail, entry.card);
-                                })
-                        .setNeutralButton(R.string.unlink, (dialog, which) -> unlinkGroup(group))
-                        .setNegativeButton(android.R.string.cancel, null);
-        if (diverged(group)) {
-            builder.setPositiveButton(
-                    R.string.resolve, (dialog, which) -> resolveGroup(group));
-        }
-        builder.show();
+        openMerged(group.replicas);
     }
 
     /**
-     * Pick-a-source resolution of a diverged contact
-     * (docs/merged-view.md): choose the replica whose document wins,
-     * and its vCard is staged as an ordinary edit onto every other
-     * replica, each pushed through its own account's normal path (etag
-     * guards included). No merge, no special sync mode.
-     */
-    private void resolveGroup(Group group) {
-        String[] labels = new String[group.replicas.size()];
-        for (int index = 0; index < labels.length; index++) {
-            Entry entry = group.replicas.get(index);
-            labels[index] = entry.book.name + " (" + entry.accountEmail + ")";
-        }
-
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.resolve_title)
-                .setItems(
-                        labels,
-                        (dialog, which) ->
-                                applyResolution(group, group.replicas.get(which)))
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    /** Stages the source's document onto every other replica of the group. */
-    private void applyResolution(Group group, Entry source) {
-        java.util.Set<String> staged = new java.util.HashSet<>();
-        for (Entry entry : group.replicas) {
-            // An m:n replica appears once per book; stage it once, and
-            // skip replicas already carrying the source's content.
-            if (!staged.add(replicaRefOf(entry))
-                    || entry.hash.equals(source.hash)) {
-                continue;
-            }
-            AccountEntry account = accountFor(entry.accountEmail);
-            if (account == null) {
-                continue;
-            }
-
-            base.saveLocal(
-                    entry.accountEmail,
-                    cardKey(account.account, entry.book.url, entry.card.id),
-                    entry.book.url,
-                    new Card(
-                            entry.card.id,
-                            entry.card.uri,
-                            entry.card.etag,
-                            source.card.vcard));
-        }
-
-        toast(getString(R.string.resolve_done));
-        renderContacts();
-    }
-
-    /**
-     * Starts a new contact: in the filtered addressbook when one is
-     * open, otherwise asking for the target addressbook (unless only
-     * one is subscribed).
+     * Starts a new contact, asking for the target addressbook whenever
+     * more than one is subscribed: an explicit choice beats a default
+     * landing cards where the user does not expect them.
      */
     private void addContact() {
-        if (currentBook != null) {
-            openContact(currentBook.book, currentBook.accountEmail, null);
-            return;
-        }
-
         List<BookEntry> books = base.loadSubscribedAddressbooks();
         if (books.isEmpty()) {
             toast(getString(R.string.home_empty));
             return;
         }
         if (books.size() == 1) {
-            openContact(books.get(0).book, books.get(0).accountEmail, null);
+            openNewContact(books.get(0).book, books.get(0).accountEmail);
             return;
-        }
-
-        // The default save addressbook (long-press a book on the
-        // management screen) skips the prompt while it stays subscribed.
-        String defaultUrl = defaultBookUrl();
-        for (BookEntry entry : books) {
-            if (entry.book.url.equals(defaultUrl)) {
-                openContact(entry.book, entry.accountEmail, null);
-                return;
-            }
-        }
-
-        String[] labels = new String[books.size()];
-        for (int index = 0; index < labels.length; index++) {
-            BookEntry entry = books.get(index);
-            labels[index] = entry.book.name + " (" + entry.accountEmail + ")";
         }
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.save_target_title)
                 .setItems(
-                        labels,
+                        bookLabels(books),
                         (dialog, which) ->
-                                openContact(
+                                openNewContact(
                                         books.get(which).book,
-                                        books.get(which).accountEmail,
-                                        null))
+                                        books.get(which).accountEmail))
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
     }
@@ -2338,12 +2340,6 @@ public class MainActivity extends Activity {
                         view -> {
                             popup.dismiss();
                             syncLocal();
-                        });
-        content.findViewById(R.id.menu_sync_full)
-                .setOnClickListener(
-                        view -> {
-                            popup.dismiss();
-                            syncFull();
                         });
         popup.showAsDropDown(anchor);
     }
@@ -2397,6 +2393,19 @@ public class MainActivity extends Activity {
                             searching ? R.string.empty_search_title : R.string.empty_book_title);
         }
         sticky.setText(empty ? "" : letter(displayName(sortedContacts.get(0).primary())));
+
+        // Rows are uniform (empty sub-lines keep their space): size the
+        // sticky letter box to the row height once, so both letters'
+        // centres align.
+        ListView list = findViewById(R.id.contacts_list);
+        list.post(
+                () -> {
+                    View first = list.getChildAt(0);
+                    if (first != null && sticky.getLayoutParams().height != first.getHeight()) {
+                        sticky.getLayoutParams().height = first.getHeight();
+                        sticky.requestLayout();
+                    }
+                });
     }
 
     /** Recycling adapter for the contacts list. */
@@ -2435,19 +2444,28 @@ public class MainActivity extends Activity {
 
             bindLine(row.findViewById(R.id.contact_email), entry.email);
             bindLine(row.findViewById(R.id.contact_phone), entry.phone);
-            bindLine(
-                    row.findViewById(R.id.contact_accounts),
-                    group.replicas.size() > 1
-                            ? getString(
-                                    diverged(group)
-                                            ? R.string.contact_accounts_diverged
-                                            : R.string.contact_accounts,
-                                    group.replicas.size())
-                            : null);
 
+            // The link glyph and card count, for a contact backed by
+            // several physical cards.
+            int cards = distinctRefs(group.replicas).size();
+            row.findViewById(R.id.contact_link_icon)
+                    .setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
+            TextView links = row.findViewById(R.id.contact_links);
+            links.setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
+            links.setText(String.valueOf(cards));
+
+            // The trailing slot: the selection checkbox, or the
+            // divergence flag outside selection.
+            boolean isDiverged = diverged(group);
             CheckBox check = row.findViewById(R.id.contact_check);
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
             check.setChecked(selectedKeys.contains(groupKey(group)));
+            android.widget.ImageView danger = row.findViewById(R.id.contact_diverged);
+            danger.setImageTintList(
+                    android.content.res.ColorStateList.valueOf(dangerColor()));
+            danger.setVisibility(!selectionMode && isDiverged ? View.VISIBLE : View.GONE);
+            row.findViewById(R.id.contact_end_slot)
+                    .setVisibility(selectionMode || isDiverged ? View.VISIBLE : View.GONE);
 
             return row;
         }
@@ -2493,36 +2511,193 @@ public class MainActivity extends Activity {
         return groupKeyOf(group.primary());
     }
 
-    /** Links the selected rows into one merged contact. */
-    private void linkSelected() {
-        List<String> keys = new ArrayList<>();
+    /** The single selected merged row, or null when several are. */
+    private Group selectedGroup() {
+        Group selected = null;
         for (Group group : sortedContacts) {
             if (selectedKeys.contains(groupKey(group))) {
-                keys.add(groupKey(group));
+                if (selected != null) {
+                    return null;
+                }
+                selected = group;
             }
         }
-        if (keys.size() < 2) {
+        return selected;
+    }
+
+    /** The subscribed addressbooks the group does not already live in. */
+    private List<BookEntry> booksOutside(Group group) {
+        java.util.Set<String> current = new java.util.HashSet<>();
+        for (Entry entry : group.replicas) {
+            current.add(entry.book.url);
+        }
+
+        List<BookEntry> books = new ArrayList<>();
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            if (!current.contains(entry.book.url)) {
+                books.add(entry);
+            }
+        }
+        return books;
+    }
+
+    /** One two-line label per addressbook of a picker dialog. */
+    private CharSequence[] bookLabels(List<BookEntry> books) {
+        CharSequence[] labels = new CharSequence[books.size()];
+        for (int index = 0; index < books.size(); index++) {
+            BookEntry entry = books.get(index);
+            labels[index] = bookLabel(entry.book.name, entry.accountEmail);
+        }
+        return labels;
+    }
+
+    /**
+     * A two-line addressbook label: the name at full size over the
+     * account email, diminished and secondary (same styling as the
+     * auth config options), so long names and emails never wrap into
+     * one unreadable line.
+     */
+    private CharSequence bookLabel(String name, String email) {
+        android.text.SpannableString label = new android.text.SpannableString(name + "\n" + email);
+        int start = name.length() + 1;
+        label.setSpan(
+                new android.text.style.RelativeSizeSpan(0.8f),
+                start,
+                label.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        label.setSpan(
+                new android.text.style.ForegroundColorSpan(
+                        resolveColor(android.R.attr.textColorSecondary)),
+                start,
+                label.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return label;
+    }
+
+    /** Stages a copied card into the target addressbook. */
+    private void createCopy(BookEntry target, AccountEntry account, String id, String vcard) {
+        String key = cardKey(account.account, target.book.url, id);
+
+        // Google creates land in myContacts; the group membership
+        // pushes right after the create (the key rename of confirmPush
+        // carries it over).
+        if (account.account.baseUrl.startsWith(CardamumClient.GOOGLE_PREFIX)
+                && !"myContacts".equals(target.book.id)) {
+            base.stageMembership(target.accountEmail, key, target.book.url, true);
+        }
+        base.saveLocal(target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
+    }
+
+    /** The selected rows' replicas, in list order. */
+    private List<Entry> selectedReplicas() {
+        List<Entry> replicas = new ArrayList<>();
+        for (Group group : sortedContacts) {
+            if (selectedKeys.contains(groupKey(group))) {
+                replicas.addAll(group.replicas);
+            }
+        }
+        return replicas;
+    }
+
+    /**
+     * Merges the selected rows into one single card through the merge
+     * form: the user picks the addressbook whose copy remains (skipped
+     * when every card shares one addressbook), the union of the
+     * documents prefills the editor, and saving stages the merged
+     * content onto the surviving card and a delete for every other.
+     */
+    private void mergeSelected() {
+        List<Entry> replicas = selectedReplicas();
+        if (distinctRefs(replicas).size() < 2) {
             return;
         }
 
-        base.linkGroups(keys);
-        exitSelection();
-        toast(getString(R.string.link_done));
-        renderContacts();
-    }
-
-    /** Splits a merged row apart: every replica becomes its own contact. */
-    private void unlinkGroup(Group group) {
-        List<String> members = new ArrayList<>();
-        List<String> refs = new ArrayList<>();
-        for (Entry entry : group.replicas) {
-            members.add(naturalKeyOf(entry));
-            refs.add(replicaRefOf(entry));
+        // The first replica of each addressbook is its candidate
+        // survivor; one book means there is nothing to choose.
+        Map<String, Entry> byBook = new java.util.LinkedHashMap<>();
+        for (Entry entry : replicas) {
+            byBook.putIfAbsent(entry.book.url, entry);
         }
 
-        base.unlinkGroup(groupKey(group), members, refs);
-        toast(getString(R.string.unlink_done));
-        renderContacts();
+        List<Entry> candidates = new ArrayList<>(byBook.values());
+        if (candidates.size() == 1) {
+            performMerge(replicas, candidates.get(0));
+            return;
+        }
+
+        CharSequence[] labels = new CharSequence[candidates.size()];
+        for (int index = 0; index < candidates.size(); index++) {
+            Entry entry = candidates.get(index);
+            labels[index] = bookLabel(entry.book.name, entry.accountEmail);
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.merge_target_title)
+                .setItems(
+                        labels,
+                        (dialog, which) -> performMerge(replicas, candidates.get(which)))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /**
+     * Merges into the survivor: a straight absorb when every card
+     * already carries the same content (the cards of one merged
+     * contact, nothing to reconcile), the merge form otherwise.
+     */
+    private void performMerge(List<Entry> replicas, Entry survivor) {
+        java.util.Set<String> hashes = new java.util.HashSet<>();
+        for (Entry entry : replicas) {
+            hashes.add(entry.hash);
+        }
+
+        if (hashes.size() == 1) {
+            mergeDirect(replicas, survivor);
+        } else {
+            openMergeForm(replicas, survivor);
+        }
+    }
+
+    /** Absorbs identical cards into the survivor, no form needed. */
+    private void mergeDirect(List<Entry> replicas, Entry survivor) {
+        exitSelection();
+
+        String survivorRef = replicaRefOf(survivor);
+        java.util.Set<String> removed = new java.util.HashSet<>();
+        for (Entry entry : replicas) {
+            String ref = replicaRefOf(entry);
+            if (ref.equals(survivorRef) || !removed.add(ref)) {
+                continue;
+            }
+            AccountEntry owner = accountFor(entry.accountEmail);
+            if (owner == null) {
+                continue;
+            }
+            base.markDeleted(
+                    entry.accountEmail,
+                    cardKey(owner.account, entry.book.url, entry.card.id),
+                    entry.card);
+        }
+
+        toast(getString(R.string.merge_done));
+        reloadContacts();
+    }
+
+    /** Opens the merge form with a surviving replica armed. */
+    private void openMergeForm(List<Entry> replicas, Entry survivor) {
+        exitSelection();
+        if (openMerged(replicas)) {
+            mergeSurvivor = survivor;
+        }
+    }
+
+    /** The distinct physical cards behind a replica list, as refs. */
+    private java.util.Set<String> distinctRefs(List<Entry> replicas) {
+        java.util.Set<String> refs = new java.util.HashSet<>();
+        for (Entry entry : replicas) {
+            refs.add(replicaRefOf(entry));
+        }
+        return refs;
     }
 
     /** Toggles a contact's selection and refreshes the list and app bar. */
@@ -2545,26 +2720,9 @@ public class MainActivity extends Activity {
         adapter.notifyDataSetChanged();
     }
 
-    /** Reveals the search bar and focuses it, popping the keyboard. */
-    private void openSearch() {
-        findViewById(R.id.contacts_search_bar).setVisibility(View.VISIBLE);
-        EditText input = findViewById(R.id.contacts_search_input);
-        if (input.requestFocus()) {
-            android.view.inputmethod.InputMethodManager imm =
-                    (android.view.inputmethod.InputMethodManager)
-                            getSystemService(INPUT_METHOD_SERVICE);
-            imm.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
-        }
-    }
-
-    /** Clears the filter, hides the search bar and dismisses the keyboard. */
-    private void closeSearch() {
-        // Dismiss the keyboard while the input still holds the focus:
-        // hiding the bar first drops the focus and leaves the keyboard
-        // up.
-        hideKeyboard();
+    /** Clears the search query (the bar itself is always visible). */
+    private void clearSearch() {
         ((EditText) findViewById(R.id.contacts_search_input)).setText("");
-        findViewById(R.id.contacts_search_bar).setVisibility(View.GONE);
     }
 
     /** The list title gives way to the selected count while selecting. */
@@ -2572,28 +2730,28 @@ public class MainActivity extends Activity {
         TextView title = findViewById(R.id.contacts_title);
         if (selectionMode) {
             title.setText(getString(R.string.selected_count, selectedKeys.size()));
-        } else if (currentBook != null) {
-            title.setText(currentBook.book.name);
         } else {
             title.setText(R.string.contacts_title);
         }
 
-        // The back arrow only exists on a filtered list: the merged
-        // root is the app's root, there is nothing to go back to.
-        findViewById(R.id.contacts_back)
-                .setVisibility(
-                        !selectionMode && currentBook != null ? View.VISIBLE : View.GONE);
+        // The merged root is the app's root: nothing to go back to.
+        findViewById(R.id.contacts_back).setVisibility(View.GONE);
         findViewById(R.id.contacts_close)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // Linking needs at least two rows to join.
-        findViewById(R.id.contacts_link)
+        // Merging needs at least two physical cards (one merged row
+        // already offers that).
+        findViewById(R.id.contacts_merge)
                 .setVisibility(
-                        selectionMode && selectedKeys.size() > 1 ? View.VISIBLE : View.GONE);
+                        selectionMode && distinctRefs(selectedReplicas()).size() > 1
+                                ? View.VISIBLE
+                                : View.GONE);
         findViewById(R.id.contacts_delete)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        findViewById(R.id.contacts_sync).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        // The whole sync slot goes, not just the inner button: an empty
+        // 48dp frame would push the selection icons off the edge.
+        findViewById(R.id.contacts_sync_slot)
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_books).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_search).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_add).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
@@ -2677,196 +2835,254 @@ public class MainActivity extends Activity {
 
     // ---- Contact screen -----------------------------------------------------
 
-    /** Opens the edit form on the card, or on a fresh template when null. */
-    private void openContact(Addressbook book, String accountEmail, Card card) {
+    /** Opens the edit form on a fresh card in the target addressbook. */
+    private void openNewContact(Addressbook book, String accountEmail) {
         editingBook = book;
         editingAccountEmail = accountEmail;
-        editingCard = card;
-        editingVcard = card == null ? newVcard() : card.vcard;
+        editingCard = null;
+        editingReplicas = new ArrayList<>();
+        mergeSurvivor = null;
+        pendingBookState = null;
+        editingVcard = newVcard();
 
-        TextView title = findViewById(R.id.contact_title);
-        String name = card == null ? "" : cardIndex(card.vcard).optString("name");
-        title.setText(
-                card == null
-                        ? getString(R.string.contact_new)
-                        : name.isEmpty() ? card.id : name);
-        // A fresh card only exists in its target addressbook; the
-        // dialog needs a saved replica to work on.
-        findViewById(R.id.contact_books).setVisibility(card == null ? View.GONE : View.VISIBLE);
+        ((TextView) findViewById(R.id.contact_title)).setText(R.string.contact_new);
+        findViewById(R.id.contact_books).setVisibility(View.GONE);
 
-        form.load(card == null ? null : client.projectCard(card), editingVcard);
-
+        form.load(null, null, null);
         show(PANEL_CONTACT);
+    }
+
+    /**
+     * Opens the edit form on a merged contact: the single document when
+     * the replicas agree, their union with per-field alternative chips
+     * when they diverge. Saving stages the form onto every replica.
+     * Returns false when the documents could not be read.
+     */
+    private boolean openMerged(List<Entry> replicas) {
+        Entry primary = replicas.get(0);
+        editingBook = primary.book;
+        editingAccountEmail = primary.accountEmail;
+        editingCard = primary.card;
+        editingReplicas = new ArrayList<>(replicas);
+        mergeSurvivor = null;
+        pendingBookState = null;
+
+        // The distinct documents behind the group: one per normalized
+        // content hash. One document means a plain edit; several go
+        // through the bridge's union merge.
+        List<String> docs = new ArrayList<>();
+        java.util.Set<String> hashes = new java.util.HashSet<>();
+        for (Entry entry : replicas) {
+            if (hashes.add(entry.hash)) {
+                docs.add(entry.card.vcard);
+            }
+        }
+
+        JSONObject model;
+        JSONObject alternatives = null;
+        org.json.JSONArray changed = null;
+        try {
+            if (docs.size() == 1) {
+                editingVcard = primary.card.vcard;
+                model = client.projectCard(primary.card);
+            } else {
+                JSONObject merged = client.mergeCards(docs);
+                editingVcard = merged.optString("vcard");
+                model = merged.optJSONObject("model");
+                alternatives = merged.optJSONObject("alternatives");
+                // A non-null changed set turns on the form's conflict
+                // mode: only the disagreeing fields show.
+                changed = merged.optJSONArray("changed");
+                if (changed == null) {
+                    changed = new org.json.JSONArray();
+                }
+            }
+        } catch (Exception error) {
+            showError(error, R.string.contact_open_failed);
+            return false;
+        }
+
+        ((TextView) findViewById(R.id.contact_title)).setText(displayName(primary));
+        findViewById(R.id.contact_books).setVisibility(View.VISIBLE);
+
+        form.load(model, alternatives, changed);
+        show(PANEL_CONTACT);
+        return true;
     }
 
     private void setUpContactPanel() {
         findViewById(R.id.contact_save).setOnClickListener(view -> saveContact());
         findViewById(R.id.contact_books).setOnClickListener(view -> manageBooks());
-        // Back reloads: the addressbooks dialog stages copies and
-        // removals the list must reflect.
-        findViewById(R.id.contact_back)
-                .setOnClickListener(
-                        view -> {
-                            reloadContacts();
-                            show(PANEL_CONTACTS);
-                        });
+        findViewById(R.id.contact_back).setOnClickListener(view -> closeContact());
     }
 
     /**
-     * The addressbooks dialog of the open card: checked means the
-     * contact exists there, through this replica's memberships or a
-     * UID-linked replica elsewhere. Checking adds it: a staged
-     * membership on the replica's own account-level backend, a copied
-     * replica (same UID, instantly linked in the merged view) anywhere
-     * else. Unchecking removes it: a staged membership removal when the
-     * replica keeps other books, a staged delete of the replica
-     * otherwise. The book the editor was opened from is locked, so the
-     * open document never removes itself.
+     * Leaves the editor without saving. The list still reloads: the
+     * addressbooks dialog stages copies and removals it must reflect.
+     * An unsaved Merge is abandoned.
+     */
+    private void closeContact() {
+        mergeSurvivor = null;
+        pendingBookState = null;
+        reloadContacts();
+        showBack(PANEL_CONTACTS);
+    }
+
+    /**
+     * The addressbooks dialog of the open contact, the one placement
+     * gesture: checked means the contact exists there, through any of
+     * its cards. The dialog only records the desired state (reopening
+     * shows it); everything applies on SAVE: a staged membership when
+     * the contact already has a card on that account-level backend, a
+     * copied card sharing the vCard UID anywhere else, a membership
+     * removal or the card's staged delete on uncheck. The contact must
+     * keep at least one addressbook (removing it everywhere is Delete).
      */
     private void manageBooks() {
-        AccountEntry editing = accountFor(editingAccountEmail);
-        if (editingCard == null || editing == null) {
+        if (editingReplicas.isEmpty()) {
             return;
         }
 
-        String uid = cardIndex(editingCard.vcard).optString("uid");
-        String key = cardKey(editing.account, editingBook.url, editingCard.id);
-
-        // Where the contact lives: this replica's memberships, plus
-        // every UID-linked replica's books.
-        java.util.Set<String> memberUrls =
-                new java.util.HashSet<>(base.loadMemberships(editingAccountEmail, key));
         Map<String, Entry> replicaByBook = new HashMap<>();
-        if (!uid.isEmpty()) {
-            for (Entry entry : loadEntries(null)) {
-                if (uid.equals(entry.uid)) {
-                    memberUrls.add(entry.book.url);
-                    replicaByBook.put(entry.book.url, entry);
-                }
-            }
+        for (Entry entry : editingReplicas) {
+            replicaByBook.put(entry.book.url, entry);
         }
 
         List<BookEntry> books = base.loadSubscribedAddressbooks();
-        String[] labels = new String[books.size()];
-        boolean[] before = new boolean[books.size()];
-        int lockedIndex = -1;
+        boolean[] checked = new boolean[books.size()];
         for (int index = 0; index < books.size(); index++) {
-            BookEntry entry = books.get(index);
-            labels[index] = entry.book.name + " (" + entry.accountEmail + ")";
-            before[index] = memberUrls.contains(entry.book.url);
-            if (entry.book.url.equals(editingBook.url)) {
-                lockedIndex = index;
-            }
+            String url = books.get(index).book.url;
+            Boolean pending = pendingBookState == null ? null : pendingBookState.get(url);
+            checked[index] = pending != null ? pending : replicaByBook.containsKey(url);
         }
-        int locked = lockedIndex;
-        boolean[] after = before.clone();
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.manage_books_title)
                 .setMultiChoiceItems(
-                        labels,
-                        after,
+                        bookLabels(books),
+                        checked,
                         (dialog, which, isChecked) -> {
-                            if (which == locked && !isChecked) {
+                            if (!isChecked && checkedCount(checked) == 0) {
                                 ((AlertDialog) dialog)
                                         .getListView()
                                         .setItemChecked(which, true);
-                                after[which] = true;
+                                checked[which] = true;
                                 toast(getString(R.string.manage_books_locked));
                             }
                         })
                 .setPositiveButton(
                         android.R.string.ok,
-                        (dialog, which) -> applyBooks(books, before, after, replicaByBook))
+                        (dialog, which) -> {
+                            pendingBookState = new HashMap<>();
+                            for (int index = 0; index < books.size(); index++) {
+                                pendingBookState.put(books.get(index).book.url, checked[index]);
+                            }
+                        })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
     }
 
-    /** Applies the addressbooks dialog: staged memberships, copies, removals. */
-    private void applyBooks(
-            List<BookEntry> books,
-            boolean[] before,
-            boolean[] after,
-            Map<String, Entry> replicaByBook) {
-        AccountEntry editing = accountFor(editingAccountEmail);
-        if (editing == null) {
+    private static int checkedCount(boolean[] checked) {
+        int count = 0;
+        for (boolean state : checked) {
+            if (state) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Applies the addressbooks dialog's desired state on save: staged
+     * memberships, copies (carrying the just-saved content), removals.
+     */
+    private void applyBookState(String vcard) {
+        Map<String, Boolean> desired = pendingBookState;
+        pendingBookState = null;
+        if (desired == null) {
             return;
         }
-        String key = cardKey(editing.account, editingBook.url, editingCard.id);
 
-        for (int index = 0; index < books.size(); index++) {
-            if (before[index] == after[index]) {
+        Map<String, Entry> replicaByBook = new HashMap<>();
+        for (Entry entry : editingReplicas) {
+            replicaByBook.put(entry.book.url, entry);
+        }
+
+        for (BookEntry target : base.loadSubscribedAddressbooks()) {
+            Boolean wanted = desired.get(target.book.url);
+            if (wanted == null || wanted == replicaByBook.containsKey(target.book.url)) {
                 continue;
             }
-
-            BookEntry target = books.get(index);
             AccountEntry account = accountFor(target.accountEmail);
             if (account == null) {
                 continue;
             }
-            boolean ownAccount = target.accountEmail.equals(editingAccountEmail);
-            boolean accountLevel = CardamumClient.isAccountLevel(account.account);
 
-            if (after[index]) {
-                if (ownAccount && accountLevel) {
-                    // Same account, m:n backend: a membership change.
-                    base.stageMembership(editingAccountEmail, key, target.book.url, true);
-                } else {
-                    // Anywhere else: a copied replica, same UID, so the
-                    // merged view links it instantly.
-                    String uid = cardIndex(editingCard.vcard).optString("uid");
-                    String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
-                    String copyKey = cardKey(account.account, target.book.url, id);
-
-                    // Google creates land in myContacts; the group
-                    // membership pushes right after the create (the
-                    // key rename of confirmPush carries it over).
-                    if (account.account.baseUrl.startsWith(CardamumClient.GOOGLE_PREFIX)
-                            && !"myContacts".equals(target.book.id)) {
-                        base.stageMembership(
-                                target.accountEmail, copyKey, target.book.url, true);
-                    }
-                    base.saveLocal(
-                            target.accountEmail,
-                            copyKey,
-                            target.book.url,
-                            new Card(id, null, null, editingCard.vcard));
-                }
-            } else if (ownAccount
-                    && accountLevel
-                    && !target.book.url.equals(editingBook.url)) {
-                base.stageMembership(editingAccountEmail, key, target.book.url, false);
+            if (wanted) {
+                addToBook(target, account, vcard);
             } else {
-                Entry replica = replicaByBook.get(target.book.url);
-                if (replica == null) {
-                    continue;
-                }
-                AccountEntry owner = accountFor(replica.accountEmail);
-                if (owner == null) {
-                    continue;
-                }
-                String replicaKey =
-                        cardKey(owner.account, replica.book.url, replica.card.id);
+                removeFromBook(target, replicaByBook);
+            }
+        }
+    }
 
-                if (CardamumClient.isAccountLevel(owner.account)
-                        && base.loadMemberships(replica.accountEmail, replicaKey).size() > 1) {
-                    // The replica stays, only this membership goes.
+    /**
+     * Adds the contact to an addressbook: a staged membership when the
+     * contact already has a card on that account-level backend, a
+     * copied card sharing the vCard UID anywhere else.
+     */
+    private void addToBook(BookEntry target, AccountEntry account, String vcard) {
+        if (CardamumClient.isAccountLevel(account.account)) {
+            for (Entry entry : editingReplicas) {
+                if (entry.accountEmail.equals(target.accountEmail)) {
                     base.stageMembership(
-                            replica.accountEmail, replicaKey, target.book.url, false);
-                } else {
-                    // Last place of this replica: the replica goes.
-                    base.markDeleted(replica.accountEmail, replicaKey, replica.card);
+                            entry.accountEmail,
+                            cardKey(account.account, entry.book.url, entry.card.id),
+                            target.book.url,
+                            true);
+                    return;
                 }
             }
         }
 
-        toast(getString(R.string.manage_books_done));
+        String uid = cardIndex(vcard).optString("uid");
+        String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
+        createCopy(target, account, id, vcard);
+    }
+
+    /**
+     * Removes the contact from an addressbook: a staged membership
+     * removal when its card keeps other books, a staged delete of the
+     * card otherwise.
+     */
+    private void removeFromBook(BookEntry target, Map<String, Entry> replicaByBook) {
+        Entry replica = replicaByBook.get(target.book.url);
+        if (replica == null) {
+            return;
+        }
+        AccountEntry owner = accountFor(replica.accountEmail);
+        if (owner == null) {
+            return;
+        }
+        String replicaKey = cardKey(owner.account, replica.book.url, replica.card.id);
+
+        if (CardamumClient.isAccountLevel(owner.account)
+                && base.loadMemberships(replica.accountEmail, replicaKey).size() > 1) {
+            // The card stays, only this membership goes.
+            base.stageMembership(replica.accountEmail, replicaKey, target.book.url, false);
+        } else {
+            // Last place of this card: the card goes.
+            base.markDeleted(replica.accountEmail, replicaKey, replica.card);
+        }
     }
 
     /**
      * Stages the edited contact in the base (offline first: nothing
      * touches the network until the next sync pushes it) and returns to
-     * the list.
+     * the list. The form model applies to every replica's own document
+     * (docs/merged-view.md): each keeps its UID and unmanaged
+     * properties while the managed content converges; replicas already
+     * carrying the resulting content are skipped.
      */
     private void saveContact() {
         String birthday = form.birthday();
@@ -2875,39 +3091,123 @@ public class MainActivity extends Activity {
             return;
         }
 
-        AccountEntry account = accountFor(editingAccountEmail);
-        if (account == null) {
-            // The account was deleted while the editor was open.
-            toast(getString(R.string.save_failed));
-            return;
-        }
-
         try {
-            String vcard = client.applyCard(editingVcard, form.collect());
-            String uid = cardIndex(vcard).optString("uid");
-            String id =
-                    editingCard == null
-                            ? (uid.isEmpty() ? UUID.randomUUID().toString() : uid)
-                            : editingCard.id;
-            String uri = editingCard == null ? null : editingCard.uri;
-            String etag = editingCard == null ? null : editingCard.etag;
-            base.saveLocal(
-                    editingAccountEmail,
-                    cardKey(account.account, editingBook.url, id),
-                    editingBook.url,
-                    new Card(id, uri, etag, vcard));
+            JSONObject model = form.collect();
+
+            if (editingCard == null) {
+                AccountEntry account = accountFor(editingAccountEmail);
+                if (account == null) {
+                    // The account was deleted while the editor was open.
+                    toast(getString(R.string.save_failed));
+                    return;
+                }
+                String vcard = client.applyCard(editingVcard, model);
+                String uid = cardIndex(vcard).optString("uid");
+                String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
+                base.saveLocal(
+                        editingAccountEmail,
+                        cardKey(account.account, editingBook.url, id),
+                        editingBook.url,
+                        new Card(id, null, null, vcard));
+            } else if (mergeSurvivor != null) {
+                saveMerge(model);
+            } else {
+                saveFanOut(model);
+            }
+
+            // The addressbooks dialog's choices apply here too, the
+            // copies carrying the just-saved content.
+            if (editingCard != null && pendingBookState != null) {
+                applyBookState(client.applyCard(editingCard.vcard, model));
+            }
         } catch (Exception error) {
             showError(error, R.string.save_failed);
             return;
         }
 
         reloadContacts();
-        show(PANEL_CONTACTS);
+        showBack(PANEL_CONTACTS);
+    }
+
+    /**
+     * The fan-out save: the form model applies to every card's own
+     * document.
+     */
+    private void saveFanOut(JSONObject model) {
+        java.util.Set<String> staged = new java.util.HashSet<>();
+
+        for (Entry entry : editingReplicas) {
+            // An m:n replica appears once per book; stage it once.
+            if (!staged.add(replicaRefOf(entry))) {
+                continue;
+            }
+            AccountEntry account = accountFor(entry.accountEmail);
+            if (account == null) {
+                continue;
+            }
+
+            String vcard = client.applyCard(entry.card.vcard, model);
+            if (cardIndex(vcard).optString("hash").equals(entry.hash)) {
+                continue;
+            }
+            base.saveLocal(
+                    entry.accountEmail,
+                    cardKey(account.account, entry.book.url, entry.card.id),
+                    entry.book.url,
+                    new Card(entry.card.id, entry.card.uri, entry.card.etag, vcard));
+        }
+    }
+
+    /**
+     * The merge save: the form model applies to the surviving card and
+     * every other card behind the form stages a delete.
+     */
+    private void saveMerge(JSONObject model) {
+        Entry survivor = mergeSurvivor;
+        mergeSurvivor = null;
+
+        AccountEntry account = accountFor(survivor.accountEmail);
+        if (account == null) {
+            toast(getString(R.string.save_failed));
+            return;
+        }
+
+        String vcard = client.applyCard(survivor.card.vcard, model);
+        if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
+            base.saveLocal(
+                    survivor.accountEmail,
+                    cardKey(account.account, survivor.book.url, survivor.card.id),
+                    survivor.book.url,
+                    new Card(
+                            survivor.card.id,
+                            survivor.card.uri,
+                            survivor.card.etag,
+                            vcard));
+        }
+
+        String survivorRef = replicaRefOf(survivor);
+        java.util.Set<String> removed = new java.util.HashSet<>();
+        for (Entry entry : editingReplicas) {
+            String ref = replicaRefOf(entry);
+            if (ref.equals(survivorRef) || !removed.add(ref)) {
+                continue;
+            }
+            AccountEntry owner = accountFor(entry.accountEmail);
+            if (owner == null) {
+                continue;
+            }
+            base.markDeleted(
+                    entry.accountEmail,
+                    cardKey(owner.account, entry.book.url, entry.card.id),
+                    entry.card);
+        }
+
+        toast(getString(R.string.merge_done));
     }
 
     /** Rebuilds the contacts list from the base (staged edits included). */
     private void reloadContacts() {
-        contacts = loadEntries(currentBook);
+        contacts = loadEntries();
         renderContacts();
     }
 
@@ -2933,8 +3233,20 @@ public class MainActivity extends Activity {
 
     // ---- Utils --------------------------------------------------------------
 
+    /** Navigates forward: the panels slide in from the right. */
     private void show(int panel) {
+        show(panel, false);
+    }
+
+    /** Navigates back: the panels slide in from the left. */
+    private void showBack(int panel) {
+        show(panel, true);
+    }
+
+    private void show(int panel, boolean back) {
         hideKeyboard();
+        flipper.setInAnimation(this, back ? R.anim.slide_in_left : R.anim.slide_in_right);
+        flipper.setOutAnimation(this, back ? R.anim.slide_out_right : R.anim.slide_out_left);
         flipper.setDisplayedChild(panel);
     }
 
@@ -2943,6 +3255,21 @@ public class MainActivity extends Activity {
         android.util.TypedValue value = new android.util.TypedValue();
         getTheme().resolveAttribute(attr, value, true);
         return value.resourceId;
+    }
+
+    /**
+     * The theme's standard error colour (colorError, API 26+), falling
+     * back to the secondary text tone on older devices.
+     */
+    private int dangerColor() {
+        android.util.TypedValue value = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.colorError, value, true)) {
+            if (value.resourceId != 0) {
+                return getResources().getColor(value.resourceId, getTheme());
+            }
+            return value.data;
+        }
+        return resolveColor(android.R.attr.textColorSecondary);
     }
 
     /** Resolves a theme colour attribute to an ARGB int. */

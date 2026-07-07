@@ -20,6 +20,7 @@ use vcard::{
     tree::{
         cst::VcardCst,
         line::VcardLine,
+        merge::merge,
         prop::{
             VcardPropLens, adr::ADR, bday::BDAY, categories::CATEGORIES, email::EMAIL, r#fn::FN,
             n::N, nickname::NICKNAME, note::NOTE, org::ORG, role::ROLE, tel::TEL, title::TITLE,
@@ -491,51 +492,27 @@ pub(crate) fn full_date(raw: &str) -> Option<String> {
 /// Indexes a vCard for the app's store, computed once at write time:
 /// the fields the contacts list renders (FN, first EMAIL, first TEL,
 /// UID) and a normalized content hash for the divergence flag of
-/// linked replicas. The hash is FNV-1a over the sorted logical
-/// property lines, excluding the structural and volatile ones
-/// (VERSION, PRODID, REV), so property order and server-side revision
-/// stamps do not read as divergence; any other representational
-/// difference does, which is honest for a document of record.
+/// linked replicas. The hash is FNV-1a over the canonical field model
+/// with its arrays sorted and the identity and unmanaged data excluded
+/// (UID, CATEGORIES, X-*, PHOTO), so linked replicas read as one
+/// contact as long as the content the edit form manages agrees;
+/// per-replica identity and backend-specific baggage never read as
+/// divergence.
 pub fn index(vcard: &str) -> Result<Value, String> {
-    let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
-    let version = card.version();
+    let model = project(vcard)?;
 
-    let mut name = String::new();
-    let mut email = String::new();
-    let mut phone = String::new();
-    let mut uid = String::new();
-    let mut lines = Vec::new();
+    let name = single_field(&model, "displayName").to_string();
+    let uid = single_field(&model, "uid").to_string();
+    let email = first_entry(&model, "emails", "address");
+    let phone = first_entry(&model, "phones", "number");
 
-    for line in &card.props {
-        match VcardPropKind::from_str(line.name.get()) {
-            Ok(VcardPropKind::Fn) if name.is_empty() => {
-                name = FN::decode(line, version).0.trim().to_string();
-            }
-            Ok(VcardPropKind::Email) if email.is_empty() => {
-                email = EMAIL::decode(line, version).0.trim().to_string();
-            }
-            Ok(VcardPropKind::Tel) if phone.is_empty() => {
-                phone = TEL::decode(line, version).0.trim().to_string();
-            }
-            Ok(VcardPropKind::Uid) if uid.is_empty() => {
-                uid = UID::decode(line, version).0.trim().to_string();
-            }
-            _ => {}
-        }
-
-        let skip = match VcardPropKind::from_str(line.name.get()) {
-            Ok(VcardPropKind::ProdId) | Ok(VcardPropKind::Rev) => true,
-            Ok(_) => false,
-            Err(_) => line.name.get().eq_ignore_ascii_case("VERSION"),
-        };
-        if !skip {
-            let raw = line.to_string();
-            lines.push(raw.trim_end().to_string());
-        }
+    let mut canon = model;
+    if let Some(map) = canon.as_object_mut() {
+        map.remove("uid");
+        map.remove("categories");
     }
-
-    lines.sort();
-    let hash = fnv1a(lines.join("\n").as_bytes());
+    sort_arrays(&mut canon);
+    let hash = fnv1a(canon.to_string().as_bytes());
 
     Ok(json!({
         "name": name,
@@ -544,6 +521,260 @@ pub fn index(vcard: &str) -> Result<Value, String> {
         "uid": uid,
         "hash": format!("{hash:016x}"),
     }))
+}
+
+/// Three-way merges a conflicted push: the staged local edit and the
+/// fetched remote card, against the base both derive from. The local
+/// side wins same-field collisions (it carries the user's explicit
+/// edit), every other remote change flows in, and an update always
+/// beats a removal (the vcard-rs merge rules), so nothing is silently
+/// lost. Returns the merged card and the collision count.
+pub fn merge_conflict(base: &str, local: &str, remote: &str) -> Result<Value, String> {
+    let base = VcardCst::parse(base).map_err(|err| format!("Invalid vCard: {err}"))?;
+    let local = VcardCst::parse(local).map_err(|err| format!("Invalid vCard: {err}"))?;
+    let remote = VcardCst::parse(remote).map_err(|err| format!("Invalid vCard: {err}"))?;
+
+    let report = merge(&base, &local, &remote);
+
+    Ok(json!({
+        "vcard": report.merged.to_string(),
+        "conflicts": report.conflicts.len(),
+    }))
+}
+
+/// Rewrites the card's UID: a plain copy is a new identity, and
+/// CardDAV servers enforce UID uniqueness per collection. Every other
+/// byte is preserved.
+pub fn set_uid(vcard: &str, uid: &str) -> Result<String, String> {
+    let mut card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
+
+    card.remove::<UID>();
+    card.push(text_prop(VcardPropKind::Uid, vec![], uid));
+
+    Ok(String::from_utf8_lossy(&card.to_bytes()).into_owned())
+}
+
+/// The model's list sections, compared across merged cards for the
+/// conflict view's changed set.
+const LIST_FIELDS: &[&str] = &[
+    "phones",
+    "emails",
+    "addresses",
+    "websites",
+    "nicknames",
+    "notes",
+];
+
+/// The model's single-valued fields the merge form offers alternative
+/// values for, as dot paths.
+const SINGLE_FIELDS: &[&str] = &[
+    "displayName",
+    "name.prefix",
+    "name.given",
+    "name.middle",
+    "name.family",
+    "name.suffix",
+    "organization.company",
+    "organization.department",
+    "title",
+    "role",
+    "birthday",
+];
+
+/// Merges several vCards into one union document through the vcard-rs
+/// three-way merge against an empty base: identical properties land
+/// once, multi-valued properties accumulate, and a divergent
+/// single-valued property keeps the first card's value. Returns the
+/// union document, its projected field model (the merge form prefill),
+/// the per-field alternatives (every distinct value the cards carry
+/// for each conflicted single-valued field, the prefilled winner
+/// included, so the form shows all the choices) and the changed list
+/// sections (the model lists the cards do not agree on, order aside),
+/// so a conflict view can show only what disagrees.
+///
+/// Unlike faithful single-card editing, merging reformats: model list
+/// entries duplicating an earlier one collapse, matched by their
+/// identifying fields case-insensitively (two cards carrying the same
+/// number under different types prefill as one phone).
+pub fn merge_cards(cards: &[String]) -> Result<Value, String> {
+    let Some(first) = cards.first() else {
+        return Err("No cards to merge".into());
+    };
+
+    let version = VcardCst::parse(first.as_str())
+        .map_err(|err| format!("Invalid vCard: {err}"))?
+        .version();
+    let empty = format!("BEGIN:VCARD\r\nVERSION:{}\r\nEND:VCARD\r\n", &*version);
+
+    let mut merged = first.clone();
+    for card in &cards[1..] {
+        merged = {
+            let base =
+                VcardCst::parse(empty.as_str()).map_err(|err| format!("Invalid vCard: {err}"))?;
+            let left =
+                VcardCst::parse(merged.as_str()).map_err(|err| format!("Invalid vCard: {err}"))?;
+            let right =
+                VcardCst::parse(card.as_str()).map_err(|err| format!("Invalid vCard: {err}"))?;
+            merge(&base, &left, &right).merged.to_string()
+        };
+    }
+
+    let mut model = project(&merged)?;
+    dedup_lists(&mut model);
+    let models = cards
+        .iter()
+        .map(|card| project(card))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut alternatives = Map::new();
+    for field in SINGLE_FIELDS {
+        let mut values: Vec<&str> = Vec::new();
+        for candidate in &models {
+            let value = single_field(candidate, field);
+            if !value.is_empty() && !values.contains(&value) {
+                values.push(value);
+            }
+        }
+        if values.len() > 1 {
+            alternatives.insert((*field).into(), json!(values));
+        }
+    }
+
+    let mut changed: Vec<&str> = Vec::new();
+    for list in LIST_FIELDS {
+        let mut seen: Vec<String> = Vec::new();
+        for candidate in &models {
+            let mut entries = candidate
+                .get(*list)
+                .cloned()
+                .unwrap_or(Value::Array(Vec::new()));
+            sort_arrays(&mut entries);
+            let key = entries.to_string();
+            if !seen.contains(&key) {
+                seen.push(key);
+            }
+        }
+        if seen.len() > 1 {
+            changed.push(list);
+        }
+    }
+
+    Ok(json!({
+        "vcard": merged,
+        "model": model,
+        "alternatives": Value::Object(alternatives),
+        "changed": changed,
+    }))
+}
+
+/// Collapses the model's duplicated list entries, keeping the first of
+/// each: object entries match on their identifying fields, string
+/// entries on themselves, both trimmed and case-insensitive.
+fn dedup_lists(model: &mut Value) {
+    dedup_entries(model, "phones", &["number"]);
+    dedup_entries(model, "emails", &["address"]);
+    dedup_entries(
+        model,
+        "addresses",
+        &[
+            "pobox", "ext", "street", "city", "region", "postcode", "country",
+        ],
+    );
+    for list in ["websites", "nicknames", "notes", "categories"] {
+        dedup_strings(model, list);
+    }
+}
+
+/// Drops the list's object entries whose identifying fields duplicate
+/// an earlier entry's.
+fn dedup_entries(model: &mut Value, list: &str, fields: &[&str]) {
+    let Some(entries) = model.get_mut(list).and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let mut seen: Vec<String> = Vec::new();
+    entries.retain(|entry| {
+        let key = fields
+            .iter()
+            .map(|field| {
+                entry
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase()
+            })
+            .collect::<Vec<_>>()
+            .join("\u{1f}");
+
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
+}
+
+/// Drops the list's string entries duplicating an earlier one.
+fn dedup_strings(model: &mut Value, list: &str) {
+    let Some(items) = model.get_mut(list).and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    let mut seen: Vec<String> = Vec::new();
+    items.retain(|item| {
+        let key = item.as_str().unwrap_or("").trim().to_lowercase();
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
+}
+
+/// A single-valued model field reached by its dot path, empty when
+/// absent.
+fn single_field<'m>(model: &'m Value, path: &str) -> &'m str {
+    let mut value = model;
+    for part in path.split('.') {
+        match value.get(part) {
+            Some(inner) => value = inner,
+            None => return "",
+        }
+    }
+    value.as_str().unwrap_or("")
+}
+
+/// The named field of a model array's first entry, empty when absent.
+fn first_entry(model: &Value, array: &str, field: &str) -> String {
+    model
+        .get(array)
+        .and_then(|entries| entries.get(0))
+        .and_then(|entry| entry.get(field))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Sorts every array of the model by the items' serialized form, so
+/// the content hash ignores entry order.
+fn sort_arrays(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                sort_arrays(item);
+            }
+            items.sort_by_key(|item| item.to_string());
+        }
+        Value::Object(map) => {
+            for (_, inner) in map.iter_mut() {
+                sort_arrays(inner);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// FNV-1a 64: a stable hash across runs and releases, unlike the std
@@ -633,6 +864,100 @@ mod tests {
 
         assert_eq!(index(a).unwrap()["hash"], index(b).unwrap()["hash"]);
         assert_ne!(index(a).unwrap()["hash"], index(c).unwrap()["hash"]);
+    }
+
+    #[test]
+    fn index_hash_ignores_identity_and_unmanaged_props() {
+        // Per-replica identity (UID) and unmanaged data (X-*, PHOTO)
+        // stay per replica under fan-out editing, so they must not
+        // read as divergence.
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Jane\r\n\
+            X-FOO:bar\r\nPHOTO;ENCODING=b:AAAA\r\nEND:VCARD\r\n";
+        let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:def\r\nFN:Jane\r\nEND:VCARD\r\n";
+
+        assert_eq!(index(a).unwrap()["hash"], index(b).unwrap()["hash"]);
+    }
+
+    #[test]
+    fn merge_cards_unions_and_reports_alternatives() {
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:John Doe\r\n\
+            TEL:+331111\r\nEND:VCARD\r\n";
+        let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:b\r\nFN:Jon Doe\r\n\
+            TEL:+332222\r\nEMAIL:j@doe.org\r\nEND:VCARD\r\n";
+
+        let merged = merge_cards(&[a.to_string(), b.to_string()]).unwrap();
+
+        // Single-valued conflicts keep the first card's value and
+        // surface every distinct choice as an alternative (the winner
+        // included); multi-valued properties union.
+        assert_eq!(merged["model"]["displayName"], "John Doe");
+        assert_eq!(merged["model"]["phones"].as_array().unwrap().len(), 2);
+        assert_eq!(merged["model"]["emails"][0]["address"], "j@doe.org");
+        assert_eq!(
+            merged["alternatives"]["displayName"],
+            json!(["John Doe", "Jon Doe"]),
+        );
+        assert!(merged["alternatives"].get("title").is_none());
+        // The cards disagree on phones and emails, and on nothing else.
+        assert_eq!(merged["changed"], json!(["phones", "emails"]));
+    }
+
+    #[test]
+    fn merge_cards_dedups_similar_list_items() {
+        // The same number under different types, and the same address
+        // in a different case, prefill as one entry each.
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            TEL;TYPE=home:+331111\r\nEMAIL:jane@doe.org\r\nEND:VCARD\r\n";
+        let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:b\r\nFN:Jane\r\n\
+            TEL;TYPE=work:+331111\r\nEMAIL:JANE@doe.org\r\n\
+            EMAIL:j@doe.org\r\nEND:VCARD\r\n";
+
+        let merged = merge_cards(&[a.to_string(), b.to_string()]).unwrap();
+
+        assert_eq!(merged["model"]["phones"].as_array().unwrap().len(), 1);
+        assert_eq!(merged["model"]["emails"].as_array().unwrap().len(), 2);
+        assert_eq!(merged["model"]["emails"][0]["address"], "jane@doe.org");
+    }
+
+    #[test]
+    fn merge_conflict_reconciles_both_sides_against_the_base() {
+        let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            TEL:+331111\r\nEND:VCARD\r\n";
+        let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            TEL:+332222\r\nEND:VCARD\r\n";
+        let remote = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Janet\r\n\
+            TEL:+331111\r\nEND:VCARD\r\n";
+
+        let report = merge_conflict(base, local, remote).unwrap();
+        let merged = report["vcard"].as_str().unwrap();
+
+        // The remote rename and the local phone edit both survive.
+        assert!(merged.contains("FN:Janet\r\n"), "got: {merged}");
+        assert!(merged.contains("TEL:+332222\r\n"), "got: {merged}");
+        assert_eq!(report["conflicts"], 0);
+    }
+
+    #[test]
+    fn set_uid_rewrites_only_the_uid() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:old\r\nFN:Jane\r\n\
+            X-FOO:bar\r\nEND:VCARD\r\n";
+
+        let fresh = set_uid(vcard, "new").unwrap();
+
+        assert!(fresh.contains("UID:new\r\n"), "got: {fresh}");
+        assert!(!fresh.contains("UID:old"), "got: {fresh}");
+        assert!(fresh.contains("X-FOO:bar\r\n"), "got: {fresh}");
+    }
+
+    #[test]
+    fn merge_cards_identical_documents_merge_clean() {
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            TEL:+331111\r\nEND:VCARD\r\n";
+
+        let merged = merge_cards(&[a.to_string(), a.to_string()]).unwrap();
+
+        assert_eq!(merged["model"]["phones"].as_array().unwrap().len(), 1);
+        assert!(merged["alternatives"].as_object().unwrap().is_empty());
     }
 
     #[test]

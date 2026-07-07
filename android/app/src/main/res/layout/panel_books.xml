@@ -8,47 +8,6 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Auth app bar: a back arrow to the previous step. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="56dp"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
-
-        <ImageButton
-            android:id="@+id/books_back"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:text="@string/new_account"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
-
-        <ImageButton
-            android:id="@+id/books_cancel"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/cancel_auth"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-    </LinearLayout>
-
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -88,17 +47,19 @@
     <!-- Disabled while nothing is checked; while syncing the loader
          sits on the button (disabled again, its label blanked). -->
     <FrameLayout
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="8dp">
+        android:layout_gravity="end"
+        android:layout_margin="16dp">
 
-        <Button
+        <ImageButton
             android:id="@+id/books_continue"
-            style="@android:style/Widget.DeviceDefault.Button.Colored"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/email_submit"
-            android:textAllCaps="true" />
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:background="@drawable/fab_background"
+            android:contentDescription="@string/email_submit"
+            android:elevation="6dp"
+            android:src="@drawable/ic_arrow_forward" />
 
         <ProgressBar
             android:id="@+id/books_progress"

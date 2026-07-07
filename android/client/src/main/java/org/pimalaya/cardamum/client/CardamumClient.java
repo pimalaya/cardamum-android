@@ -505,6 +505,37 @@ public class CardamumClient {
         return string(object(Native.applyCard(vcard, model.toString())), "vcard");
     }
 
+    /**
+     * Merges several vCard documents into one union: the merged
+     * document, its field model (the merge form prefill) and the
+     * per-field alternative values. Pure computation, no transport.
+     */
+    public JSONObject mergeCards(List<String> vcards) {
+        JSONArray cards = new JSONArray();
+        for (String vcard : vcards) {
+            cards.put(vcard);
+        }
+        return object(Native.mergeCards(cards.toString()));
+    }
+
+    /**
+     * Three-way merges a conflicted push: the staged local edit and
+     * the fetched remote card against their common base. The local
+     * side wins same-field collisions; every other remote change flows
+     * in. Pure computation, no transport.
+     */
+    public String mergeCardChanges(String base, String local, String remote) {
+        return string(object(Native.mergeCardChanges(base, local, remote)), "vcard");
+    }
+
+    /**
+     * Rewrites the card's UID, preserving every other byte (a plain
+     * copy is a new identity). Pure computation, no transport.
+     */
+    public String setCardUid(String vcard, String uid) {
+        return string(object(Native.setCardUid(vcard, uid)), "vcard");
+    }
+
     /** Deletes the card from the addressbook collection. */
     public void deleteCard(Account account, String addressbookUrl, Card card) {
         Transport transport = new Transport();

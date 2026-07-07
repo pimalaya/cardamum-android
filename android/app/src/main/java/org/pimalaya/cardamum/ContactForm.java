@@ -1,26 +1,29 @@
 package org.pimalaya.cardamum;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.content.res.ColorStateList;
-import android.graphics.Typeface;
 import android.text.InputType;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.inputmethod.InputMethodManager;
+import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
-import android.widget.ImageButton;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.Spinner;
-import android.widget.TabHost;
 import android.widget.TextView;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.json.JSONArray;
@@ -28,15 +31,21 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The contact edit form: presents the neutral field model as grouped,
- * labelled fields under scrollable tabs (name, contact, address, work,
- * more, plus a read-only source view of the raw vCard), built entirely
- * from framework widgets. Every input carries a grey label above it and
- * a brand-tinted underline rather than a placeholder, so a filled form
- * stays readable. Model fields the form does not display (address
- * pobox and ext, pref flags) ride along through per-row tags, so a
- * load/collect round trip is lossless at the model level; everything
- * beyond the model is preserved by the vCard patch in the Rust bridge.
+ * The contact edit form, settings-style like the system apps: one
+ * scrolling page of sections (accent sentence-case headers) holding
+ * tappable items, each opening a dialog mini-form. The vCard fields
+ * group by theme: Identity (FN, N, BDAY), Work (ORG, TITLE, ROLE),
+ * then one section per list (NICKNAME, TEL, EMAIL, ADR, URL, NOTE);
+ * future vCard 4.0 properties slot into the same themes (GENDER and
+ * ANNIVERSARY under Identity, IMPP and LANG next to the phones,
+ * RELATED under Work).
+ *
+ * <p>The page renders from a working field model that the dialogs
+ * edit in place, so {@link #collect()} just hands the model back;
+ * everything beyond the model is preserved by the vCard patch in the
+ * Rust bridge. A diverged contact loads in conflict mode: only the
+ * disagreeing items show, and the dialogs of conflicted single fields
+ * carry one tappable chip per candidate value.
  */
 final class ContactForm {
     /** Spinner position to vCard TYPE set, aligned with R.array.phone_types. */
@@ -48,344 +57,620 @@ final class ContactForm {
     /** Spinner position to vCard TYPE set, aligned with R.array.email_types. */
     private static final String[][] HOME_WORK_OTHER = {{"home"}, {"work"}, {}};
 
-    /** Fields an address row carries but does not display. */
-    private static final class AddressExtras {
-        String pobox = "";
-        String ext = "";
-        boolean pref;
-    }
+    private static final int TEXT_NAME =
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
 
     private final Activity activity;
-    private final int labelColor;
     private final int accentColor;
+    private final int labelColor;
+    private final int primaryColor;
+    private final ScrollView scroll;
+    private final LinearLayout container;
 
-    private final TabHost tabs;
+    /** The working field model the dialogs edit in place. */
+    private JSONObject model = new JSONObject();
 
-    private EditText display;
-    private EditText prefix;
-    private EditText given;
-    private EditText middle;
-    private EditText family;
-    private EditText suffix;
-    private LinearLayout nicknames;
-    private LinearLayout phones;
-    private LinearLayout emails;
-    private LinearLayout addresses;
-    private EditText company;
-    private EditText department;
-    private EditText jobTitle;
-    private EditText role;
-    private EditText birthday;
-    private LinearLayout websites;
-    private LinearLayout notes;
-    private final TextView source;
+    /** Conflict alternatives by single-field path; null outside conflicts. */
+    private JSONObject alternatives;
+
+    /** Changed list sections of a conflict; null outside conflict mode. */
+    private Set<String> changedLists;
 
     ContactForm(Activity activity) {
         this.activity = activity;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
-
-        LinearLayout nameFields = activity.findViewById(R.id.contact_name_fields);
-        LinearLayout contactFields = activity.findViewById(R.id.contact_contact_fields);
-        LinearLayout addressFields = activity.findViewById(R.id.contact_address_fields);
-        LinearLayout workFields = activity.findViewById(R.id.contact_work_fields);
-        LinearLayout moreFields = activity.findViewById(R.id.contact_notes_fields);
-        source = activity.findViewById(R.id.contact_source);
-
-        tabs = activity.findViewById(R.id.contact_tabs);
-        tabs.setup();
-        addTab("name", R.string.tab_name, R.id.contact_tab_name);
-        addTab("contact", R.string.tab_contact, R.id.contact_tab_contact);
-        addTab("address", R.string.tab_address, R.id.contact_tab_address);
-        addTab("work", R.string.tab_work, R.id.contact_tab_work);
-        addTab("more", R.string.tab_more, R.id.contact_tab_notes);
-        addTab("source", R.string.tab_source, R.id.contact_tab_source);
-        setUpScrollHint();
-
-        buildFields(nameFields, contactFields, addressFields, workFields, moreFields);
+        this.primaryColor = resolveColor(android.R.attr.colorPrimary);
+        this.scroll = activity.findViewById(R.id.contact_scroll);
+        this.container = activity.findViewById(R.id.contact_form);
     }
 
     /**
-     * The chevron hints that the tab strip scrolls. It starts visible
-     * (so users know before touching anything) and hides only once the
-     * strip is scrolled to its right end.
+     * Loads the field model (null for a new contact) and renders the
+     * page. A non-null `changed` turns on conflict mode: only the
+     * disagreeing items show, and `alternatives` feeds the value chips
+     * of the conflicted single-field dialogs.
      */
-    private void setUpScrollHint() {
-        HorizontalScrollView scroll = activity.findViewById(R.id.contact_tab_scroll);
-        ImageView more = activity.findViewById(R.id.contact_tab_more);
-        ImageView less = activity.findViewById(R.id.contact_tab_less);
+    void load(JSONObject model, JSONObject alternatives, JSONArray changed) {
+        this.model = model != null ? model : new JSONObject();
+        this.alternatives = alternatives;
+        this.changedLists = null;
+        if (changed != null) {
+            changedLists = new HashSet<>();
+            for (int index = 0; index < changed.length(); index++) {
+                changedLists.add(changed.optString(index));
+            }
+        }
 
-        Runnable update =
-                () -> {
-                    more.setVisibility(scroll.canScrollHorizontally(1) ? View.VISIBLE : View.GONE);
-                    less.setVisibility(scroll.canScrollHorizontally(-1) ? View.VISIBLE : View.GONE);
-                };
-        scroll.setOnScrollChangeListener((view, x, y, oldX, oldY) -> update.run());
-        // Re-evaluate once the tab strip has actually measured, otherwise
-        // canScrollHorizontally reports false and the hint never shows.
-        scroll.getViewTreeObserver()
-                .addOnGlobalLayoutListener(
-                        new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
-                            @Override
-                            public void onGlobalLayout() {
-                                update.run();
-                            }
-                        });
+        render();
+        scroll.scrollTo(0, 0);
     }
 
-    private void addTab(String tag, int label, int content) {
-        tabs.addTab(
-                tabs.newTabSpec(tag).setIndicator(activity.getString(label)).setContent(content));
-    }
-
-    /** Builds the labelled inputs and repeating sections once. */
-    private void buildFields(
-            LinearLayout nameFields,
-            LinearLayout contactFields,
-            LinearLayout addressFields,
-            LinearLayout workFields,
-            LinearLayout moreFields) {
-        display = labelled(nameFields, R.string.hint_display_name, TEXT_NAME);
-        prefix = labelled(nameFields, R.string.hint_prefix, TEXT_NAME);
-        given = labelled(nameFields, R.string.hint_given, TEXT_NAME);
-        middle = labelled(nameFields, R.string.hint_middle, TEXT_NAME);
-        family = labelled(nameFields, R.string.hint_family, TEXT_NAME);
-        suffix = labelled(nameFields, R.string.hint_suffix, TEXT_NAME);
-        nicknames = section(nameFields, R.string.section_nicknames, R.string.add_nickname,
-                () -> nicknames.addView(lineRow(nicknames, "", TEXT_NAME)));
-
-        phones = section(contactFields, R.string.section_phones, R.string.add_phone,
-                () -> phones.addView(phoneRow(null)));
-        emails = section(contactFields, R.string.section_emails, R.string.add_email,
-                () -> emails.addView(emailRow(null)));
-
-        addresses = section(addressFields, R.string.section_addresses, R.string.add_address,
-                () -> addresses.addView(addressBlock(null)));
-
-        company = labelled(workFields, R.string.hint_company, TEXT_WORDS);
-        department = labelled(workFields, R.string.hint_department, TEXT_WORDS);
-        jobTitle = labelled(workFields, R.string.hint_job_title, TEXT_WORDS);
-        role = labelled(workFields, R.string.hint_role, TEXT_WORDS);
-
-        birthday = dateField(moreFields, R.string.hint_birthday);
-        websites = section(moreFields, R.string.section_websites, R.string.add_website,
-                () -> websites.addView(lineRow(websites, "",
-                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)));
-        notes = section(moreFields, R.string.section_notes, R.string.add_note,
-                () -> notes.addView(noteRow("")));
-    }
-
-    /** Fills the form from the field model (null for a new contact). */
-    void load(JSONObject model, String vcard) {
-        JSONObject safe = model == null ? new JSONObject() : model;
-        JSONObject name = safe.optJSONObject("name");
-
-        display.setText(safe.optString("displayName"));
-        prefix.setText(name == null ? "" : name.optString("prefix"));
-        given.setText(name == null ? "" : name.optString("given"));
-        middle.setText(name == null ? "" : name.optString("middle"));
-        family.setText(name == null ? "" : name.optString("family"));
-        suffix.setText(name == null ? "" : name.optString("suffix"));
-
-        // Sections hold only their real values: the Add button appends
-        // the first blank row on demand.
-        fill(nicknames, safe.optJSONArray("nicknames"),
-                value -> nicknames.addView(lineRow(nicknames, value, TEXT_NAME)));
-
-        fillObjects(phones, safe.optJSONArray("phones"),
-                entry -> phones.addView(phoneRow(entry)));
-
-        fillObjects(emails, safe.optJSONArray("emails"),
-                entry -> emails.addView(emailRow(entry)));
-
-        fillObjects(addresses, safe.optJSONArray("addresses"),
-                entry -> addresses.addView(addressBlock(entry)));
-
-        JSONObject organization = safe.optJSONObject("organization");
-        company.setText(organization == null ? "" : organization.optString("company"));
-        department.setText(organization == null ? "" : organization.optString("department"));
-        jobTitle.setText(safe.optString("title"));
-        role.setText(safe.optString("role"));
-        birthday.setText(safe.optString("birthday"));
-
-        fill(websites, safe.optJSONArray("websites"),
-                value -> websites.addView(lineRow(websites, value,
-                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)));
-
-        fill(notes, safe.optJSONArray("notes"), value -> notes.addView(noteRow(value)));
-
-        source.setText(vcard);
-        tabs.setCurrentTab(0);
-    }
-
-    /** Collects the form back into the field model. */
+    /** The edited field model. */
     JSONObject collect() {
-        try {
-            JSONObject model = new JSONObject();
-            model.put("displayName", text(display));
-            model.put(
-                    "name",
-                    new JSONObject()
-                            .put("prefix", text(prefix))
-                            .put("given", text(given))
-                            .put("middle", text(middle))
-                            .put("family", text(family))
-                            .put("suffix", text(suffix)));
+        return model;
+    }
 
-            JSONArray nicks = new JSONArray();
-            for (int index = 0; index < nicknames.getChildCount(); index++) {
-                String value = rowValue(nicknames.getChildAt(index));
-                if (!value.isEmpty()) {
-                    nicks.put(value);
-                }
+    /** The birthday as picked, empty when unset. */
+    String birthday() {
+        return model.optString("birthday").trim();
+    }
+
+    // ---- Page rendering ---------------------------------------------------
+
+    private boolean conflict() {
+        return changedLists != null;
+    }
+
+    /** Rebuilds the whole page from the working model. */
+    private void render() {
+        container.removeAllViews();
+
+        // Identity holds the solo fields: the name card and birthday.
+        // Every multi-valued list is its own section below.
+        List<View> identity = new ArrayList<>();
+        if (!conflict()
+                || conflicted(
+                        "displayName",
+                        "name.prefix",
+                        "name.given",
+                        "name.middle",
+                        "name.family",
+                        "name.suffix")) {
+            identity.add(entryItem(nameSummary(), null, this::nameDialog));
+        }
+        if (!conflict() || conflicted("birthday")) {
+            identity.add(
+                    entryItem(
+                            getS(R.string.hint_birthday),
+                            value(model.optString("birthday")),
+                            this::pickBirthday));
+        }
+        section(R.string.section_identity, identity);
+
+        if (!conflict() || changedLists.contains("nicknames")) {
+            List<View> items = new ArrayList<>();
+            JSONArray nicknames = array("nicknames");
+            for (int index = 0; index < nicknames.length(); index++) {
+                int at = index;
+                items.add(
+                        entryItem(
+                                nicknames.optString(index),
+                                null,
+                                () -> stringDialog("nicknames", at, R.string.item_nickname, 0,
+                                        TEXT_NAME)));
             }
-            model.put("nicknames", nicks);
+            listSection(R.string.section_nicknames, R.string.add_nickname, items,
+                    () -> stringDialog("nicknames", -1, R.string.item_nickname, 0, TEXT_NAME));
+        }
 
-            JSONArray phoneEntries = new JSONArray();
-            for (int index = 0; index < phones.getChildCount(); index++) {
-                LinearLayout row = (LinearLayout) phones.getChildAt(index);
-                String number = text((EditText) row.getChildAt(0));
-                if (number.isEmpty()) {
-                    continue;
-                }
-                int type = ((Spinner) row.getChildAt(1)).getSelectedItemPosition();
-                phoneEntries.put(
-                        new JSONObject()
-                                .put("number", number)
-                                .put("types", array(PHONE_TYPES[type]))
-                                .put("pref", Boolean.TRUE.equals(row.getTag())));
+        List<View> work = new ArrayList<>();
+        if (!conflict()
+                || conflicted(
+                        "organization.company", "organization.department", "title", "role")) {
+            work.add(
+                    entryItem(
+                            getS(R.string.item_organization),
+                            organizationSummary(),
+                            this::organizationDialog));
+        }
+        section(R.string.tab_work, work);
+
+        if (!conflict() || changedLists.contains("phones")) {
+            List<View> items = new ArrayList<>();
+            JSONArray phones = array("phones");
+            for (int index = 0; index < phones.length(); index++) {
+                int at = index;
+                JSONObject entry = phones.optJSONObject(index);
+                items.add(
+                        entryItem(
+                                entry.optString("number"),
+                                typeLabel(R.array.phone_types, phoneTypeIndex(entry)),
+                                () -> phoneDialog(at)));
             }
-            model.put("phones", phoneEntries);
+            listSection(R.string.section_phones, R.string.add_phone, items,
+                    () -> phoneDialog(-1));
+        }
 
-            JSONArray emailEntries = new JSONArray();
-            for (int index = 0; index < emails.getChildCount(); index++) {
-                LinearLayout row = (LinearLayout) emails.getChildAt(index);
-                String address = text((EditText) row.getChildAt(0));
-                if (address.isEmpty()) {
-                    continue;
-                }
-                int type = ((Spinner) row.getChildAt(1)).getSelectedItemPosition();
-                emailEntries.put(
-                        new JSONObject()
-                                .put("address", address)
-                                .put("types", array(HOME_WORK_OTHER[type]))
-                                .put("pref", Boolean.TRUE.equals(row.getTag())));
+        if (!conflict() || changedLists.contains("emails")) {
+            List<View> items = new ArrayList<>();
+            JSONArray emails = array("emails");
+            for (int index = 0; index < emails.length(); index++) {
+                int at = index;
+                JSONObject entry = emails.optJSONObject(index);
+                items.add(
+                        entryItem(
+                                entry.optString("address"),
+                                typeLabel(R.array.email_types, typeIndex(entry, HOME_WORK_OTHER)),
+                                () -> emailDialog(at)));
             }
-            model.put("emails", emailEntries);
+            listSection(R.string.section_emails, R.string.add_email, items,
+                    () -> emailDialog(-1));
+        }
 
-            JSONArray addressEntries = new JSONArray();
-            for (int index = 0; index < addresses.getChildCount(); index++) {
-                LinearLayout block = (LinearLayout) addresses.getChildAt(index);
-                AddressExtras extras = (AddressExtras) block.getTag();
-                LinearLayout controls = (LinearLayout) block.getChildAt(0);
-                int type = ((Spinner) controls.getChildAt(0)).getSelectedItemPosition();
-                String street = fieldText(block, 1);
-                String city = fieldText(block, 2);
-                String region = fieldText(block, 3);
-                String postcode = fieldText(block, 4);
-                String country = fieldText(block, 5);
-
-                if (street.isEmpty()
-                        && city.isEmpty()
-                        && region.isEmpty()
-                        && postcode.isEmpty()
-                        && country.isEmpty()
-                        && extras.pobox.isEmpty()
-                        && extras.ext.isEmpty()) {
-                    continue;
-                }
-
-                addressEntries.put(
-                        new JSONObject()
-                                .put("street", street)
-                                .put("city", city)
-                                .put("region", region)
-                                .put("postcode", postcode)
-                                .put("country", country)
-                                .put("pobox", extras.pobox)
-                                .put("ext", extras.ext)
-                                .put("types", array(HOME_WORK_OTHER[type]))
-                                .put("pref", extras.pref));
+        if (!conflict() || changedLists.contains("addresses")) {
+            List<View> items = new ArrayList<>();
+            JSONArray entries = array("addresses");
+            for (int index = 0; index < entries.length(); index++) {
+                int at = index;
+                JSONObject entry = entries.optJSONObject(index);
+                items.add(
+                        entryItem(
+                                addressSummary(entry),
+                                typeLabel(
+                                        R.array.address_types,
+                                        typeIndex(entry, HOME_WORK_OTHER)),
+                                () -> addressDialog(at)));
             }
-            model.put("addresses", addressEntries);
+            listSection(R.string.section_addresses, R.string.add_address, items,
+                    () -> addressDialog(-1));
+        }
 
-            model.put(
-                    "organization",
-                    new JSONObject()
-                            .put("company", text(company))
-                            .put("department", text(department)));
-            model.put("title", text(jobTitle));
-            model.put("role", text(role));
-            model.put("birthday", text(birthday));
-
-            JSONArray sites = new JSONArray();
-            for (int index = 0; index < websites.getChildCount(); index++) {
-                String value = rowValue(websites.getChildAt(index));
-                if (!value.isEmpty()) {
-                    sites.put(value);
-                }
+        if (!conflict() || changedLists.contains("websites")) {
+            List<View> items = new ArrayList<>();
+            JSONArray websites = array("websites");
+            for (int index = 0; index < websites.length(); index++) {
+                int at = index;
+                items.add(
+                        entryItem(
+                                websites.optString(index),
+                                null,
+                                () -> stringDialog("websites", at, R.string.item_website,
+                                        R.string.hint_url,
+                                        InputType.TYPE_CLASS_TEXT
+                                                | InputType.TYPE_TEXT_VARIATION_URI)));
             }
-            model.put("websites", sites);
+            listSection(R.string.section_websites, R.string.add_website, items,
+                    () -> stringDialog("websites", -1, R.string.item_website,
+                            R.string.hint_url,
+                            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
+        }
 
-            JSONArray noteEntries = new JSONArray();
-            for (int index = 0; index < notes.getChildCount(); index++) {
-                String value = rowValue(notes.getChildAt(index));
-                if (!value.isEmpty()) {
-                    noteEntries.put(value);
-                }
+        if (!conflict() || changedLists.contains("notes")) {
+            List<View> items = new ArrayList<>();
+            JSONArray notes = array("notes");
+            for (int index = 0; index < notes.length(); index++) {
+                int at = index;
+                items.add(entryItem(notes.optString(index), null, () -> noteDialog(at)));
             }
-            model.put("notes", noteEntries);
+            listSection(R.string.section_notes, R.string.add_note, items,
+                    () -> noteDialog(-1));
+        }
 
-            return model;
-        } catch (JSONException error) {
-            throw new IllegalStateException("Could not collect the contact form", error);
+    }
+
+    /**
+     * Adds a section header and its items, separated from the previous
+     * section by a line in the app bar tone; an empty section vanishes.
+     */
+    private void section(int title, List<View> items) {
+        if (items.isEmpty()) {
+            return;
+        }
+
+        if (container.getChildCount() > 0) {
+            View line = new View(activity);
+            line.setBackgroundColor(primaryColor);
+            LinearLayout.LayoutParams params =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+            params.topMargin = dp(12);
+            container.addView(line, params);
+        }
+
+        TextView header = new TextView(activity);
+        header.setText(title);
+        header.setTextColor(accentColor);
+        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(12), dp(16), dp(4));
+        container.addView(header);
+
+        for (View item : items) {
+            container.addView(item);
         }
     }
 
-    /** The birthday as typed, empty when blank. */
-    String birthday() {
-        return text(birthday);
+    /**
+     * A multi-value section: one row per entry, closed by an accent
+     * "Add ..." row. An empty list still shows its header and add row,
+     * since that row is the way in.
+     */
+    private void listSection(int title, int addLabel, List<View> items, Runnable onAdd) {
+        List<View> rows = new ArrayList<>(items);
+        rows.add(addItem(addLabel, onAdd));
+        section(title, rows);
     }
 
-    // ---- Field builders -------------------------------------------------------
+    /** The add action closing a repeatable section. */
+    private View addItem(int label, Runnable onClick) {
+        TextView titleView = new TextView(activity);
+        titleView.setText(label);
+        titleView.setTextColor(accentColor);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
 
-    private static final int TEXT_NAME =
-            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
-    private static final int TEXT_WORDS =
-            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
-
-    /** A labelled single-line field appended to the container as one block. */
-    private EditText labelled(LinearLayout container, int label, int inputType) {
-        EditText input = field();
-        input.setInputType(inputType);
-        container.addView(block(label, input), blockParams(container));
-        return input;
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        row.setOnClickListener(view -> onClick.run());
+        row.addView(titleView);
+        return row;
     }
 
-    /** A labelled read-only field that opens a date picker on tap. */
-    private EditText dateField(LinearLayout container, int label) {
-        EditText input = field();
-        input.setFocusable(false);
-        input.setClickable(true);
-        input.setInputType(InputType.TYPE_NULL);
-        input.setKeyListener(null);
-        input.setOnClickListener(view -> pickDate(input));
-        container.addView(block(label, input), blockParams(container));
-        return input;
+    /** A tappable row: title over a diminished subtitle. */
+    private View entryItem(CharSequence title, CharSequence subtitle, Runnable onClick) {
+        TextView titleView = new TextView(activity);
+        titleView.setText(title);
+        titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        row.setOnClickListener(view -> onClick.run());
+        row.addView(titleView);
+
+        if (subtitle != null && subtitle.length() > 0) {
+            TextView subtitleView = new TextView(activity);
+            subtitleView.setText(subtitle);
+            subtitleView.setTextColor(labelColor);
+            subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            row.addView(subtitleView);
+        }
+
+        return row;
     }
 
-    /** A bare field with its underline tinted the brand (app-bar) colour. */
-    private EditText field() {
-        EditText input = new EditText(activity);
-	input.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
-        input.setPadding(dp(3), dp(3), 0, dp(12));
-        input.setBackgroundTintList(ColorStateList.valueOf(accentColor));
-        return input;
+    // ---- Item summaries -----------------------------------------------------
+
+    private String nameSummary() {
+        String display = model.optString("displayName").trim();
+        if (!display.isEmpty()) {
+            return display;
+        }
+
+        JSONObject name = model.optJSONObject("name");
+        StringBuilder composed = new StringBuilder();
+        if (name != null) {
+            for (String key : new String[] {"prefix", "given", "middle", "family", "suffix"}) {
+                String part = name.optString(key).trim();
+                if (!part.isEmpty()) {
+                    if (composed.length() > 0) {
+                        composed.append(' ');
+                    }
+                    composed.append(part);
+                }
+            }
+        }
+        return value(composed.toString());
     }
 
-    private void pickDate(EditText field) {
+    private String organizationSummary() {
+        JSONObject organization = model.optJSONObject("organization");
+        List<String> parts = new ArrayList<>();
+        if (organization != null && !organization.optString("company").trim().isEmpty()) {
+            parts.add(organization.optString("company").trim());
+        }
+        if (!model.optString("title").trim().isEmpty()) {
+            parts.add(model.optString("title").trim());
+        }
+        return parts.isEmpty()
+                ? getS(R.string.value_not_set)
+                : String.join(" · ", parts);
+    }
+
+    private String addressSummary(JSONObject entry) {
+        for (String key : new String[] {"street", "city", "postcode", "country"}) {
+            String part = entry.optString(key).trim();
+            if (!part.isEmpty()) {
+                // The street's first line stands for the whole block.
+                int newline = part.indexOf('\n');
+                return newline < 0 ? part : part.substring(0, newline);
+            }
+        }
+        return getS(R.string.value_not_set);
+    }
+
+    /** The empty-value placeholder. */
+    private String value(String text) {
+        return text.trim().isEmpty() ? getS(R.string.value_not_set) : text.trim();
+    }
+
+    private String typeLabel(int arrayId, int index) {
+        String[] labels = activity.getResources().getStringArray(arrayId);
+        return labels[Math.min(index, labels.length - 1)];
+    }
+
+    // ---- Dialogs ------------------------------------------------------------
+
+    private void nameDialog() {
+        JSONObject name = model.optJSONObject("name");
+        JSONObject safe = name == null ? new JSONObject() : name;
+
+        LinearLayout content = dialogContent();
+        EditText display =
+                dialogField(content, "displayName", R.string.hint_display_name,
+                        model.optString("displayName"), TEXT_NAME);
+        EditText prefix =
+                dialogField(content, "name.prefix", R.string.hint_prefix,
+                        safe.optString("prefix"), TEXT_NAME);
+        EditText given =
+                dialogField(content, "name.given", R.string.hint_given,
+                        safe.optString("given"), TEXT_NAME);
+        EditText middle =
+                dialogField(content, "name.middle", R.string.hint_middle,
+                        safe.optString("middle"), TEXT_NAME);
+        EditText family =
+                dialogField(content, "name.family", R.string.hint_family,
+                        safe.optString("family"), TEXT_NAME);
+        EditText suffix =
+                dialogField(content, "name.suffix", R.string.hint_suffix,
+                        safe.optString("suffix"), TEXT_NAME);
+
+        showDialog(
+                getS(R.string.item_name),
+                content,
+                () -> {
+                    try {
+                        model.put("displayName", text(display));
+                        model.put(
+                                "name",
+                                new JSONObject()
+                                        .put("prefix", text(prefix))
+                                        .put("given", text(given))
+                                        .put("middle", text(middle))
+                                        .put("family", text(family))
+                                        .put("suffix", text(suffix)));
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                null);
+    }
+
+    private void organizationDialog() {
+        JSONObject organization = model.optJSONObject("organization");
+        JSONObject safe = organization == null ? new JSONObject() : organization;
+
+        LinearLayout content = dialogContent();
+        EditText company =
+                dialogField(content, "organization.company", R.string.hint_company,
+                        safe.optString("company"), TEXT_NAME);
+        EditText department =
+                dialogField(content, "organization.department", R.string.hint_department,
+                        safe.optString("department"), TEXT_NAME);
+        EditText jobTitle =
+                dialogField(content, "title", R.string.hint_job_title,
+                        model.optString("title"), TEXT_NAME);
+        EditText role =
+                dialogField(content, "role", R.string.hint_role,
+                        model.optString("role"), TEXT_NAME);
+
+        showDialog(
+                getS(R.string.item_organization),
+                content,
+                () -> {
+                    try {
+                        model.put(
+                                "organization",
+                                new JSONObject()
+                                        .put("company", text(company))
+                                        .put("department", text(department)));
+                        model.put("title", text(jobTitle));
+                        model.put("role", text(role));
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                null);
+    }
+
+    private void phoneDialog(int index) {
+        JSONArray phones = array("phones");
+        JSONObject entry = index >= 0 ? phones.optJSONObject(index) : null;
+
+        LinearLayout content = dialogContent();
+        Spinner type = typeSpinner(R.array.phone_types);
+        type.setSelection(entry == null ? 0 : phoneTypeIndex(entry));
+        EditText number =
+                typedValueLine(content, type, R.string.hint_number,
+                        entry == null ? "" : entry.optString("number"),
+                        InputType.TYPE_CLASS_PHONE);
+
+        showDialog(
+                getS(R.string.item_phone),
+                content,
+                () ->
+                        putEntry(
+                                phones,
+                                index,
+                                text(number),
+                                entryOf(
+                                        "number",
+                                        text(number),
+                                        PHONE_TYPES[type.getSelectedItemPosition()],
+                                        entry)),
+                index >= 0 ? () -> phones.remove(index) : null);
+    }
+
+    private void emailDialog(int index) {
+        JSONArray emails = array("emails");
+        JSONObject entry = index >= 0 ? emails.optJSONObject(index) : null;
+
+        LinearLayout content = dialogContent();
+        Spinner type = typeSpinner(R.array.email_types);
+        type.setSelection(entry == null ? 0 : typeIndex(entry, HOME_WORK_OTHER));
+        EditText address =
+                typedValueLine(content, type, R.string.hint_email_address,
+                        entry == null ? "" : entry.optString("address"),
+                        InputType.TYPE_CLASS_TEXT
+                                | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+
+        showDialog(
+                getS(R.string.item_email),
+                content,
+                () ->
+                        putEntry(
+                                emails,
+                                index,
+                                text(address),
+                                entryOf(
+                                        "address",
+                                        text(address),
+                                        HOME_WORK_OTHER[type.getSelectedItemPosition()],
+                                        entry)),
+                index >= 0 ? () -> emails.remove(index) : null);
+    }
+
+    private void addressDialog(int index) {
+        JSONArray addresses = array("addresses");
+        JSONObject entry = index >= 0 ? addresses.optJSONObject(index) : null;
+        JSONObject safe = entry == null ? new JSONObject() : entry;
+
+        LinearLayout content = dialogContent();
+        RadioGroup type =
+                typeRadios(
+                        content,
+                        R.array.address_types,
+                        entry == null ? 0 : typeIndex(entry, HOME_WORK_OTHER));
+        EditText street =
+                dialogField(content, null, R.string.hint_street, safe.optString("street"),
+                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        EditText city =
+                dialogField(content, null, R.string.hint_city, safe.optString("city"), TEXT_NAME);
+        EditText region =
+                dialogField(content, null, R.string.hint_region, safe.optString("region"),
+                        TEXT_NAME);
+        EditText postcode =
+                dialogField(content, null, R.string.hint_postcode, safe.optString("postcode"),
+                        InputType.TYPE_CLASS_TEXT);
+        EditText country =
+                dialogField(content, null, R.string.hint_country, safe.optString("country"),
+                        TEXT_NAME);
+
+        showDialog(
+                getS(R.string.item_address),
+                content,
+                () -> {
+                    String filled =
+                            (text(street) + text(city) + text(region) + text(postcode)
+                                    + text(country)).trim();
+                    try {
+                        JSONObject fresh =
+                                new JSONObject()
+                                        .put("street", text(street))
+                                        .put("city", text(city))
+                                        .put("region", text(region))
+                                        .put("postcode", text(postcode))
+                                        .put("country", text(country))
+                                        // Fields the dialog does not show
+                                        // ride along untouched.
+                                        .put("pobox", safe.optString("pobox"))
+                                        .put("ext", safe.optString("ext"))
+                                        .put("pref", safe.optBoolean("pref"))
+                                        .put(
+                                                "types",
+                                                array(
+                                                        HOME_WORK_OTHER[
+                                                                type.getCheckedRadioButtonId()
+                                                                        - 1]));
+                        putEntry(addresses, index, filled, fresh);
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                index >= 0 ? () -> addresses.remove(index) : null);
+    }
+
+    /** A one-field dialog for the plain string lists (hint 0 = none). */
+    private void stringDialog(String list, int index, int title, int hint, int inputType) {
+        JSONArray values = array(list);
+
+        LinearLayout content = dialogContent();
+        EditText input =
+                dialogField(content, null, hint,
+                        index >= 0 ? values.optString(index) : "", inputType);
+
+        showDialog(
+                getS(title),
+                content,
+                () -> {
+                    String fresh = text(input);
+                    if (fresh.isEmpty()) {
+                        if (index >= 0) {
+                            values.remove(index);
+                        }
+                    } else if (index >= 0) {
+                        try {
+                            values.put(index, fresh);
+                        } catch (JSONException error) {
+                            throw new IllegalStateException(error);
+                        }
+                    } else {
+                        values.put(fresh);
+                    }
+                },
+                index >= 0 ? () -> values.remove(index) : null);
+    }
+
+    private void noteDialog(int index) {
+        JSONArray notes = array("notes");
+
+        LinearLayout content = dialogContent();
+        EditText input =
+                dialogField(content, null, 0,
+                        index >= 0 ? notes.optString(index) : "",
+                        InputType.TYPE_CLASS_TEXT
+                                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+
+        showDialog(
+                getS(R.string.item_note),
+                content,
+                () -> {
+                    String fresh = text(input);
+                    if (fresh.isEmpty()) {
+                        if (index >= 0) {
+                            notes.remove(index);
+                        }
+                    } else if (index >= 0) {
+                        try {
+                            notes.put(index, fresh);
+                        } catch (JSONException error) {
+                            throw new IllegalStateException(error);
+                        }
+                    } else {
+                        notes.put(fresh);
+                    }
+                },
+                index >= 0 ? () -> notes.remove(index) : null);
+    }
+
+    /** The birthday goes straight to the system date picker. */
+    private void pickBirthday() {
         Calendar calendar = Calendar.getInstance();
-        String[] parts = field.getText().toString().split("-");
+        String[] parts = model.optString("birthday").split("-");
         if (parts.length == 3) {
             try {
                 calendar.set(
@@ -400,63 +685,86 @@ final class ContactForm {
         DatePickerDialog dialog =
                 new DatePickerDialog(
                         activity,
-                        (view, year, month, day) ->
-                                field.setText(
-                                        String.format("%04d-%02d-%02d", year, month + 1, day)),
+                        (view, year, month, day) -> {
+                            try {
+                                model.put(
+                                        "birthday",
+                                        String.format(
+                                                Locale.ROOT,
+                                                "%04d-%02d-%02d",
+                                                year,
+                                                month + 1,
+                                                day));
+                            } catch (JSONException error) {
+                                throw new IllegalStateException(error);
+                            }
+                            render();
+                        },
                         calendar.get(Calendar.YEAR),
                         calendar.get(Calendar.MONTH),
                         calendar.get(Calendar.DAY_OF_MONTH));
         dialog.setButton(
                 DatePickerDialog.BUTTON_NEUTRAL,
                 activity.getString(R.string.clear),
-                (d, which) -> field.setText(""));
+                (d, which) -> {
+                    model.remove("birthday");
+                    render();
+                });
         dialog.show();
     }
 
-    /** Vertical space above each field group (label + input, or label + list). */
-    private static final int GROUP_TOP = 20;
+    // ---- Dialog building ----------------------------------------------------
 
-    /**
-     * A titled section: the small label, a vertical container for its
-     * repeating rows, and a full-width secondary Add button below that
-     * appends a row and focuses it. Returns the rows container.
-     */
-    private LinearLayout section(LinearLayout parent, int title, int addLabel, Runnable onAdd) {
-        TextView label = smallLabel(title);
-        // Same top spacing as a field block, so groups are even; a
-        // section opening its tab stays flush like a first field.
-        label.setPadding(dp(3), parent.getChildCount() == 0 ? 0 : dp(GROUP_TOP), 0, dp(3));
-
-        LinearLayout rows = new LinearLayout(activity);
-        rows.setOrientation(LinearLayout.VERTICAL);
-
-        Button add = new Button(activity);
-        add.setText(addLabel);
-        add.setAllCaps(true);
-        add.setOnClickListener(view -> {
-            onAdd.run();
-            focusLastInput(rows);
-        });
-
-        parent.addView(label);
-        parent.addView(rows);
-        parent.addView(
-                add,
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        return rows;
+    /** The vertical field container of an edit dialog. */
+    private LinearLayout dialogContent() {
+        LinearLayout content = new LinearLayout(activity);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(24), dp(8), dp(24), 0);
+        return content;
     }
 
-    /** Focuses the freshly added row's first input and pops the keyboard. */
-    private void focusLastInput(LinearLayout rows) {
-        EditText input = firstInput(rows.getChildAt(rows.getChildCount() - 1));
-        if (input != null) {
-            input.requestFocus();
-            activity.getSystemService(InputMethodManager.class)
-                    .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+    /**
+     * Shows an edit dialog: OK runs the write-back and re-renders the
+     * page, Remove (when given) drops the entry.
+     */
+    private void showDialog(
+            CharSequence title, LinearLayout content, Runnable onOk, Runnable onRemove) {
+        ScrollView wrap = new ScrollView(activity);
+        wrap.addView(content);
+
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(activity)
+                        .setTitle(title)
+                        .setView(wrap)
+                        .setPositiveButton(
+                                android.R.string.ok,
+                                (dialog, which) -> {
+                                    onOk.run();
+                                    render();
+                                })
+                        .setNegativeButton(android.R.string.cancel, null);
+        if (onRemove != null) {
+            builder.setNeutralButton(
+                    R.string.remove_row,
+                    (dialog, which) -> {
+                        onRemove.run();
+                        render();
+                    });
         }
+
+        AlertDialog dialog = builder.create();
+
+        // Focus the first field so the keyboard opens with the dialog.
+        EditText first = firstInput(content);
+        if (first != null) {
+            first.requestFocus();
+            first.setSelection(first.getText().length());
+            dialog.getWindow()
+                    .setSoftInputMode(
+                            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+
+        dialog.show();
     }
 
     /** The first EditText under the view, depth first; null when none. */
@@ -464,7 +772,7 @@ final class ContactForm {
         if (view instanceof EditText) {
             return (EditText) view;
         }
-	
+
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int index = 0; index < group.getChildCount(); index++) {
@@ -474,280 +782,175 @@ final class ContactForm {
                 }
             }
         }
-	
+
         return null;
     }
 
-    /** Groups a label and its input into one field block. */
-    private LinearLayout block(int label, View input) {
-        TextView title = smallLabel(label);
-        // Indent to the field's text start, so label and input align.
-        title.setPadding(dp(3), 0, 0, 0);
-
-        LinearLayout block = new LinearLayout(activity);
-        block.setOrientation(LinearLayout.VERTICAL);
-        block.addView(title);
-        block.addView(input);
-        return block;
-    }
-
-    /** Layout params spacing a field block from whatever sits above it
-     * in the container; the container's first child stays flush. */
-    private LinearLayout.LayoutParams blockParams(LinearLayout container) {
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = container.getChildCount() == 0 ? 0 : dp(GROUP_TOP);
-        return params;
-    }
-
-    private TextView smallLabel(int text) {
-        TextView view = new TextView(activity);
-        view.setText(activity.getString(text).toUpperCase(Locale.getDefault()));
-        view.setTextColor(labelColor);
-        view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
-        view.setTypeface(view.getTypeface(), Typeface.BOLD);
-        return view;
-    }
-
     /**
-     * A small borderless round icon button (add, remove) with no
-     * background, tinted `tint`, sized so its glyph lines up with the
-     * adjacent field or label.
+     * A dialog field, label-free: the field name rides as the
+     * placeholder hint. A conflicted path renders one tappable chip
+     * per candidate value below it.
      */
-    private ImageButton iconButton(int icon, int description, int tint, View.OnClickListener c) {
-        ImageButton button = new ImageButton(activity);
-        button.setImageResource(icon);
-        button.setImageTintList(android.content.res.ColorStateList.valueOf(tint));
-        button.setBackgroundResource(
-                resolveAttr(android.R.attr.selectableItemBackgroundBorderless));
-        button.setContentDescription(activity.getString(description));
-        button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        button.setPadding(dp(3), dp(3), dp(3), dp(3));
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(26), dp(26)));
-        button.setOnClickListener(c);
-        return button;
-    }
-
-    private int resolveAttr(int attr) {
-        android.util.TypedValue value = new android.util.TypedValue();
-        activity.getTheme().resolveAttribute(attr, value, true);
-        return value.resourceId;
-    }
-
-    private int resolveColor(int attr) {
-        android.util.TypedValue value = new android.util.TypedValue();
-        activity.getTheme().resolveAttribute(attr, value, true);
-        if (value.resourceId != 0) {
-            return activity.getResources().getColor(value.resourceId, activity.getTheme());
-        }
-        return value.data;
-    }
-
-    // ---- Row builders ---------------------------------------------------------
-
-    private LinearLayout phoneRow(JSONObject entry) {
-        LinearLayout row = valueTypeRow(R.array.phone_types, InputType.TYPE_CLASS_PHONE);
-        if (entry != null) {
-            ((EditText) row.getChildAt(0)).setText(entry.optString("number"));
-            ((Spinner) row.getChildAt(1)).setSelection(phoneTypeIndex(entry));
-            row.setTag(entry.optBoolean("pref"));
-        }
-        return row;
-    }
-
-    private LinearLayout emailRow(JSONObject entry) {
-        LinearLayout row =
-                valueTypeRow(
-                        R.array.email_types,
-                        InputType.TYPE_CLASS_TEXT
-                                | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        if (entry != null) {
-            ((EditText) row.getChildAt(0)).setText(entry.optString("address"));
-            ((Spinner) row.getChildAt(1)).setSelection(typeIndex(entry, HOME_WORK_OTHER));
-            row.setTag(entry.optBoolean("pref"));
-        }
-        return row;
-    }
-
-    /** A removable [value, type spinner, remove] row. */
-    private LinearLayout valueTypeRow(int typesArray, int inputType) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        EditText value = field();
-        value.setLayoutParams(
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        value.setInputType(inputType);
-        row.addView(value);
-
-        row.addView(spinner(typesArray));
-        row.addView(removeButton(row));
-        return row;
-    }
-
-    private LinearLayout addressBlock(JSONObject entry) {
-        LinearLayout block = new LinearLayout(activity);
-        block.setOrientation(LinearLayout.VERTICAL);
-        block.setPadding(0, dp(8), 0, dp(16));
-
-        // Same rhythm as the Name tab: labelled blocks, the first one
-        // flush and the following ones spaced by the group margin. The
-        // type row comes first, unlabelled (the section title already
-        // names it), its stock item padding zeroed so its text aligns
-        // with the fields'.
-        LinearLayout controls = new LinearLayout(activity);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-        Spinner type = spinner(R.array.address_types, R.layout.spinner_form_item);
-        type.setPaddingRelative(
-                dp(3), type.getPaddingTop(), type.getPaddingEnd(), type.getPaddingBottom());
-        type.setLayoutParams(
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        controls.addView(type);
-        controls.addView(removeButton(block));
-        block.addView(controls, blockParams(block));
-
-        block.addView(
-                blockField(R.string.hint_street, InputType.TYPE_TEXT_FLAG_MULTI_LINE),
-                blockParams(block));
-        block.addView(
-                blockField(R.string.hint_city, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
-                blockParams(block));
-        block.addView(
-                blockField(R.string.hint_region, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
-                blockParams(block));
-        block.addView(blockField(R.string.hint_postcode, 0), blockParams(block));
-        block.addView(
-                blockField(R.string.hint_country, InputType.TYPE_TEXT_FLAG_CAP_WORDS),
-                blockParams(block));
-
-        AddressExtras extras = new AddressExtras();
-        block.setTag(extras);
-
-        if (entry != null) {
-            fieldOf(block, 1).setText(entry.optString("street"));
-            fieldOf(block, 2).setText(entry.optString("city"));
-            fieldOf(block, 3).setText(entry.optString("region"));
-            fieldOf(block, 4).setText(entry.optString("postcode"));
-            fieldOf(block, 5).setText(entry.optString("country"));
-            type.setSelection(typeIndex(entry, HOME_WORK_OTHER));
-            extras.pobox = entry.optString("pobox");
-            extras.ext = entry.optString("ext");
-            extras.pref = entry.optBoolean("pref");
-        }
-        return block;
-    }
-
-    /** A labelled field inside an address block (label + input in one holder). */
-    private LinearLayout blockField(int label, int inputTypeFlags) {
-        EditText input = field();
-        input.setInputType(InputType.TYPE_CLASS_TEXT | inputTypeFlags);
-        return block(label, input);
-    }
-
-    /** The EditText inside an address block's nth labelled holder. */
-    private static EditText fieldOf(LinearLayout block, int index) {
-        return (EditText) ((LinearLayout) block.getChildAt(index)).getChildAt(1);
-    }
-
-    private static String fieldText(LinearLayout block, int index) {
-        return fieldOf(block, index).getText().toString().trim();
-    }
-
-    /** A removable single-value row (nicknames, websites). */
-    private LinearLayout lineRow(LinearLayout container, String value, int inputType) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        EditText input = field();
-        input.setLayoutParams(
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+    private EditText dialogField(
+            LinearLayout content, String path, int label, String prefill, int inputType) {
+        EditText input = new EditText(activity);
+        input.setBackgroundTintList(ColorStateList.valueOf(accentColor));
         input.setInputType(inputType);
-        input.setText(value);
-        row.addView(input);
+        if (label != 0) {
+            input.setHint(label);
+        }
+        input.setText(prefill);
+        content.addView(input);
 
-        row.addView(removeButton(row));
-        return row;
+        JSONArray values = path == null || alternatives == null
+                ? null
+                : alternatives.optJSONArray(path);
+        if (values != null && values.length() > 0) {
+            LinearLayout chips = new LinearLayout(activity);
+            chips.setOrientation(LinearLayout.HORIZONTAL);
+            for (int index = 0; index < values.length(); index++) {
+                String candidate = values.optString(index);
+                Button chip = new Button(activity, null, android.R.attr.buttonStyleSmall);
+                chip.setText(candidate);
+                chip.setAllCaps(false);
+                chip.setOnClickListener(view -> input.setText(candidate));
+                chips.addView(chip);
+            }
+
+            HorizontalScrollView chipScroll = new HorizontalScrollView(activity);
+            chipScroll.setHorizontalScrollBarEnabled(false);
+            chipScroll.addView(chips);
+            content.addView(chipScroll);
+        }
+
+        return input;
     }
 
-    /** A removable multi-line row (notes). */
-    private LinearLayout noteRow(String value) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-        EditText input = field();
-        input.setLayoutParams(
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        input.setInputType(
-                InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        input.setText(value);
-        row.addView(input);
-
-        row.addView(removeButton(row));
-        return row;
-    }
-
-    /** The value of a single-input row (nickname, website, note). */
-    private static String rowValue(View row) {
-        return ((EditText) ((LinearLayout) row).getChildAt(0)).getText().toString().trim();
-    }
-
-    private Spinner spinner(int entries) {
-        return spinner(entries, android.R.layout.simple_spinner_item);
-    }
-
-    /** A spinner with a custom collapsed-item layout (form alignment). */
-    private Spinner spinner(int entries, int itemLayout) {
+    /** The type spinner of an entry dialog (self-describing, no label). */
+    private Spinner typeSpinner(int entries) {
         Spinner spinner = new Spinner(activity);
         ArrayAdapter<CharSequence> adapter =
-                ArrayAdapter.createFromResource(activity, entries, itemLayout);
+                ArrayAdapter.createFromResource(activity, entries, R.layout.spinner_form_item);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
+        // Flush with the fields: the stock spinner carries its own
+        // padding that breaks the shared text start.
+        spinner.setPadding(0, 0, 0, 0);
         return spinner;
     }
 
-    /** A round, background-less remove (minus) button for the row. */
-    private ImageButton removeButton(LinearLayout target) {
-        return iconButton(
-                R.drawable.ic_close,
-                R.string.remove_row,
-                labelColor,
-                view -> ((ViewGroup) target.getParent()).removeView(target));
+    /**
+     * A typed value line: the type spinner sized to its content, then
+     * the value field filling the rest of the line.
+     */
+    private EditText typedValueLine(
+            LinearLayout content, Spinner type, int hint, String prefill, int inputType) {
+        LinearLayout line = new LinearLayout(activity);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setBaselineAligned(false);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.addView(
+                type,
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        EditText input = dialogField(line, null, hint, prefill, inputType);
+        LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        params.setMarginStart(dp(12));
+        input.setLayoutParams(params);
+
+        content.addView(line);
+        return input;
     }
 
-    // ---- Model fill helpers ---------------------------------------------------
+    /** The entry types as one line of radios (position = table index). */
+    private RadioGroup typeRadios(LinearLayout content, int entries, int selected) {
+        RadioGroup group = new RadioGroup(activity);
+        group.setOrientation(LinearLayout.HORIZONTAL);
 
-    private interface StringConsumer {
-        void accept(String value);
+        String[] labels = activity.getResources().getStringArray(entries);
+        for (int index = 0; index < labels.length; index++) {
+            RadioButton option = new RadioButton(activity);
+            option.setText(labels[index]);
+            option.setId(index + 1);
+            // Flush start, and the same gap between options as between
+            // the fields below.
+            option.setPadding(0, 0, dp(16), 0);
+            group.addView(option);
+        }
+        group.check(selected + 1);
+
+        content.addView(group);
+        return group;
     }
 
-    private interface ObjectConsumer {
-        void accept(JSONObject value);
+    // ---- Model helpers ------------------------------------------------------
+
+    /** The model's list under the key, created empty when absent. */
+    private JSONArray array(String key) {
+        JSONArray values = model.optJSONArray(key);
+        if (values == null) {
+            values = new JSONArray();
+            try {
+                model.put(key, values);
+            } catch (JSONException error) {
+                throw new IllegalStateException(error);
+            }
+        }
+        return values;
     }
 
-    private static void fill(LinearLayout container, JSONArray values, StringConsumer add) {
-        container.removeAllViews();
-        for (int index = 0; values != null && index < values.length(); index++) {
-            add.accept(values.optString(index));
+    /** A typed value entry, the pref flag riding along from the old one. */
+    private static JSONObject entryOf(
+            String field, String value, String[] types, JSONObject previous) {
+        try {
+            return new JSONObject()
+                    .put(field, value)
+                    .put("types", array(types))
+                    .put("pref", previous != null && previous.optBoolean("pref"));
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
         }
     }
 
-    private static void fillObjects(
-            LinearLayout container, JSONArray values, ObjectConsumer add) {
-        container.removeAllViews();
-        for (int index = 0; values != null && index < values.length(); index++) {
-            add.accept(values.optJSONObject(index));
+    /**
+     * Writes an entry back into its list: replaced in place, appended
+     * when new, dropped when emptied.
+     */
+    private static void putEntry(JSONArray values, int index, String filled, JSONObject entry) {
+        if (filled.trim().isEmpty()) {
+            if (index >= 0) {
+                values.remove(index);
+            }
+            return;
+        }
+
+        if (index >= 0) {
+            try {
+                values.put(index, entry);
+            } catch (JSONException error) {
+                throw new IllegalStateException(error);
+            }
+        } else {
+            values.put(entry);
         }
     }
 
-    // ---- Type mapping ---------------------------------------------------------
+    private boolean conflicted(String... paths) {
+        if (alternatives == null) {
+            return false;
+        }
+        for (String path : paths) {
+            if (alternatives.has(path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ---- Type mapping -------------------------------------------------------
 
     private static int phoneTypeIndex(JSONObject entry) {
         Set<String> types = typeSet(entry);
@@ -796,8 +999,29 @@ final class ContactForm {
         return array;
     }
 
+    // ---- Utils --------------------------------------------------------------
+
     private static String text(EditText input) {
         return input.getText().toString().trim();
+    }
+
+    private String getS(int id) {
+        return activity.getString(id);
+    }
+
+    private int resolveAttr(int attr) {
+        TypedValue value = new TypedValue();
+        activity.getTheme().resolveAttribute(attr, value, true);
+        return value.resourceId;
+    }
+
+    private int resolveColor(int attr) {
+        TypedValue value = new TypedValue();
+        activity.getTheme().resolveAttribute(attr, value, true);
+        if (value.resourceId != 0) {
+            return activity.getResources().getColor(value.resourceId, activity.getTheme());
+        }
+        return value.data;
     }
 
     private int dp(int value) {

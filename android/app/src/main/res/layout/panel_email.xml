@@ -4,49 +4,6 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Auth app bar: a back arrow, hidden only on the first-run
-         onboarding email view (no account yet, so no way back). -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="56dp"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
-
-        <ImageButton
-            android:id="@+id/email_back"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:text="@string/new_account"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
-
-        <ImageButton
-            android:id="@+id/email_cancel"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/cancel_auth"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-    </LinearLayout>
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -58,61 +15,89 @@
         <ImageView
             android:layout_width="96dp"
             android:layout_height="96dp"
-            android:layout_marginBottom="16dp"
+            android:layout_marginBottom="8dp"
             android:background="@drawable/logo_circle"
             android:contentDescription="@string/app_name"
             android:padding="16dp"
             android:src="@drawable/ic_launcher" />
 
+        <!-- Headline-sized, so the page has a hierarchy of its own
+             instead of echoing an app bar title. -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:gravity="center"
             android:text="@string/welcome"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
+            android:textColor="?android:attr/textColorPrimary"
+            android:textSize="28sp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:layout_marginBottom="24dp"
             android:gravity="center"
-            android:text="@string/welcome_description"
+            android:lineSpacingExtra="4dp"
+            android:text="@string/welcome_value"
             android:textColor="?android:attr/textColorSecondary"
-            android:textSize="14sp" />
+            android:textSize="16sp" />
 
-        <EditText
-            android:id="@+id/email_input"
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="@string/email_hint"
-            android:inputType="textEmailAddress" />
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:lineSpacingExtra="4dp"
+            android:text="@string/welcome_description"
+            android:textSize="14sp" />
 
     </LinearLayout>
 
-    <!-- The loader sits on the button itself while the search runs
-         (the button disabled, its label blanked). -->
-    <FrameLayout
+    <!-- The field and the continue FAB float together at the bottom,
+         above the keyboard (adjustResize); the loader sits on the FAB
+         itself while the search runs. -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_margin="8dp">
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="24dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="16dp">
 
-        <Button
-            android:id="@+id/email_submit"
-            style="@android:style/Widget.DeviceDefault.Button.Colored"
-            android:layout_width="match_parent"
+        <EditText
+            android:id="@+id/email_input"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="@string/email_submit"
-            android:textAllCaps="true" />
+            android:layout_weight="1"
+            android:hint="@string/email_hint"
+            android:inputType="textEmailAddress" />
 
-        <ProgressBar
-            android:id="@+id/email_progress"
-            style="?android:attr/progressBarStyleSmall"
+        <FrameLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:visibility="gone" />
+            android:layout_marginStart="16dp">
 
-    </FrameLayout>
+            <ImageButton
+                android:id="@+id/email_submit"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/fab_background"
+                android:contentDescription="@string/email_submit"
+                android:elevation="6dp"
+                android:src="@drawable/ic_arrow_forward" />
+
+            <ProgressBar
+                android:id="@+id/email_progress"
+                style="?android:attr/progressBarStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:visibility="gone" />
+
+        </FrameLayout>
+
+    </LinearLayout>
 
 </LinearLayout>

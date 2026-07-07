@@ -4,19 +4,11 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <include layout="@layout/panel_email" />
-
-    <include layout="@layout/panel_config" />
-
-    <include layout="@layout/panel_password" />
-
-    <include layout="@layout/panel_books" />
+    <include layout="@layout/panel_auth" />
 
     <include layout="@layout/panel_contacts" />
 
     <include layout="@layout/panel_contact" />
-
-    <include layout="@layout/panel_settings" />
 
     <include layout="@layout/panel_home" />
 
