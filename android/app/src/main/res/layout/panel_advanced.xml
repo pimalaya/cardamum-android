@@ -1,55 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The advanced raw-property editor: every line of the open contact's
-     vCard as a tappable row (rows built in code), closed by the source
-     block. Edits apply to the working document; SAVE on the edit form
-     persists them. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The advanced raw-property editor's content: every line of the open
+     contact's vCard as a tappable row (rows built in code), closed by
+     the source block. Its bar elements live in the persistent chrome
+     (activity_main.xml). -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
 
     <LinearLayout
+        android:id="@+id/advanced_container"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="@dimen/app_bar_height"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
+        android:orientation="vertical"
+        android:paddingBottom="24dp" />
 
-        <ImageButton
-            android:id="@+id/advanced_back"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:paddingEnd="@dimen/app_bar_title_padding"
-            android:text="@string/advanced_title"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
-
-    </LinearLayout>
-
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <LinearLayout
-            android:id="@+id/advanced_container"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingBottom="24dp" />
-
-    </ScrollView>
-
-</LinearLayout>
+</ScrollView>

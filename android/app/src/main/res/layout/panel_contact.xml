@@ -1,100 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The contact editor's content: one settings-style page (accent
+     section headers over tappable full-bleed items, each opening an
+     edit dialog); its bar elements and save FAB live in the persistent
+     chrome (activity_main.xml). The page's bottom padding keeps the
+     last row clear of the FAB. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
 
-    <LinearLayout
+    <ScrollView
+        android:id="@+id/contact_scroll"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="@dimen/app_bar_height"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
+        android:layout_height="match_parent">
 
-        <ImageButton
-            android:id="@+id/contact_back"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <TextView
-            android:id="@+id/contact_title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:paddingEnd="@dimen/app_bar_title_padding"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
-
-        <!-- Pushes the action icons to the right edge. -->
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <!-- The addressbooks the contact belongs to, the one placement
-             gesture (docs/merged-view.md). -->
-        <ImageButton
-            android:id="@+id/contact_books"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/manage_books_title"
-            android:src="@drawable/ic_link"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <!-- The advanced raw-property editor, for power users. -->
-        <ImageButton
-            android:id="@+id/contact_advanced"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/advanced_open"
-            android:src="@drawable/ic_advanced"
-            android:tint="?android:attr/textColorPrimary" />
-
-    </LinearLayout>
-
-    <!-- One settings-style page: accent section headers over tappable
-         full-bleed items, each opening an edit dialog. Rows carry
-         their own padding so their ripple spans the whole line; the
-         page's bottom padding keeps the last row clear of the FAB. -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <ScrollView
-            android:id="@+id/contact_scroll"
+        <LinearLayout
+            android:id="@+id/contact_form"
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="88dp" />
 
-            <LinearLayout
-                android:id="@+id/contact_form"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingBottom="88dp" />
+    </ScrollView>
 
-        </ScrollView>
-
-        <ImageButton
-            android:id="@+id/contact_save"
-            android:layout_width="@dimen/fab"
-            android:layout_height="@dimen/fab"
-            android:layout_gravity="bottom|end"
-            android:layout_margin="@dimen/fab_margin"
-            android:background="@drawable/fab_background"
-            android:contentDescription="@string/contact_save"
-            android:elevation="@dimen/fab_elevation"
-            android:src="@drawable/ic_check" />
-
-    </FrameLayout>
-
-</LinearLayout>
+</FrameLayout>

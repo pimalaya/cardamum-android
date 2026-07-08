@@ -1,69 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The auth flow shell: one persistent app bar over an inner flipper
-     holding the steps (email, config, books), so navigating the flow
-     only slides the step content. With no account stored the flow has
-     no way out: no cross, and no back arrow on the welcome step. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The auth flow's content: an inner flipper holding the steps
+     (email, config, books), so navigating the flow slides only the
+     step content under the persistent app bar. With no account stored
+     the flow has no way out: no cross, no back arrow on the welcome
+     step (applyChrome in MainActivity). -->
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/auth_flipper"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
 
-    <LinearLayout
-        android:id="@+id/auth_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="@dimen/app_bar_height"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
+    <include layout="@layout/panel_email" />
 
-        <ImageButton
-            android:id="@+id/auth_back"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
-            android:tint="?android:attr/textColorPrimary" />
+    <include layout="@layout/panel_config" />
 
-        <!-- Retitled per step in showAuth. -->
-        <TextView
-            android:id="@+id/auth_title"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:paddingEnd="@dimen/app_bar_title_padding"
-            android:text="@string/auth_step_email"
-            android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
+    <include layout="@layout/panel_books" />
 
-        <ImageButton
-            android:id="@+id/auth_cancel"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/cancel_auth"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-    </LinearLayout>
-
-    <ViewFlipper
-        android:id="@+id/auth_flipper"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <include layout="@layout/panel_email" />
-
-        <include layout="@layout/panel_config" />
-
-        <include layout="@layout/panel_books" />
-
-    </ViewFlipper>
-
-</LinearLayout>
+</ViewFlipper>

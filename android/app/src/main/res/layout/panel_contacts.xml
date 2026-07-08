@@ -1,215 +1,55 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The contacts list content; its bar elements and FAB live in the
+     persistent chrome (activity_main.xml). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
+
+    <ListView
+        android:id="@+id/contacts_list"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:paddingBottom="88dp"
+        android:scrollbars="none" />
 
     <LinearLayout
+        android:id="@+id/contacts_empty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:minHeight="@dimen/app_bar_height"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/app_bar_padding"
-        android:paddingEnd="@dimen/app_bar_padding">
+        android:layout_gravity="center"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="48dp"
+        android:paddingEnd="48dp"
+        android:visibility="gone">
 
-        <ImageButton
-            android:id="@+id/contacts_menu"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/subscriptions_title"
-            android:src="@drawable/ic_menu"
-            android:tint="?android:attr/textColorPrimary" />
-        <ImageButton
-            android:id="@+id/contacts_close"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/cancel_selection"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
+        <ImageView
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_folder_open"
+            android:tint="?android:attr/textColorSecondary" />
 
         <TextView
-            android:id="@+id/contacts_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingStart="@dimen/app_bar_title_padding"
-            android:paddingEnd="@dimen/app_bar_title_padding"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="@string/empty_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorPrimary" />
-
-        <FrameLayout
-            android:id="@+id/contacts_search_pill"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:layout_marginTop="4dp"
-            android:layout_marginEnd="-48dp"
-            android:layout_marginBottom="4dp"
-            android:background="@drawable/search_background"
-            android:visibility="gone">
-
-            <EditText
-                android:id="@+id/contacts_search_input"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@null"
-                android:hint="@string/contacts_search"
-                android:imeOptions="actionSearch"
-                android:inputType="text"
-                android:maxLines="1"
-                android:paddingStart="24dp"
-                android:paddingEnd="48dp"
-                android:textColor="?android:attr/textColorPrimary"
-                android:textColorHint="?android:attr/textColorSecondary"
-                android:textSize="16sp" />
-
-        </FrameLayout>
-
-        <!-- Search mode: clears the query and restores the title; the
-             pill above extends underneath it, hence the bounded ripple
-             (a borderless one is projected into the bar's background,
-             below the pill). -->
-        <ImageButton
-            android:id="@+id/contacts_search_close"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/clear"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-        <!-- Pushes the action icons to the right edge. -->
-        <View
-            android:id="@+id/contacts_bar_spacer"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_weight="1" />
-
-        <ImageButton
-            android:id="@+id/contacts_search"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/contacts_search"
-            android:src="@drawable/ic_search"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <ImageButton
-            android:id="@+id/contacts_merge"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/merge_selected"
-            android:src="@drawable/ic_merge"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-        <ImageButton
-            android:id="@+id/contacts_delete"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/delete_selected"
-            android:src="@drawable/ic_delete_bar"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
-        <FrameLayout
-            android:id="@+id/contacts_sync_slot"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button">
-
-            <ImageButton
-                android:id="@+id/contacts_sync"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/ripple_circle"
-                android:contentDescription="@string/contacts_sync"
-                android:src="@drawable/ic_sync"
-                android:tint="?android:attr/textColorPrimary" />
-
-            <ProgressBar
-                android:id="@+id/contacts_sync_progress"
-                style="?android:attr/progressBarStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:indeterminateTint="?android:attr/textColorPrimary"
-                android:visibility="gone" />
-
-        </FrameLayout>
+            android:textColor="?android:attr/textColorSecondary" />
 
     </LinearLayout>
 
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+    <TextView
+        android:id="@+id/contacts_sticky_letter"
+        android:layout_width="56dp"
+        android:layout_height="66dp"
+        android:gravity="center"
+        android:textColor="?android:attr/colorAccent"
+        android:textStyle="bold" />
 
-        <ListView
-            android:id="@+id/contacts_list"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:divider="@null"
-            android:dividerHeight="0dp"
-            android:paddingBottom="88dp"
-            android:scrollbars="none" />
-
-        <LinearLayout
-            android:id="@+id/contacts_empty"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:gravity="center_horizontal"
-            android:orientation="vertical"
-            android:paddingStart="48dp"
-            android:paddingEnd="48dp"
-            android:visibility="gone">
-
-            <ImageView
-                android:layout_width="96dp"
-                android:layout_height="96dp"
-                android:contentDescription="@null"
-                android:src="@drawable/ic_folder_open"
-                android:tint="?android:attr/textColorSecondary" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:text="@string/empty_title"
-                android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-                android:textColor="?android:attr/textColorSecondary" />
-
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/contacts_sticky_letter"
-            android:layout_width="56dp"
-            android:layout_height="66dp"
-            android:gravity="center"
-	    android:textSize="16sp"
-            android:textColor="?android:attr/colorAccent"
-            android:textStyle="bold" />
-
-        <ImageButton
-            android:id="@+id/contacts_add"
-            android:layout_width="@dimen/fab"
-            android:layout_height="@dimen/fab"
-            android:layout_gravity="bottom|end"
-            android:layout_margin="@dimen/fab_margin"
-            android:background="@drawable/fab_background"
-            android:contentDescription="@string/contacts_add"
-            android:elevation="@dimen/fab_elevation"
-            android:src="@drawable/ic_add" />
-
-    </FrameLayout>
-
-</LinearLayout>
+</FrameLayout>

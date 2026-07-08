@@ -210,6 +210,15 @@ public class MainActivity extends Activity {
     /** The addressbooks dialog's desired state, applied on save. */
     private Map<String, Boolean> pendingBookState;
 
+    /** Whether the contacts screen's in-bar search field is open. */
+    private boolean searchOpen;
+
+    /** The editor's bar title (the shared bar is retitled per screen). */
+    private CharSequence editingTitle = "";
+
+    /** Whether the open contact offers the advanced raw editor. */
+    private boolean advancedAvailable;
+
     /** The advanced editor's working document; null until it opens. */
     private String advancedVcard;
 
@@ -235,15 +244,12 @@ public class MainActivity extends Activity {
 
         for (int id :
                 new int[] {
-                    R.id.email_submit,
-                    R.id.config_continue,
-                    R.id.books_continue,
-                    R.id.contacts_add,
-                    R.id.contact_save,
-                    R.id.home_add,
+                    R.id.email_submit, R.id.config_continue, R.id.books_continue, R.id.fab,
                 }) {
             setUpFab(id);
         }
+        findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
+        findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
 
         accounts.addAll(store.loadAll());
         if (accounts.isEmpty()) {
@@ -282,7 +288,6 @@ public class MainActivity extends Activity {
         pendingEmail = null;
         searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
-        findViewById(R.id.auth_cancel).setVisibility(addingAccount ? View.VISIBLE : View.GONE);
 
         showAuth(STEP_EMAIL);
     }
@@ -298,12 +303,10 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Shows an auth step under the flow's one persistent bar: only the
-     * inner step view transitions. Entering the flow from outside
-     * jumps the inner flipper without animation (the outer panel slide
-     * is the transition). The bar always stays for its title; only its
-     * back arrow goes on the welcome step when no account is stored
-     * (nothing to go back to).
+     * Shows an auth step under the persistent bar: only the inner step
+     * view transitions. Entering the flow from outside jumps the inner
+     * flipper without animation (the outer panel slide is the
+     * transition).
      */
     private void showAuth(int step, boolean back) {
         boolean inside = flipper.getDisplayedChild() == PANEL_AUTH;
@@ -317,20 +320,33 @@ public class MainActivity extends Activity {
             authFlipper.setOutAnimation(null);
         }
 
-        findViewById(R.id.auth_back)
+        authFlipper.setDisplayedChild(step);
+        if (inside) {
+            applyChrome(PANEL_AUTH);
+        } else {
+            show(PANEL_AUTH);
+        }
+    }
+
+    /**
+     * The auth bar per step: the step's title, no back arrow on the
+     * welcome step when no account is stored (nothing to go back to),
+     * and the cross only when one is (the flow is escape-free
+     * otherwise).
+     */
+    private void applyAuthChrome() {
+        int step = authFlipper.getDisplayedChild();
+        findViewById(R.id.bar_back)
                 .setVisibility(step == STEP_EMAIL && !addingAccount ? View.GONE : View.VISIBLE);
-        ((TextView) findViewById(R.id.auth_title))
+        findViewById(R.id.auth_cancel)
+                .setVisibility(addingAccount ? View.VISIBLE : View.GONE);
+        ((TextView) findViewById(R.id.bar_title))
                 .setText(
                         step == STEP_EMAIL
                                 ? R.string.auth_step_email
                                 : step == STEP_CONFIG
                                         ? R.string.auth_step_config
                                         : R.string.auth_step_books);
-        authFlipper.setDisplayedChild(step);
-
-        if (!inside) {
-            show(PANEL_AUTH);
-        }
     }
 
     /** The auth bar's back arrow, per step. */
@@ -388,7 +404,7 @@ public class MainActivity extends Activity {
                 }
                 break;
             case PANEL_CONTACTS:
-                if (findViewById(R.id.contacts_search_pill).getVisibility() == View.VISIBLE) {
+                if (searchOpen) {
                     closeSearch();
                     break;
                 }
@@ -431,7 +447,6 @@ public class MainActivity extends Activity {
 
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
-        findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
         findViewById(R.id.auth_cancel).setOnClickListener(view -> goHome());
         findViewById(R.id.config_continue)
                 .setOnClickListener(
@@ -1458,8 +1473,6 @@ public class MainActivity extends Activity {
     // ---- Addressbooks management screen -----------------------------------------
 
     private void setUpHomePanel() {
-        findViewById(R.id.home_back).setOnClickListener(view -> goHome());
-        findViewById(R.id.home_add).setOnClickListener(view -> startAuth(true));
     }
 
     /**
@@ -2294,7 +2307,6 @@ public class MainActivity extends Activity {
     private void setUpContactsPanel() {
         findViewById(R.id.contacts_sync).setOnClickListener(this::showSyncMenu);
         findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
-        findViewById(R.id.contacts_add).setOnClickListener(view -> addContact());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
@@ -2813,7 +2825,8 @@ public class MainActivity extends Activity {
     /** Clears the search query (the bar itself is always visible). */
     /** Swaps the title for the search pill and opens the keyboard. */
     private void openSearch() {
-        findViewById(R.id.contacts_title).setVisibility(View.GONE);
+        searchOpen = true;
+        findViewById(R.id.bar_title).setVisibility(View.GONE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.GONE);
         findViewById(R.id.contacts_search).setVisibility(View.GONE);
         findViewById(R.id.contacts_search_pill).setVisibility(View.VISIBLE);
@@ -2830,27 +2843,33 @@ public class MainActivity extends Activity {
     /** Clears the query and gives the title its place back. */
     private void closeSearch() {
         ((EditText) findViewById(R.id.contacts_search_input)).setText("");
-        View pill = findViewById(R.id.contacts_search_pill);
-        if (pill.getVisibility() != View.VISIBLE) {
+        if (!searchOpen) {
             return;
         }
+        searchOpen = false;
 
         hideKeyboard();
-        pill.setVisibility(View.GONE);
+        // The chrome only moves when the contacts screen shows it (a
+        // sync landing while another screen is open also ends here).
+        if (flipper.getDisplayedChild() != PANEL_CONTACTS) {
+            return;
+        }
+        findViewById(R.id.contacts_search_pill).setVisibility(View.GONE);
         findViewById(R.id.contacts_search_close).setVisibility(View.GONE);
-        findViewById(R.id.contacts_title).setVisibility(View.VISIBLE);
+        findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
-    /** The list title gives way to the selected count while selecting. */
+    /**
+     * The contacts screen's chrome, per selection and search state (the
+     * bar is shared across screens, so this only runs while the
+     * contacts screen shows; applyChrome re-runs it on every return).
+     */
     private void updateSelectionUi() {
-        TextView title = findViewById(R.id.contacts_title);
-        if (selectionMode) {
-            title.setText(getString(R.string.selected_count, selectedKeys.size()));
-        } else {
-            title.setText(R.string.contacts_title);
+        if (flipper.getDisplayedChild() != PANEL_CONTACTS) {
+            return;
         }
 
         // The selected count takes the title's spot, so an open search
@@ -2858,10 +2877,21 @@ public class MainActivity extends Activity {
         if (selectionMode) {
             closeSearch();
         }
-        // Rendering runs on every query keystroke: an open search keeps
-        // its cross, the icon only comes back with the title.
-        boolean searchOpen =
-                findViewById(R.id.contacts_search_pill).getVisibility() == View.VISIBLE;
+
+        TextView title = findViewById(R.id.bar_title);
+        if (selectionMode) {
+            title.setText(getString(R.string.selected_count, selectedKeys.size()));
+        } else {
+            title.setText(R.string.contacts_title);
+        }
+        title.setVisibility(searchOpen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_bar_spacer)
+                .setVisibility(searchOpen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_search_pill)
+                .setVisibility(searchOpen ? View.VISIBLE : View.GONE);
+        findViewById(R.id.contacts_search_close)
+                .setVisibility(searchOpen ? View.VISIBLE : View.GONE);
+
         findViewById(R.id.contacts_search)
                 .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_menu).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -2880,7 +2910,7 @@ public class MainActivity extends Activity {
         // 48dp frame would push the selection icons off the edge.
         findViewById(R.id.contacts_sync_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_add).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        findViewById(R.id.fab).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
     /** Confirms, then stages a delete for every selected contact. */
@@ -2975,9 +3005,8 @@ public class MainActivity extends Activity {
         advancedDirty = false;
         editingVcard = newVcard();
 
-        ((TextView) findViewById(R.id.contact_title)).setText(R.string.contact_new);
-        findViewById(R.id.contact_books).setVisibility(View.GONE);
-        findViewById(R.id.contact_advanced).setVisibility(View.VISIBLE);
+        editingTitle = getString(R.string.contact_new);
+        advancedAvailable = true;
 
         form.load(null, null, null);
         show(PANEL_CONTACT);
@@ -3035,12 +3064,10 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        ((TextView) findViewById(R.id.contact_title)).setText(displayName(primary));
-        findViewById(R.id.contact_books).setVisibility(View.VISIBLE);
+        editingTitle = displayName(primary);
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
-        findViewById(R.id.contact_advanced)
-                .setVisibility(distinctRefs(replicas).size() == 1 ? View.VISIBLE : View.GONE);
+        advancedAvailable = distinctRefs(replicas).size() == 1;
 
         form.load(model, alternatives, changed);
         show(PANEL_CONTACT);
@@ -3048,11 +3075,8 @@ public class MainActivity extends Activity {
     }
 
     private void setUpContactPanel() {
-        findViewById(R.id.contact_save).setOnClickListener(view -> saveContact());
         findViewById(R.id.contact_books).setOnClickListener(view -> manageBooks());
         findViewById(R.id.contact_advanced).setOnClickListener(view -> openAdvanced());
-        findViewById(R.id.contact_back).setOnClickListener(view -> closeContact());
-        findViewById(R.id.advanced_back).setOnClickListener(view -> closeAdvanced());
     }
 
     /**
@@ -3553,6 +3577,114 @@ public class MainActivity extends Activity {
         flipper.setInAnimation(this, back ? R.anim.slide_in_left : R.anim.slide_in_right);
         flipper.setOutAnimation(this, back ? R.anim.slide_out_right : R.anim.slide_out_left);
         flipper.setDisplayedChild(panel);
+        applyChrome(panel);
+    }
+
+    /**
+     * Configures the persistent app bar and FAB for the screen: every
+     * chrome element goes off, then the screen's own set comes back
+     * (the contacts screen delegates to its selection/search state).
+     */
+    private void applyChrome(int panel) {
+        for (int id :
+                new int[] {
+                    R.id.bar_back,
+                    R.id.contacts_menu,
+                    R.id.contacts_close,
+                    R.id.contacts_search_pill,
+                    R.id.contacts_search_close,
+                    R.id.contacts_search,
+                    R.id.contacts_merge,
+                    R.id.contacts_delete,
+                    R.id.contacts_sync_slot,
+                    R.id.contact_advanced,
+                    R.id.contact_books,
+                    R.id.auth_cancel,
+                }) {
+            findViewById(id).setVisibility(View.GONE);
+        }
+        findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
+        findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
+
+        TextView title = findViewById(R.id.bar_title);
+        android.widget.ImageButton fab = findViewById(R.id.fab);
+
+        switch (panel) {
+            case PANEL_AUTH:
+                // The steps carry their own continue FABs (the email
+                // one rides in a row with its field).
+                fab.setVisibility(View.GONE);
+                applyAuthChrome();
+                break;
+            case PANEL_CONTACTS:
+                fab.setImageResource(R.drawable.ic_add);
+                fab.setContentDescription(getString(R.string.contacts_add));
+                fab.setVisibility(View.VISIBLE);
+                updateSelectionUi();
+                break;
+            case PANEL_CONTACT:
+                title.setText(editingTitle);
+                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                findViewById(R.id.contact_advanced)
+                        .setVisibility(advancedAvailable ? View.VISIBLE : View.GONE);
+                findViewById(R.id.contact_books)
+                        .setVisibility(editingCard != null ? View.VISIBLE : View.GONE);
+                fab.setImageResource(R.drawable.ic_check);
+                fab.setContentDescription(getString(R.string.contact_save));
+                fab.setVisibility(View.VISIBLE);
+                break;
+            case PANEL_HOME:
+                title.setText(R.string.subscriptions_title);
+                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                fab.setImageResource(R.drawable.ic_add);
+                fab.setContentDescription(getString(R.string.add_account));
+                fab.setVisibility(View.VISIBLE);
+                break;
+            case PANEL_ADVANCED:
+                title.setText(R.string.advanced_title);
+                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                fab.setVisibility(View.GONE);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** The shared FAB's action, per screen. */
+    private void onFabClick() {
+        switch (flipper.getDisplayedChild()) {
+            case PANEL_CONTACTS:
+                addContact();
+                break;
+            case PANEL_CONTACT:
+                saveContact();
+                break;
+            case PANEL_HOME:
+                startAuth(true);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** The shared back arrow's action, per screen. */
+    private void onBarBack() {
+        switch (flipper.getDisplayedChild()) {
+            case PANEL_AUTH:
+                authBack();
+                break;
+            case PANEL_CONTACT:
+                closeContact();
+                break;
+            case PANEL_ADVANCED:
+                closeAdvanced();
+                break;
+            case PANEL_HOME:
+                goHome();
+                break;
+            default:
+                break;
+        }
     }
 
     /** Resolves a theme attribute to its referenced resource id. */
