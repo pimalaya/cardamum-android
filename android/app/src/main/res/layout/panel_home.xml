@@ -1,51 +1,103 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The addressbooks management content; its bar elements and FAB live
-     in the persistent chrome (activity_main.xml). -->
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The addressbooks management screen, a whole-frame overlay sliding
+     over the contacts list like a drawer, its own bar included; the
+     arrow and the cross both close it. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlay_home"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground"
+    android:orientation="vertical"
+    android:visibility="gone">
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="match_parent">
-
-        <LinearLayout
-            android:id="@+id/home_container"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingBottom="88dp" />
-
-    </ScrollView>
-
-    <!-- The contacts list's empty state, for the no-account case. -->
     <LinearLayout
-        android:id="@+id/home_empty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:paddingStart="48dp"
-        android:paddingEnd="48dp"
-        android:visibility="gone">
+        android:background="?android:attr/colorPrimary"
+        android:gravity="center_vertical"
+        android:minHeight="@dimen/app_bar_height"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/app_bar_padding"
+        android:paddingEnd="@dimen/app_bar_padding">
 
-        <ImageView
-            android:layout_width="96dp"
-            android:layout_height="96dp"
-            android:contentDescription="@null"
-            android:src="@drawable/ic_folder_open"
-            android:tint="?android:attr/textColorSecondary" />
+        <ImageButton
+            android:id="@+id/home_back"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_arrow_back"
+            android:tint="?android:attr/textColorPrimary" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center"
-            android:text="@string/empty_title"
+            android:layout_weight="1"
+            android:paddingStart="@dimen/app_bar_title_padding"
+            android:paddingEnd="@dimen/app_bar_title_padding"
+            android:text="@string/subscriptions_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorSecondary" />
+            android:textColor="?android:attr/textColorPrimary" />
+
+        <ImageButton
+            android:id="@+id/home_close"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/back"
+            android:src="@drawable/ic_close"
+            android:tint="?android:attr/textColorPrimary" />
 
     </LinearLayout>
 
-</FrameLayout>
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:id="@+id/home_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="88dp" />
+
+        </ScrollView>
+
+        <!-- The contacts list's empty state, for the no-account case. -->
+        <LinearLayout
+            android:id="@+id/home_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingStart="48dp"
+            android:paddingEnd="48dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_folder_open"
+                android:tint="?android:attr/textColorSecondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:text="@string/empty_title"
+                android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+                android:textColor="?android:attr/textColorSecondary" />
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+</LinearLayout>

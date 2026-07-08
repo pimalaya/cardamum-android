@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One persistent app bar and one persistent FAB over the content
-     flipper: navigating flips only the inner content, the chrome stays
-     put. The bar carries the union of every screen's elements;
-     applyChrome (MainActivity) turns the right set on per screen. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The main column (one persistent app bar over the content flipper:
+     navigating flips only the inner content) plus two whole-frame
+     overlays sliding over it, bar included (the addressbooks drawer
+     and the auth sheet), and the one FAB fixed above everything.
+     applyChrome (MainActivity) reconfigures the chrome per screen. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
     <LinearLayout
         android:id="@+id/app_bar"
@@ -194,54 +199,42 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
-        <!-- Auth: leaves the flow (only when an account exists). -->
-        <ImageButton
-            android:id="@+id/auth_cancel"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/cancel_auth"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
     </LinearLayout>
 
-    <FrameLayout
+    <ViewFlipper
+        android:id="@+id/flipper"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <ViewFlipper
-            android:id="@+id/flipper"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent">
+        <include layout="@layout/panel_contacts" />
 
-            <include layout="@layout/panel_auth" />
+        <include layout="@layout/panel_contact" />
 
-            <include layout="@layout/panel_contacts" />
+        <include layout="@layout/panel_advanced" />
 
-            <include layout="@layout/panel_contact" />
+    </ViewFlipper>
 
-            <include layout="@layout/panel_home" />
+    </LinearLayout>
 
-            <include layout="@layout/panel_advanced" />
+    <!-- Whole-frame overlays, own bars included; child order is their
+         z-order (the auth sheet rises over the addressbooks drawer). -->
+    <include layout="@layout/panel_home" />
 
-        </ViewFlipper>
+    <include layout="@layout/panel_auth" />
 
-        <!-- The screens' primary action: add on the lists, save on the
-             editor (icon and action set per screen in applyChrome). -->
-        <ImageButton
-            android:id="@+id/fab"
-            android:layout_width="@dimen/fab"
-            android:layout_height="@dimen/fab"
-            android:layout_gravity="bottom|end"
-            android:layout_margin="@dimen/fab_margin"
-            android:background="@drawable/fab_background"
-            android:contentDescription="@string/contacts_add"
-            android:elevation="@dimen/fab_elevation"
-            android:src="@drawable/ic_add" />
+    <!-- The screens' primary action, fixed above everything: add on
+         the lists, save on the editor (icon and action per screen in
+         applyChrome). -->
+    <ImageButton
+        android:id="@+id/fab"
+        android:layout_width="@dimen/fab"
+        android:layout_height="@dimen/fab"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="@dimen/fab_margin"
+        android:background="@drawable/fab_background"
+        android:contentDescription="@string/contacts_add"
+        android:elevation="@dimen/fab_elevation"
+        android:src="@drawable/ic_add" />
 
-    </FrameLayout>
-
-</LinearLayout>
+</FrameLayout>

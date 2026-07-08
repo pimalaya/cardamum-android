@@ -61,11 +61,14 @@ import org.pimalaya.cardamum.client.ServiceConfig;
  * the Sync menu.
  */
 public class MainActivity extends Activity {
-    private static final int PANEL_AUTH = 0;
-    private static final int PANEL_CONTACTS = 1;
-    private static final int PANEL_CONTACT = 2;
+    // NOTE: contacts, contact and advanced are the content flipper's
+    // child indexes; home and auth are whole-frame overlays sliding
+    // over it, bar included (only the FAB stays above them).
+    private static final int PANEL_CONTACTS = 0;
+    private static final int PANEL_CONTACT = 1;
+    private static final int PANEL_ADVANCED = 2;
     private static final int PANEL_HOME = 3;
-    private static final int PANEL_ADVANCED = 4;
+    private static final int PANEL_AUTH = 4;
 
     /** The auth flow's steps, inside its own flipper under one bar. */
     private static final int STEP_EMAIL = 0;
@@ -135,9 +138,6 @@ public class MainActivity extends Activity {
 
     /** Action of the config option currently picked (null until one is). */
     private Runnable selectedConfig;
-
-    /** True while the auth flow adds a further account (shows a back arrow). */
-    private boolean addingAccount;
 
     /** OAuth grant in flight, between the browser redirect and its redemption. */
     private OauthSession pendingOauth;
@@ -219,6 +219,9 @@ public class MainActivity extends Activity {
     /** Whether the open contact offers the advanced raw editor. */
     private boolean advancedAvailable;
 
+    /** The screen currently shown: a flipper panel, or an overlay. */
+    private int screen = PANEL_CONTACTS;
+
     /** The advanced editor's working document; null until it opens. */
     private String advancedVcard;
 
@@ -253,9 +256,9 @@ public class MainActivity extends Activity {
 
         accounts.addAll(store.loadAll());
         if (accounts.isEmpty()) {
-            // First run: the onboarding has no way back, at least one
-            // account must be connected.
-            startAuth(false);
+            // First run: the onboarding opens over the (empty)
+            // addressbooks drawer, so backing out of it lands there.
+            startAuth();
         } else {
             // Offline first: the merged contacts root renders instantly
             // from the store, syncs are manual (the Sync menu).
@@ -277,14 +280,15 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Enters the connection flow. The bar's cross only exists when an
-     * account is already configured (adding); the first-run onboarding
-     * starts with no account, so it has no way out.
+     * Enters the connection flow. The sheet always rises over the
+     * addressbooks drawer (opened first when not already there), so
+     * backing out of the flow always lands on the listing, empty or
+     * not; only finishing the flow lands on the contacts root.
      */
-    private void startAuth(boolean adding) {
-        // With no account stored the flow has no way out, wherever it
-        // was entered from: no cross, no back arrow on the welcome.
-        addingAccount = adding && !accounts.isEmpty();
+    private void startAuth() {
+        if (screen != PANEL_HOME) {
+            openBooksManager();
+        }
         pendingEmail = null;
         searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
@@ -309,7 +313,7 @@ public class MainActivity extends Activity {
      * transition).
      */
     private void showAuth(int step, boolean back) {
-        boolean inside = flipper.getDisplayedChild() == PANEL_AUTH;
+        boolean inside = screen == PANEL_AUTH;
         if (inside) {
             hideKeyboard();
             authFlipper.setInAnimation(this, back ? R.anim.slide_in_left : R.anim.slide_in_right);
@@ -324,7 +328,8 @@ public class MainActivity extends Activity {
         if (inside) {
             applyChrome(PANEL_AUTH);
         } else {
-            show(PANEL_AUTH);
+            // The flow rises over the current screen like a sheet.
+            openOverlay(PANEL_AUTH);
         }
     }
 
@@ -336,11 +341,7 @@ public class MainActivity extends Activity {
      */
     private void applyAuthChrome() {
         int step = authFlipper.getDisplayedChild();
-        findViewById(R.id.bar_back)
-                .setVisibility(step == STEP_EMAIL && !addingAccount ? View.GONE : View.VISIBLE);
-        findViewById(R.id.auth_cancel)
-                .setVisibility(addingAccount ? View.VISIBLE : View.GONE);
-        ((TextView) findViewById(R.id.bar_title))
+        ((TextView) findViewById(R.id.auth_title))
                 .setText(
                         step == STEP_EMAIL
                                 ? R.string.auth_step_email
@@ -360,8 +361,19 @@ public class MainActivity extends Activity {
             showAuthBack(STEP_EMAIL);
         } else {
             // The email step is only reachable when adding an account.
-            goHome();
+            cancelAuth();
         }
+    }
+
+    /**
+     * Leaves the auth flow without finishing: the sheet slides down
+     * onto the addressbooks drawer it always rises over. Only
+     * finishing the whole flow lands on the contacts root.
+     */
+    private void cancelAuth() {
+        closeOverlay(PANEL_AUTH);
+        screen = PANEL_HOME;
+        applyChrome(PANEL_HOME);
     }
 
     /** The account entry matching an email, or null. */
@@ -389,19 +401,14 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (flipper.getDisplayedChild() == PANEL_CONTACTS && selectionMode) {
+        if (screen == PANEL_CONTACTS && selectionMode) {
             exitSelection();
             return;
         }
 
-        switch (flipper.getDisplayedChild()) {
+        switch (screen) {
             case PANEL_AUTH:
-                if (authFlipper.getDisplayedChild() == STEP_EMAIL && !addingAccount) {
-                    // The first-run onboarding has no way back.
-                    super.onBackPressed();
-                } else {
-                    authBack();
-                }
+                authBack();
                 break;
             case PANEL_CONTACTS:
                 if (searchOpen) {
@@ -433,21 +440,41 @@ public class MainActivity extends Activity {
 
         contacts = loadEntries();
         renderContacts();
-        // Landing on the root is always a return.
-        showBack(PANEL_CONTACTS);
+
+        // Landing on the root is always a return, but the overlays
+        // leave their own way: the addressbooks drawer back out to the
+        // left, the auth sheet back down, the root staying put.
+        if (screen == PANEL_AUTH) {
+            // A drawer beneath the sheet just goes: the sheet's slide
+            // down reveals the root directly.
+            findViewById(R.id.overlay_home).setVisibility(View.GONE);
+            closeOverlay(PANEL_AUTH);
+            screen = PANEL_CONTACTS;
+            applyChrome(PANEL_CONTACTS);
+        } else if (screen == PANEL_HOME) {
+            closeOverlay(PANEL_HOME);
+            screen = PANEL_CONTACTS;
+            applyChrome(PANEL_CONTACTS);
+        } else {
+            showBack(PANEL_CONTACTS);
+        }
     }
 
-    /** Refreshes the addressbooks management screen and shows it. */
+    /**
+     * Refreshes the addressbooks management screen and slides it over
+     * the contacts list like a drawer (the list stays put).
+     */
     private void openBooksManager() {
         reloadHome();
-        show(PANEL_HOME);
+        openOverlay(PANEL_HOME);
     }
 
     // ---- Connection screen --------------------------------------------------
 
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
-        findViewById(R.id.auth_cancel).setOnClickListener(view -> goHome());
+        findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
+        findViewById(R.id.auth_cancel).setOnClickListener(view -> cancelAuth());
         findViewById(R.id.config_continue)
                 .setOnClickListener(
                         view -> {
@@ -1464,7 +1491,7 @@ public class MainActivity extends Activity {
         // cancelled the grant) must not leave the config Continue stuck
         // on its loader; a real redirect re-enters loading right after.
         if (flipper != null
-                && flipper.getDisplayedChild() == PANEL_AUTH
+                && screen == PANEL_AUTH
                 && authFlipper.getDisplayedChild() == STEP_CONFIG) {
             resetConfigContinue();
         }
@@ -1473,6 +1500,9 @@ public class MainActivity extends Activity {
     // ---- Addressbooks management screen -----------------------------------------
 
     private void setUpHomePanel() {
+        // The arrow and the cross both close the drawer.
+        findViewById(R.id.home_back).setOnClickListener(view -> goHome());
+        findViewById(R.id.home_close).setOnClickListener(view -> goHome());
     }
 
     /**
@@ -2393,7 +2423,7 @@ public class MainActivity extends Activity {
     private void addContact() {
         // No account yet: the plus leads straight into onboarding.
         if (accounts.isEmpty()) {
-            startAuth(false);
+            startAuth();
             return;
         }
 
@@ -2851,7 +2881,7 @@ public class MainActivity extends Activity {
         hideKeyboard();
         // The chrome only moves when the contacts screen shows it (a
         // sync landing while another screen is open also ends here).
-        if (flipper.getDisplayedChild() != PANEL_CONTACTS) {
+        if (screen != PANEL_CONTACTS) {
             return;
         }
         findViewById(R.id.contacts_search_pill).setVisibility(View.GONE);
@@ -2868,7 +2898,7 @@ public class MainActivity extends Activity {
      * contacts screen shows; applyChrome re-runs it on every return).
      */
     private void updateSelectionUi() {
-        if (flipper.getDisplayedChild() != PANEL_CONTACTS) {
+        if (screen != PANEL_CONTACTS) {
             return;
         }
 
@@ -3573,11 +3603,62 @@ public class MainActivity extends Activity {
     }
 
     private void show(int panel, boolean back) {
+        show(
+                panel,
+                back ? R.anim.slide_in_left : R.anim.slide_in_right,
+                back ? R.anim.slide_out_right : R.anim.slide_out_left);
+    }
+
+    private void show(int panel, int inAnim, int outAnim) {
         hideKeyboard();
-        flipper.setInAnimation(this, back ? R.anim.slide_in_left : R.anim.slide_in_right);
-        flipper.setOutAnimation(this, back ? R.anim.slide_out_right : R.anim.slide_out_left);
+        flipper.setInAnimation(this, inAnim);
+        flipper.setOutAnimation(this, outAnim);
         flipper.setDisplayedChild(panel);
+        screen = panel;
         applyChrome(panel);
+    }
+
+    /**
+     * Slides a whole-frame overlay (its own bar included) over the
+     * current screen: the addressbooks drawer from the left, the auth
+     * sheet from the bottom. What is underneath stays put.
+     */
+    private void openOverlay(int panel) {
+        hideKeyboard();
+        View overlay =
+                findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
+        overlay.setVisibility(View.VISIBLE);
+        overlay.startAnimation(
+                android.view.animation.AnimationUtils.loadAnimation(
+                        this,
+                        panel == PANEL_HOME ? R.anim.slide_in_left : R.anim.slide_in_up));
+        screen = panel;
+        applyChrome(panel);
+    }
+
+    /** Slides a whole-frame overlay back out, then hides it. */
+    private void closeOverlay(int panel) {
+        hideKeyboard();
+        View overlay =
+                findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
+        android.view.animation.Animation exit =
+                android.view.animation.AnimationUtils.loadAnimation(
+                        this,
+                        panel == PANEL_HOME ? R.anim.slide_out_left : R.anim.slide_out_down);
+        exit.setAnimationListener(
+                new android.view.animation.Animation.AnimationListener() {
+                    @Override
+                    public void onAnimationStart(android.view.animation.Animation animation) {}
+
+                    @Override
+                    public void onAnimationRepeat(android.view.animation.Animation animation) {}
+
+                    @Override
+                    public void onAnimationEnd(android.view.animation.Animation animation) {
+                        overlay.setVisibility(View.GONE);
+                    }
+                });
+        overlay.startAnimation(exit);
     }
 
     /**
@@ -3586,6 +3667,23 @@ public class MainActivity extends Activity {
      * (the contacts screen delegates to its selection/search state).
      */
     private void applyChrome(int panel) {
+        android.widget.ImageButton fab = findViewById(R.id.fab);
+
+        // The overlays carry their own bars; only the FAB is shared.
+        if (panel == PANEL_AUTH) {
+            // The steps carry their own continue FABs (the email one
+            // rides in a row with its field).
+            fab.setVisibility(View.GONE);
+            applyAuthChrome();
+            return;
+        }
+        if (panel == PANEL_HOME) {
+            fab.setImageResource(R.drawable.ic_add);
+            fab.setContentDescription(getString(R.string.add_account));
+            fab.setVisibility(View.VISIBLE);
+            return;
+        }
+
         for (int id :
                 new int[] {
                     R.id.bar_back,
@@ -3599,7 +3697,6 @@ public class MainActivity extends Activity {
                     R.id.contacts_sync_slot,
                     R.id.contact_advanced,
                     R.id.contact_books,
-                    R.id.auth_cancel,
                 }) {
             findViewById(id).setVisibility(View.GONE);
         }
@@ -3607,15 +3704,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
 
         TextView title = findViewById(R.id.bar_title);
-        android.widget.ImageButton fab = findViewById(R.id.fab);
-
         switch (panel) {
-            case PANEL_AUTH:
-                // The steps carry their own continue FABs (the email
-                // one rides in a row with its field).
-                fab.setVisibility(View.GONE);
-                applyAuthChrome();
-                break;
             case PANEL_CONTACTS:
                 fab.setImageResource(R.drawable.ic_add);
                 fab.setContentDescription(getString(R.string.contacts_add));
@@ -3633,13 +3722,6 @@ public class MainActivity extends Activity {
                 fab.setContentDescription(getString(R.string.contact_save));
                 fab.setVisibility(View.VISIBLE);
                 break;
-            case PANEL_HOME:
-                title.setText(R.string.subscriptions_title);
-                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                fab.setImageResource(R.drawable.ic_add);
-                fab.setContentDescription(getString(R.string.add_account));
-                fab.setVisibility(View.VISIBLE);
-                break;
             case PANEL_ADVANCED:
                 title.setText(R.string.advanced_title);
                 findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
@@ -3652,7 +3734,7 @@ public class MainActivity extends Activity {
 
     /** The shared FAB's action, per screen. */
     private void onFabClick() {
-        switch (flipper.getDisplayedChild()) {
+        switch (screen) {
             case PANEL_CONTACTS:
                 addContact();
                 break;
@@ -3660,27 +3742,21 @@ public class MainActivity extends Activity {
                 saveContact();
                 break;
             case PANEL_HOME:
-                startAuth(true);
+                startAuth();
                 break;
             default:
                 break;
         }
     }
 
-    /** The shared back arrow's action, per screen. */
+    /** The main bar's back arrow, per screen (overlays have their own). */
     private void onBarBack() {
-        switch (flipper.getDisplayedChild()) {
-            case PANEL_AUTH:
-                authBack();
-                break;
+        switch (screen) {
             case PANEL_CONTACT:
                 closeContact();
                 break;
             case PANEL_ADVANCED:
                 closeAdvanced();
-                break;
-            case PANEL_HOME:
-                goHome();
                 break;
             default:
                 break;
