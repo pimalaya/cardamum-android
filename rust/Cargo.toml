@@ -1,10 +1,6 @@
-# Cardamum JNI bridge: a cdylib driving pimconf discovery and io-webdav
-# CardDAV coroutines for the Android :client module. Scoped to the
-# client; the :app module never depends on it.
-
 [package]
 name = "cardamum"
-description = "JNI bridge driving pimconf and io-webdav coroutines for the Cardamum Android client"
+description = "JNI bridge driving Pimalaya I/O-free coroutines for the Cardamum Android client"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
@@ -30,14 +26,12 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 url = { version = "2", default-features = false }
 vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] }
 
-# The Pimalaya crates live in sibling repos and are wired locally (they
-# resolve via git, not crates.io); patch them to the checkouts next door.
 [patch.crates-io]
-io-google-people = { path = "../../io-google-people" }
-io-http = { path = "../../io-http" }
-io-jmap = { path = "../../io-jmap" }
-io-msgraph = { path = "../../io-msgraph" }
-io-oauth = { path = "../../io-oauth" }
-io-webdav = { path = "../../io-webdav" }
-pimconf = { path = "../../pimconf" }
-vcard-rs = { path = "../../vcard-rs" }
+io-google-people.git = "https://github.com/pimalaya/io-google-people"
+io-http.git = "https://github.com/pimalaya/io-http"
+io-jmap.git = "https://github.com/pimalaya/io-jmap"
+io-msgraph.git = "https://github.com/pimalaya/io-msgraph"
+io-oauth.git = "https://github.com/pimalaya/io-oauth"
+io-webdav.git = "https://github.com/pimalaya/io-webdav"
+pimconf.git = "https://github.com/pimalaya/pimconf"
+vcard-rs.git = "https://github.com/pimalaya/vcard"
