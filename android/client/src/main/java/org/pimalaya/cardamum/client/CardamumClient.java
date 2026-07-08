@@ -542,6 +542,16 @@ public class CardamumClient {
     }
 
     /**
+     * Finds groups of likely-duplicate cards among {@code {ref,
+     * vcard}} pairs: exact normalized email, phone or full-name
+     * matches, conservative on purpose. Pure computation, no
+     * transport.
+     */
+    public JSONArray findDuplicates(JSONArray cards) {
+        return object(Native.findDuplicates(cards.toString())).optJSONArray("groups");
+    }
+
+    /**
      * Lists the card's raw property lines for the advanced editor, in
      * source order, unfolded. Pure computation, no transport.
      */

@@ -167,6 +167,14 @@ final class Native {
     static native String setCardUid(String vcard, String uid);
 
     /**
+     * Finds groups of likely-duplicate cards (exact normalized email,
+     * phone or name matches); pure computation, no transport. Takes a
+     * JSON array of {@code {ref, vcard}} pairs, returns
+     * {@code {"groups": [{"refs": [...], "reasons": [...]}]}}.
+     */
+    static native String findDuplicates(String cards);
+
+    /**
      * Lists the card's raw property lines for the advanced editor;
      * pure computation, no transport. Returns
      * {@code {"props": ["VERSION:4.0", ...]}}.

@@ -2473,7 +2473,199 @@ public class MainActivity extends Activity {
                             popup.dismiss();
                             syncLocal();
                         });
+        content.findViewById(R.id.menu_find_duplicates)
+                .setOnClickListener(
+                        view -> {
+                            popup.dismiss();
+                            findDuplicates();
+                        });
         popup.showAsDropDown(anchor);
+    }
+
+    // ---- Duplicate remover ---------------------------------------------------
+
+    /**
+     * Scans every replica for likely duplicates (exact normalized
+     * email, phone or full-name matches, computed by the bridge) and
+     * reviews the groups one by one. Dismissed groups are remembered
+     * and never proposed again.
+     */
+    private void findDuplicates() {
+        Map<String, Entry> byRef = new HashMap<>();
+        org.json.JSONArray cards = new org.json.JSONArray();
+        try {
+            for (Entry entry : contacts) {
+                String ref = replicaRefOf(entry);
+                if (byRef.putIfAbsent(ref, entry) == null) {
+                    cards.put(new JSONObject().put("ref", ref).put("vcard", entry.card.vcard));
+                }
+            }
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
+        }
+
+        io.execute(
+                () -> {
+                    List<List<Entry>> groups = new ArrayList<>();
+                    Exception failure = null;
+                    try {
+                        org.json.JSONArray found = client.findDuplicates(cards);
+                        for (int index = 0; found != null && index < found.length(); index++) {
+                            org.json.JSONArray refs =
+                                    found.optJSONObject(index).optJSONArray("refs");
+                            List<Entry> members = new ArrayList<>();
+                            for (int at = 0; refs != null && at < refs.length(); at++) {
+                                Entry entry = byRef.get(refs.optString(at));
+                                if (entry != null) {
+                                    members.add(entry);
+                                }
+                            }
+                            if (members.size() >= 2
+                                    && !base.isDuplicateDismissed(duplicateKey(members))) {
+                                groups.add(members);
+                            }
+                        }
+                    } catch (Exception error) {
+                        Log.w("cardamum", "duplicate scan failed", error);
+                        failure = error;
+                    }
+
+                    List<List<Entry>> pending = groups;
+                    Exception scanFailure = failure;
+                    main.post(
+                            () -> {
+                                if (scanFailure != null) {
+                                    showError(scanFailure, R.string.dup_none);
+                                    return;
+                                }
+                                if (pending.isEmpty()) {
+                                    toast(getString(R.string.dup_none));
+                                } else {
+                                    reviewDuplicate(pending, 0);
+                                }
+                            });
+                });
+    }
+
+    /**
+     * Reviews one duplicate group: Ignore remembers the dismissal and
+     * walks on, Merge runs the normal merge flow (and ends the review,
+     * the form needs the screen), Link makes the cards one contact by
+     * sharing a UID, offered only when every card lives in its own
+     * addressbook (servers enforce UID uniqueness per collection).
+     */
+    private void reviewDuplicate(List<List<Entry>> groups, int index) {
+        if (index >= groups.size()) {
+            toast(getString(R.string.dup_done));
+            return;
+        }
+
+        List<Entry> members = groups.get(index);
+        StringBuilder lines = new StringBuilder();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Entry entry : members) {
+            if (!seen.add(replicaRefOf(entry))) {
+                continue;
+            }
+            if (lines.length() > 0) {
+                lines.append('\n');
+            }
+            lines.append(displayName(entry))
+                    .append(" · ")
+                    .append(bookLabel(entry.book.name, entry.accountEmail));
+        }
+
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(this)
+                        .setTitle(getString(R.string.dup_title, index + 1, groups.size()))
+                        .setMessage(lines.toString())
+                        .setPositiveButton(
+                                R.string.dup_merge,
+                                (dialog, which) -> mergeReplicas(members))
+                        .setNegativeButton(
+                                R.string.dup_ignore,
+                                (dialog, which) -> {
+                                    base.dismissDuplicate(duplicateKey(members));
+                                    reviewDuplicate(groups, index + 1);
+                                });
+        if (linkable(members)) {
+            builder.setNeutralButton(
+                    R.string.dup_link,
+                    (dialog, which) -> {
+                        linkDuplicates(members);
+                        reviewDuplicate(groups, index + 1);
+                    });
+        }
+        builder.show();
+    }
+
+    /** The group's dismissal key: its sorted replica refs. */
+    private String duplicateKey(List<Entry> members) {
+        List<String> refs = new ArrayList<>();
+        for (Entry entry : members) {
+            if (!refs.contains(replicaRefOf(entry))) {
+                refs.add(replicaRefOf(entry));
+            }
+        }
+        java.util.Collections.sort(refs);
+        return String.join("", refs);
+    }
+
+    /**
+     * Whether the group can Link: at least two cards, each in its own
+     * addressbook (a same-book pair sharing a UID would collide).
+     */
+    private boolean linkable(List<Entry> members) {
+        Map<String, String> refByBook = new HashMap<>();
+        java.util.Set<String> refs = new java.util.HashSet<>();
+        for (Entry entry : members) {
+            String ref = replicaRefOf(entry);
+            refs.add(ref);
+            String other = refByBook.putIfAbsent(entry.book.url, ref);
+            if (other != null && !other.equals(ref)) {
+                return false;
+            }
+        }
+        return refs.size() >= 2;
+    }
+
+    /**
+     * Links the cards into one contact by staging the same UID on all
+     * of them; transparent UID grouping does the rest.
+     */
+    private void linkDuplicates(List<Entry> members) {
+        String uid = "";
+        for (Entry entry : members) {
+            if (!entry.uid.isEmpty()) {
+                uid = entry.uid;
+                break;
+            }
+        }
+        if (uid.isEmpty()) {
+            uid = UUID.randomUUID().toString();
+        }
+
+        try {
+            java.util.Set<String> staged = new java.util.HashSet<>();
+            for (Entry entry : members) {
+                if (!staged.add(replicaRefOf(entry)) || uid.equals(entry.uid)) {
+                    continue;
+                }
+                AccountEntry owner = accountFor(entry.accountEmail);
+                if (owner == null) {
+                    continue;
+                }
+                String vcard = client.setCardUid(entry.card.vcard, uid);
+                base.saveLocal(
+                        entry.accountEmail,
+                        cardKey(owner.account, entry.book.url, entry.card.id),
+                        entry.book.url,
+                        new Card(entry.card.id, entry.card.uri, entry.card.etag, vcard));
+            }
+        } catch (Exception error) {
+            showError(error, R.string.save_failed);
+        }
+        reloadContacts();
     }
 
     /**
@@ -2739,7 +2931,11 @@ public class MainActivity extends Activity {
      * content onto the surviving card and a delete for every other.
      */
     private void mergeSelected() {
-        List<Entry> replicas = selectedReplicas();
+        mergeReplicas(selectedReplicas());
+    }
+
+    /** The survivor chooser over any replica list, then the merge. */
+    private void mergeReplicas(List<Entry> replicas) {
         if (distinctRefs(replicas).size() < 2) {
             return;
         }

@@ -19,7 +19,8 @@ use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
     project::{
-        apply, card_props, card_set_prop, index, merge_cards, merge_conflict, project, set_uid,
+        apply, card_props, card_set_prop, find_duplicates, index, merge_cards, merge_conflict,
+        project, set_uid,
     },
     types::Credentials,
 };
@@ -1250,6 +1251,33 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_setCardUid<'loca
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.findDuplicates`: finds groups of likely-duplicate cards
+/// (exact normalized email, phone or name matches) for the duplicate
+/// remover; pure computation, no transport. Takes a JSON array of
+/// `{"ref", "vcard"}` pairs, returns
+/// `{"groups": [{"refs": [...], "reasons": [...]}]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_findDuplicates<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    cards: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let cards = read_string(env, &cards);
+
+        let json = match parse_ref_cards(&cards) {
+            Err(err) => error_json(&err),
+            Ok(cards) => match find_duplicates(&cards) {
+                Ok(found) => found.to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// `Native.cardProps`: lists the card's raw property lines for the
 /// advanced editor; pure computation, no transport. Returns
 /// `{"props": ["VERSION:4.0", ...]}`.
@@ -1387,6 +1415,31 @@ fn parse_books(raw: &str) -> Result<Vec<String>, String> {
 /// Parses a JSON string array of vCards.
 fn parse_strings(raw: &str) -> Result<Vec<String>, String> {
     serde_json::from_str(raw).map_err(|err| format!("Invalid vCard list: {err}"))
+}
+
+/// Parses a JSON array of `{"ref", "vcard"}` pairs.
+fn parse_ref_cards(raw: &str) -> Result<Vec<(String, String)>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|err| format!("Invalid card list: {err}"))?;
+    let Some(entries) = value.as_array() else {
+        return Err("Invalid card list: not an array".into());
+    };
+
+    let mut cards = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let reference = entry
+            .get("ref")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let vcard = entry
+            .get("vcard")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        cards.push((reference, vcard));
+    }
+    Ok(cards)
 }
 
 fn etag_json(etag: Option<String>) -> String {
