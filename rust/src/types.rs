@@ -25,6 +25,19 @@ pub struct Addressbook {
     pub color: Option<String>,
 }
 
+/// Incremental changes of one collection since a sync cursor: the
+/// changed cards (spine-only or full, per backend), the removed
+/// resource names, and the next cursor to checkpoint.
+#[derive(Serialize)]
+pub struct CardDelta {
+    /// Cards created or updated since the cursor.
+    pub changed: Vec<Card>,
+    /// Resource names removed since the cursor.
+    pub vanished: Vec<String>,
+    /// The next cursor, when the backend issued one.
+    pub token: Option<String>,
+}
+
 /// One vCard surfaced to the Java client.
 #[derive(Serialize)]
 pub struct Card {

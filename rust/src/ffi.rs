@@ -7,22 +7,24 @@
 //! null string rather than throwing. Every reply is JSON; failures are
 //! `{"error": ".."}`.
 
+use io_webdav::rfc6578::sync_collection::SyncDelta;
 use jni::{
     Env, EnvUnowned,
     errors::{Error, LogErrorAndDefault},
     objects::{JClass, JObject, JString},
-    sys::jint,
+    sys::{jboolean, jint},
 };
 use url::Url;
 
 use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
+    offline,
     project::{
         apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
         find_duplicates, index, merge_cards, merge_conflict, project, set_uid,
     },
-    types::Credentials,
+    types::{Card, CardDelta, Credentials},
 };
 
 /// `Native.discover`: resolves the email's domain to a CardDAV context
@@ -196,6 +198,70 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRequestAcce
             ) {
                 Ok(tokens) => serde_json::to_string(&tokens)
                     .unwrap_or_else(|err| error_json(&err.to_string())),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthServerMetadata`: fetches an authorization server's
+/// RFC 8414 metadata from its issuer (the `oauth-authorization-server`
+/// well-known, falling back to the OpenID Connect Discovery document).
+/// Returns the metadata JSON (issuer, endpoints, `registration_endpoint`
+/// when the server supports RFC 7591, grants, scopes).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthServerMetadata<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    issuer: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let issuer = read_string(env, &issuer);
+
+        let json = match parse_url(&issuer) {
+            Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).oauth_server_metadata(&url) {
+                Ok(metadata) => serde_json::to_string(&metadata)
+                    .unwrap_or_else(|err| error_json(&err.to_string())),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthRegisterClient`: registers a public client at an
+/// RFC 7591 registration endpoint (`token_endpoint_auth_method: none`,
+/// the given redirect URI, code + refresh grants, client name and
+/// scope). Returns `{"client_id": "..", "client_secret": ".." | null}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRegisterClient<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    registration_endpoint: JString<'local>,
+    redirect_uri: JString<'local>,
+    client_name: JString<'local>,
+    scope: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let registration_endpoint = read_string(env, &registration_endpoint);
+        let redirect_uri = read_string(env, &redirect_uri);
+        let client_name = read_string(env, &client_name);
+        let scope = read_string(env, &scope);
+
+        let params = oauth_register_params(&redirect_uri, &client_name, &scope);
+
+        let json = match parse_url(&registration_endpoint) {
+            Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).oauth_register_client(&url, &params) {
+                Ok(client) => client_information_json(&client),
                 Err(err) => error_json(&err),
             },
         };
@@ -476,6 +542,321 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCard<'loca
                     Err(err) => error_json(&err),
                 }
             }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.enumCards`: enumerates the card spine (resource name plus
+/// ETag, no body) of the addressbook collection. Returns a JSON array
+/// of `{id, uri, etag}` objects.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_enumCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    addressbook_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let addressbook_url = read_string(env, &addressbook_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match parse_url(&addressbook_url) {
+            Err(err) => error_json(&err),
+            Ok(url) => match Client::new(env, &transport).enum_cards(&url, &credentials) {
+                Ok(refs) => {
+                    let refs: Vec<serde_json::Value> = refs
+                        .into_iter()
+                        .map(|entry| {
+                            serde_json::json!({
+                                "id": entry.id,
+                                "uri": entry.uri,
+                                "etag": entry.etag,
+                            })
+                        })
+                        .collect();
+                    serde_json::Value::Array(refs).to_string()
+                }
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.syncCards`: runs a `sync-collection` REPORT (RFC 6578)
+/// against the addressbook collection, delta from the given sync token
+/// (empty for an initial sync). Returns `{"changed": [{id, uri,
+/// etag}], "vanished": [uri], "token": ".."}`, or
+/// `{"invalidToken": true}` when the server rejected the token so the
+/// caller falls back to a full enumeration.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    addressbook_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    sync_token: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let addressbook_url = read_string(env, &addressbook_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let sync_token = read_string(env, &sync_token);
+        let sync_token = (!sync_token.is_empty()).then_some(sync_token.as_str());
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match parse_url(&addressbook_url) {
+            Err(err) => error_json(&err),
+            Ok(url) => {
+                match Client::new(env, &transport).sync_cards(&url, &credentials, sync_token) {
+                    Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
+                    Ok(Some(delta)) => sync_delta_json(delta),
+                    Err(err) => error_json(&err),
+                }
+            }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.multigetCards`: batch-fetches the cards at the given
+/// resource names (a JSON string array) inside the addressbook
+/// collection via REPORT `addressbook-multiget`. Returns a JSON array
+/// of `{id, uri, etag, vcard}` objects.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_multigetCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    addressbook_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    uris: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let addressbook_url = read_string(env, &addressbook_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let uris = read_string(env, &uris);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match (parse_url(&addressbook_url), parse_strings(&uris)) {
+            (Err(err), _) | (_, Err(err)) => error_json(&err),
+            (Ok(url), Ok(uris)) => {
+                let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
+                match Client::new(env, &transport).multiget_cards(&url, &credentials, &uris) {
+                    Ok(cards) => serde_json::to_string(&cards)
+                        .unwrap_or_else(|err| error_json(&err.to_string())),
+                    Err(err) => error_json(&err),
+                }
+            }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.changesJmapCards`: lists the ContactCard changes since the
+/// given state (empty runs the initial round: every card plus the
+/// state to delta from). Returns `{"changed": [{id, uri, etag, vcard,
+/// books}], "vanished": [id], "token": ".."}`, or
+/// `{"invalidToken": true}` when the server can no longer compute
+/// changes from the state.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_changesJmapCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    session_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    state: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let session_url = read_string(env, &session_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let state = read_string(env, &state);
+        let state = (!state.is_empty()).then_some(state.as_str());
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match parse_url(&session_url) {
+            Err(err) => error_json(&err),
+            Ok(url) => {
+                match Client::new(env, &transport).changes_jmap_cards(&url, &credentials, state) {
+                    Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
+                    Ok(Some(delta)) => delta_json(delta),
+                    Err(err) => error_json(&err),
+                }
+            }
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.deltaGraphCards`: lists the Graph contact changes since the
+/// given delta link (empty runs the initial round: every contact plus
+/// the link to delta from). Rows carry the id and changeKey only.
+/// Returns the same shape as `changesJmapCards`, `invalidToken` when
+/// the server expired the link.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deltaGraphCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    folder: JString<'local>,
+    delta_link: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let folder = read_string(env, &folder);
+        let delta_link = read_string(env, &delta_link);
+        let delta_link = (!delta_link.is_empty()).then_some(delta_link.as_str());
+
+        let json = match Client::new(env, &transport).delta_graph_cards(&token, &folder, delta_link)
+        {
+            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
+            Ok(Some(delta)) => delta_json(delta),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.syncGoogleCards`: lists the People contact changes since
+/// the given sync token (empty runs the initial round: every contact
+/// plus the token to delta from). Returns the same shape as
+/// `changesJmapCards`, `invalidToken` when the server expired the
+/// token.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncGoogleCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    token: JString<'local>,
+    sync_token: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let token = read_string(env, &token);
+        let sync_token = read_string(env, &sync_token);
+        let sync_token = (!sync_token.is_empty()).then_some(sync_token.as_str());
+
+        let json = match Client::new(env, &transport).sync_google_cards(&token, sync_token) {
+            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
+            Ok(Some(delta)) => delta_json(delta),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineSync`: reconciles the collection with its remote
+/// through the io-offline engine, servicing every engine yield via the
+/// given `OfflineDriver`. With `full` the checkpoint is ignored and the
+/// whole remote is enumerated. Returns the sync report
+/// `{"pulled", "pushed", "conflicts", "rejected", "refreshed"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineSync<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    driver: JObject<'local>,
+    collection: JString<'local>,
+    full: jboolean,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let collection = read_string(env, &collection);
+
+        let json = match offline::sync(env, &driver, &collection, full) {
+            Ok(report) => report.to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineUpgrade`: raises the given handles (a JSON string
+/// array) to the full detail tier through the io-offline engine,
+/// servicing every engine yield via the given `OfflineDriver`. Returns
+/// the upgrade report `{"upgraded", "fetched", "deduped"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineUpgrade<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    driver: JObject<'local>,
+    collection: JString<'local>,
+    handles: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let collection = read_string(env, &collection);
+        let handles = read_string(env, &handles);
+
+        let json = match parse_strings(&handles) {
+            Err(err) => error_json(&err),
+            Ok(handles) => match offline::upgrade(env, &driver, &collection, handles) {
+                Ok(report) => report.to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineMutate`: stages a local mutation (a JSON object,
+/// e.g. `{"op": "edit", "handle", "hash", "size", "body", "meta"}`)
+/// through the io-offline engine, servicing the storage yields via the
+/// given `OfflineDriver`; the remote is never touched. Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineMutate<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    driver: JObject<'local>,
+    collection: JString<'local>,
+    mutation: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let collection = read_string(env, &collection);
+        let mutation = read_string(env, &mutation);
+
+        let json = match offline::mutate(env, &driver, &collection, &mutation) {
+            Ok(()) => "{}".to_string(),
+            Err(err) => error_json(&err),
         };
 
         Ok(env.new_string(json)?.into())
@@ -1509,6 +1890,97 @@ fn parse_ref_cards(raw: &str) -> Result<Vec<(String, String)>, String> {
         cards.push((reference, vcard));
     }
     Ok(cards)
+}
+
+/// Serializes any backend's delta.
+fn delta_json(delta: CardDelta) -> String {
+    serde_json::to_string(&delta).unwrap_or_else(|err| error_json(&err.to_string()))
+}
+
+/// Serializes a sync-collection delta, mapping each member href to its
+/// resource name (the collection's own href, when a server lists it,
+/// yields an empty name and is skipped).
+fn sync_delta_json(delta: SyncDelta) -> String {
+    let changed = delta
+        .changed
+        .into_iter()
+        .filter_map(|change| {
+            let uri = href_resource(&change.href)?;
+            Some(Card {
+                id: uri.trim_end_matches(".vcf").to_string(),
+                uri,
+                etag: change.etag,
+                vcard: String::new(),
+                books: Vec::new(),
+            })
+        })
+        .collect();
+    let vanished = delta
+        .vanished
+        .iter()
+        .filter_map(|href| href_resource(href))
+        .collect();
+
+    delta_json(CardDelta {
+        changed,
+        vanished,
+        token: delta.sync_token,
+    })
+}
+
+/// The last non-empty path segment of a member href, i.e. its resource
+/// name; [`None`] for the collection itself (trailing slash).
+fn href_resource(href: &str) -> Option<String> {
+    let name = href.trim_end_matches('/');
+    let name = &name[name.rfind('/').map_or(0, |slash| slash + 1)..];
+
+    if name.is_empty() || href.ends_with('/') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Public-client registration params: a loopback redirect, no secret,
+/// the code and refresh grants the app drives.
+fn oauth_register_params(
+    redirect_uri: &str,
+    client_name: &str,
+    scope: &str,
+) -> io_oauth::v2_0::rfc7591::client_registration::Oauth20RegisterClientParams {
+    use io_oauth::v2_0::rfc7591::client_registration::Oauth20RegisterClientParams;
+
+    Oauth20RegisterClientParams {
+        redirect_uris: vec![redirect_uri.to_string()],
+        token_endpoint_auth_method: Some("none".to_string()),
+        grant_types: vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
+        response_types: vec!["code".to_string()],
+        client_name: (!client_name.is_empty()).then(|| client_name.to_string()),
+        scope: (!scope.is_empty()).then(|| scope.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Serializes the issued client information, exposing the secret only
+/// when the server returned one.
+// SAFETY: exposes the client secret, which a public-client
+// registration should not carry.
+fn client_information_json(
+    client: &io_oauth::v2_0::rfc7591::client_registration::Oauth20ClientInformation,
+) -> String {
+    use secrecy::ExposeSecret;
+
+    let secret = client
+        .client_secret
+        .as_ref()
+        .map(|secret| secret.expose_secret());
+    serde_json::json!({
+        "client_id": client.client_id,
+        "client_secret": secret,
+    })
+    .to_string()
 }
 
 fn etag_json(etag: Option<String>) -> String {

@@ -41,6 +41,7 @@
     <string name="oauth_port_invalid">Enter a valid port number</string>
     <string name="oauth_port_taken">Could not bind the loopback port; try another</string>
     <string name="oauth_loopback_done">Signed in. You can close this tab and return to Cardamum.</string>
+    <string name="oauth_metadata_incomplete">The server\'s OAuth metadata is missing an endpoint</string>
 
     <string name="password_title">Sign in</string>
     <string name="password_server">%1$s at %2$s</string>

@@ -41,10 +41,14 @@ use io_http::{
 };
 use io_jmap::{
     coroutine::{JmapCoroutine, JmapCoroutineState, JmapYield},
-    rfc8620::{JmapSession, coroutine::JmapRedirectYield, session_get::*},
+    rfc8620::{
+        JmapMethodError, JmapSession, changes::*, coroutine::JmapRedirectYield, session_get::*,
+    },
     rfc9610::{
         address_book::{JmapAddressBook, get::*},
-        contact_card::{JmapContactCard, JmapContactCardPatch, get::*, query::*, set::*},
+        contact_card::{
+            JmapContactCard, JmapContactCardPatch, changes::*, get::*, query::*, set::*,
+        },
     },
 };
 use io_msgraph::{
@@ -53,9 +57,10 @@ use io_msgraph::{
         rest::users::{
             contact_folders::{MsgraphContactFoldersListResponse, list::MsgraphContactFoldersList},
             contacts::{
-                MsgraphContact, MsgraphContactsListResponse,
+                MsgraphContact, MsgraphContactsDeltaResponse, MsgraphContactsListResponse,
                 create::MsgraphContactCreate,
                 delete::MsgraphContactDelete,
+                delta::MsgraphContactsDelta,
                 get::MsgraphContactGet,
                 list::{MsgraphContactsList, MsgraphContactsListParams},
                 update::MsgraphContactUpdate,
@@ -74,20 +79,28 @@ use io_oauth::v2_0::{
     refresh_access_token::{
         Oauth20RefreshAccessToken, Oauth20RefreshAccessTokenParams, Oauth20RefreshAccessTokenResult,
     },
+    rfc7591::client_registration::{
+        Oauth20ClientInformation, Oauth20RegisterClient, Oauth20RegisterClientParams,
+        Oauth20RegisterClientResult,
+    },
+    rfc8414::server_metadata::{
+        Oauth20FetchServerMetadata, Oauth20FetchServerMetadataResult, Oauth20ServerMetadata,
+    },
 };
 use io_webdav::{
     coroutine::{WebdavCoroutine, WebdavCoroutineState, WebdavYield},
-    rfc4918::{WebdavAuth, coroutine::WebdavRedirectYield},
+    rfc4918::{GETETAG, WebdavAuth, coroutine::WebdavRedirectYield},
     rfc5397::current_user_principal::CurrentUserPrincipal,
     rfc6352::{
         addressbook::{
             Addressbook as DavAddressbook, home_set::AddressbookHomeSet, list::ListAddressbooks,
         },
         card::{
-            CardEntry, create::CreateCard, delete::DeleteCard, list::ListCards, read::ReadCard,
-            update::UpdateCard,
+            CardEntry, CardRef, create::CreateCard, delete::DeleteCard, enumerate::EnumCards,
+            list::ListCards, multiget::MultigetCards, read::ReadCard, update::UpdateCard,
         },
     },
+    rfc6578::sync_collection::{SyncCollection, SyncCollectionError, SyncDelta},
 };
 use jni::{
     Env, JValue,
@@ -110,7 +123,7 @@ use url::Url;
 use crate::{
     google, jmap, msgraph,
     oauth::parse_pkce_verifier,
-    types::{Addressbook, Card, Credentials},
+    types::{Addressbook, Card, CardDelta, Credentials},
 };
 
 /// RFC 8484 DNS-over-HTTPS resolver used for the discovery DNS lookups
@@ -199,6 +212,77 @@ impl<'a, 'local> Client<'a, 'local> {
             let coroutine =
                 SearchAll::new(email, services, resolver).map_err(|err| err.to_string())?;
             self.run_search(coroutine)
+        }
+    }
+
+    /// Fetches an authorization server's RFC 8414 metadata from its
+    /// issuer, trying the `oauth-authorization-server` well-known
+    /// first and falling back to the OpenID Connect Discovery
+    /// document (the mailmaint OAuth draft requires servers to serve
+    /// at least one).
+    pub fn oauth_server_metadata(&mut self, issuer: &Url) -> Result<Oauth20ServerMetadata, String> {
+        let primary = Oauth20ServerMetadata::well_known_url(issuer);
+        match self.run_fetch_metadata(&primary) {
+            Ok(metadata) => Ok(metadata),
+            Err(primary_err) => {
+                let fallback = Oauth20ServerMetadata::openid_well_known_url(issuer);
+                self.run_fetch_metadata(&fallback).map_err(|fallback_err| {
+                    format!("{primary_err} (OpenID fallback also failed: {fallback_err})")
+                })
+            }
+        }
+    }
+
+    fn run_fetch_metadata(&mut self, url: &Url) -> Result<Oauth20ServerMetadata, String> {
+        let mut coroutine = Oauth20FetchServerMetadata::new(oauth_get_request(url));
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                Oauth20FetchServerMetadataResult::Ok(metadata) => return Ok(metadata),
+                Oauth20FetchServerMetadataResult::Err(err) => return Err(err.to_string()),
+                Oauth20FetchServerMetadataResult::WantsRead => {
+                    arg = Some(self.read(url.as_str())?);
+                }
+                Oauth20FetchServerMetadataResult::WantsWrite(bytes) => {
+                    self.write(url.as_str(), &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
+    /// Registers a public client at an RFC 7591 registration endpoint
+    /// (no secret, `token_endpoint_auth_method: none`), returning the
+    /// server-issued client information.
+    pub fn oauth_register_client(
+        &mut self,
+        registration_endpoint: &Url,
+        params: &Oauth20RegisterClientParams,
+    ) -> Result<Oauth20ClientInformation, String> {
+        let request = oauth_post_request(registration_endpoint);
+        let mut coroutine =
+            Oauth20RegisterClient::new(request, params).map_err(|err| err.to_string())?;
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                Oauth20RegisterClientResult::Ok(Ok(client)) => return Ok(client),
+                Oauth20RegisterClientResult::Ok(Err(err)) => {
+                    let detail = err
+                        .error_description
+                        .unwrap_or_else(|| format!("{:?}", err.error));
+                    return Err(format!("Client registration rejected: {detail}"));
+                }
+                Oauth20RegisterClientResult::Err(err) => return Err(err.to_string()),
+                Oauth20RegisterClientResult::WantsRead => {
+                    arg = Some(self.read(registration_endpoint.as_str())?);
+                }
+                Oauth20RegisterClientResult::WantsWrite(bytes) => {
+                    self.write(registration_endpoint.as_str(), &bytes)?;
+                    arg = None;
+                }
+            }
         }
     }
 
@@ -428,6 +512,103 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    /// Enumerates the card spine (resource name plus ETag, no body) of
+    /// the addressbook collection at `url`.
+    pub fn enum_cards(
+        &mut self,
+        url: &Url,
+        credentials: &Credentials,
+    ) -> Result<Vec<CardRef>, String> {
+        let auth = auth(credentials);
+        let coroutine = EnumCards::new(url, &auth, USER_AGENT, url.path());
+        let refs: BTreeSet<CardRef> = self.run(url, coroutine)?;
+
+        Ok(refs.into_iter().collect())
+    }
+
+    /// Runs a `sync-collection` REPORT (RFC 6578) against the
+    /// addressbook collection at `url`, draining truncated result sets.
+    /// Returns [`None`] when the server rejected the sync token, so the
+    /// caller falls back to a full enumeration.
+    pub fn sync_cards(
+        &mut self,
+        url: &Url,
+        credentials: &Credentials,
+        sync_token: Option<&str>,
+    ) -> Result<Option<SyncDelta>, String> {
+        let auth = auth(credentials);
+        let mut token = sync_token.map(str::to_string);
+        let mut delta = SyncDelta::default();
+
+        loop {
+            let coroutine = SyncCollection::new(
+                url,
+                &auth,
+                USER_AGENT,
+                url.path(),
+                token.as_deref(),
+                &[GETETAG],
+            );
+            let page = match self.run_sync_collection(url, coroutine)? {
+                Some(page) => page,
+                None => return Ok(None),
+            };
+
+            delta.changed.extend(page.changed);
+            delta.vanished.extend(page.vanished);
+            delta.sync_token = page.sync_token;
+
+            if !page.truncated {
+                return Ok(Some(delta));
+            }
+            token = delta.sync_token.clone();
+        }
+    }
+
+    /// Batch-fetches the cards at the given resource names (as the
+    /// server returned them) inside the addressbook collection at `url`
+    /// via REPORT `addressbook-multiget`.
+    pub fn multiget_cards(
+        &mut self,
+        url: &Url,
+        credentials: &Credentials,
+        uris: &[&str],
+    ) -> Result<Vec<Card>, String> {
+        let auth = auth(credentials);
+        let coroutine = MultigetCards::new(url, &auth, USER_AGENT, url.path(), uris);
+        let cards: Vec<CardEntry> = self.run(url, coroutine)?;
+
+        Ok(cards.into_iter().map(into_card).collect())
+    }
+
+    /// Drives one `sync-collection` REPORT, surfacing a rejected sync
+    /// token as [`None`] instead of an error (the generic [`Self::run`]
+    /// erases the error variant the fallback needs).
+    fn run_sync_collection(
+        &mut self,
+        target: &Url,
+        mut coroutine: SyncCollection,
+    ) -> Result<Option<SyncDelta>, String> {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                WebdavCoroutineState::Complete(Ok(delta)) => return Ok(Some(delta)),
+                WebdavCoroutineState::Complete(Err(SyncCollectionError::InvalidSyncToken)) => {
+                    return Ok(None);
+                }
+                WebdavCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                WebdavCoroutineState::Yielded(WebdavYield::WantsWrite(bytes)) => {
+                    self.write(target.as_str(), &bytes)?;
+                    arg = None;
+                }
+                WebdavCoroutineState::Yielded(WebdavYield::WantsRead) => {
+                    arg = Some(self.read(target.as_str())?);
+                }
+            }
+        }
+    }
+
     // ---- Microsoft Graph operations -----------------------------------------
 
     /// Lists the Microsoft Graph contact folders as addressbooks,
@@ -588,6 +769,77 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    /// Lists the Graph contact changes since `delta_link` (removals
+    /// ride as `@removed` rows); without a link, the initial round
+    /// enumerates every contact and ends with the link to delta from
+    /// next time. Rows carry only the id and changeKey: delta queries
+    /// cannot `$expand` the stash extended property, so bodies are
+    /// fetched separately. Returns [`None`] when the server expired
+    /// the link (HTTP 410), so the caller falls back to an initial
+    /// round.
+    pub fn delta_graph_cards(
+        &mut self,
+        token: &str,
+        folder: &str,
+        delta_link: Option<&str>,
+    ) -> Result<Option<CardDelta>, String> {
+        let auth = HttpAuthBearer::new(token);
+        let folder = (!folder.is_empty()).then_some(folder);
+
+        let first = match delta_link {
+            Some(link) => {
+                let url = parse_graph_url(link)?;
+                self.run_msgraph_delta(MsgraphSend::get(&auth, url))?
+            }
+            None => {
+                let coroutine = MsgraphContactsDelta::new(&auth, "me", folder, Some("changeKey"))
+                    .map_err(|err| err.to_string())?;
+                self.run_msgraph_delta(coroutine)?
+            }
+        };
+        let Some(mut page) = first else {
+            return Ok(None);
+        };
+
+        let mut delta = CardDelta {
+            changed: Vec::new(),
+            vanished: Vec::new(),
+            token: None,
+        };
+
+        loop {
+            for row in page.value {
+                if row.removed.is_some() {
+                    delta.vanished.push(row.contact.id);
+                } else {
+                    delta.changed.push(Card {
+                        uri: row.contact.id.clone(),
+                        id: row.contact.id,
+                        etag: row.contact.change_key,
+                        vcard: String::new(),
+                        books: Vec::new(),
+                    });
+                }
+            }
+
+            if page.delta_link.is_some() {
+                delta.token = page.delta_link;
+            }
+            match page.next_link {
+                Some(next) => {
+                    let url = parse_graph_url(&next)?;
+                    page = match self.run_msgraph_delta(MsgraphSend::get(&auth, url))? {
+                        Some(page) => page,
+                        None => return Ok(None),
+                    };
+                }
+                None => break,
+            }
+        }
+
+        Ok(Some(delta))
+    }
+
     // ---- JMAP operations ----------------------------------------------------
 
     /// Lists the account's JMAP AddressBooks (RFC 9610 §2.1).
@@ -712,6 +964,91 @@ impl<'a, 'local> Client<'a, 'local> {
             .ok_or_else(|| format!("JMAP ContactCard `{id}` not found"))?;
 
         jmap::to_card(card)
+    }
+
+    /// Lists the ContactCard changes since `since_state` (RFC 8620
+    /// `/changes`), the changed cards fetched in full so their
+    /// JSON-hash ETag doubles as the content revision; without a
+    /// state, the initial round gets every card plus the state to
+    /// delta from next time. Returns [`None`] when the server can no
+    /// longer compute changes from the state, so the caller falls
+    /// back to an initial round.
+    pub fn changes_jmap_cards(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        since_state: Option<&str>,
+    ) -> Result<Option<CardDelta>, String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let Some(since) = since_state else {
+            let opts = JmapContactCardGetOptions::default();
+            let coroutine =
+                JmapContactCardGet::new(&session, &auth, opts).map_err(|err| err.to_string())?;
+            let out = self.run_jmap(&api_url, coroutine)?;
+
+            let changed: Vec<Card> = out
+                .cards
+                .into_iter()
+                .map(jmap::to_card)
+                .collect::<Result<_, _>>()?;
+            return Ok(Some(CardDelta {
+                changed,
+                vanished: Vec::new(),
+                token: Some(out.new_state),
+            }));
+        };
+
+        let mut cursor = since.to_string();
+        let mut changed_ids = BTreeSet::new();
+        let mut vanished = BTreeSet::new();
+
+        loop {
+            let opts = JmapContactCardChangesOptions::default();
+            let coroutine = JmapContactCardChanges::new(&session, &auth, cursor.clone(), opts)
+                .map_err(|err| err.to_string())?;
+            let out = match self.run_jmap_changes(&api_url, coroutine)? {
+                Some(out) => out,
+                None => return Ok(None),
+            };
+
+            changed_ids.extend(out.created);
+            changed_ids.extend(out.updated);
+            vanished.extend(out.destroyed);
+            cursor = out.new_state;
+
+            if !out.has_more_changes {
+                break;
+            }
+        }
+
+        // A card created and destroyed within the window rides in
+        // both lists; the destroy wins and the get skips it.
+        changed_ids.retain(|id| !vanished.contains(id));
+
+        let mut changed = Vec::new();
+        if !changed_ids.is_empty() {
+            let opts = JmapContactCardGetOptions {
+                ids: Some(changed_ids.into_iter().collect()),
+                ..Default::default()
+            };
+            let coroutine =
+                JmapContactCardGet::new(&session, &auth, opts).map_err(|err| err.to_string())?;
+            let out = self.run_jmap(&api_url, coroutine)?;
+            changed = out
+                .cards
+                .into_iter()
+                .map(jmap::to_card)
+                .collect::<Result<_, _>>()?;
+        }
+
+        Ok(Some(CardDelta {
+            changed,
+            vanished: vanished.into_iter().collect(),
+            token: Some(cursor),
+        }))
     }
 
     /// Updates the ContactCard `id` from the vCard. With a base vCard
@@ -930,6 +1267,77 @@ impl<'a, 'local> Client<'a, 'local> {
         }
 
         Ok(cards)
+    }
+
+    /// Lists the People contact changes since `sync_token` (deleted
+    /// persons ride flagged in the response); without a token, the
+    /// initial round lists every contact and requests the token to
+    /// delta from next time. Returns [`None`] when the server expired
+    /// the token, so the caller falls back to an initial round.
+    pub fn sync_google_cards(
+        &mut self,
+        token: &str,
+        sync_token: Option<&str>,
+    ) -> Result<Option<CardDelta>, String> {
+        let auth = HttpAuthBearer::new(token);
+
+        // The person metadata carries the deleted marker of sync
+        // responses; a sync token binds to its field mask, so every
+        // round asks the same one.
+        let fields: Vec<PeoplePersonField> = google::READ_FIELDS
+            .iter()
+            .copied()
+            .chain([PeoplePersonField::Metadata])
+            .collect();
+
+        let mut delta = CardDelta {
+            changed: Vec::new(),
+            vanished: Vec::new(),
+            token: None,
+        };
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let params = PeopleConnectionsListParams {
+                page_size: Some(100),
+                page_token: page_token.as_deref(),
+                request_sync_token: true,
+                sync_token,
+                ..Default::default()
+            };
+            let coroutine = PeopleConnectionsList::new(&auth, &fields, &params)
+                .map_err(|err| err.to_string())?;
+            let page = match self.run_google(coroutine) {
+                Ok(page) => page,
+                Err(err) if err.contains("EXPIRED_SYNC_TOKEN") => return Ok(None),
+                Err(err) => return Err(err),
+            };
+
+            for person in page.connections {
+                let deleted = person
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.deleted)
+                    .unwrap_or(false);
+                if deleted {
+                    delta
+                        .vanished
+                        .push(google::person_id(&person.resource_name).to_string());
+                } else {
+                    delta.changed.push(google_card(person));
+                }
+            }
+
+            if page.next_sync_token.is_some() {
+                delta.token = page.next_sync_token;
+            }
+            match page.next_page_token {
+                Some(next) => page_token = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(Some(delta))
     }
 
     /// Creates the vCard as a People contact. The server names the
@@ -1284,6 +1692,70 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
+    /// Drives one JMAP `ContactCard/changes` round, surfacing an
+    /// uncomputable state as [`None`] instead of an error (the generic
+    /// [`Self::run_jmap`] erases the error variant the fallback needs).
+    fn run_jmap_changes(
+        &mut self,
+        api_url: &Url,
+        mut coroutine: JmapContactCardChanges,
+    ) -> Result<Option<JmapChangesOutput>, String> {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                JmapCoroutineState::Complete(Ok(out)) => return Ok(Some(out)),
+                JmapCoroutineState::Complete(Err(JmapContactCardChangesError::Changes(
+                    JmapChangesError::Method(JmapMethodError::CannotCalculateChanges { .. }),
+                ))) => return Ok(None),
+                JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                JmapCoroutineState::Yielded(JmapYield::WantsRead) => {
+                    arg = Some(self.read(api_url.as_str())?);
+                }
+                JmapCoroutineState::Yielded(JmapYield::WantsWrite(bytes)) => {
+                    self.write(api_url.as_str(), &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
+    /// Drives one Graph contacts delta request, surfacing an expired
+    /// delta link (HTTP 410) as [`None`] instead of an error (the
+    /// generic [`Self::run_msgraph`] erases the status the fallback
+    /// needs).
+    fn run_msgraph_delta<C>(
+        &mut self,
+        mut coroutine: C,
+    ) -> Result<Option<MsgraphContactsDeltaResponse>, String>
+    where
+        C: MsgraphCoroutine<
+                Yield = MsgraphYield,
+                Return = Result<MsgraphSendOutput<MsgraphContactsDeltaResponse>, MsgraphSendError>,
+            >,
+    {
+        let mut arg: Option<Vec<u8>> = None;
+
+        loop {
+            match coroutine.resume(arg.as_deref()) {
+                MsgraphCoroutineState::Complete(Ok(output)) => {
+                    return Ok(Some(output.response));
+                }
+                MsgraphCoroutineState::Complete(Err(err)) if err.status() == Some(410) => {
+                    return Ok(None);
+                }
+                MsgraphCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                MsgraphCoroutineState::Yielded(MsgraphYield::WantsRead) => {
+                    arg = Some(self.read(MSGRAPH_API_BASE)?);
+                }
+                MsgraphCoroutineState::Yielded(MsgraphYield::WantsWrite(bytes)) => {
+                    self.write(MSGRAPH_API_BASE, &bytes)?;
+                    arg = None;
+                }
+            }
+        }
+    }
+
     /// Drives a plain (non-redirect) coroutine against `target`.
     fn run<C, T, E>(&mut self, target: &Url, mut coroutine: C) -> Result<T, String>
     where
@@ -1436,11 +1908,23 @@ fn jmap_addressbook(book: JmapAddressBook) -> Addressbook {
 /// POST request skeleton against the token endpoint, Host header
 /// included (the io-oauth coroutines add the Content-Type and body).
 fn oauth_post_request(endpoint: &Url) -> HttpRequest {
+    oauth_request("POST", endpoint)
+}
+
+/// GET request skeleton against a metadata endpoint, Host header
+/// included (the io-oauth coroutines add the Accept header).
+fn oauth_get_request(endpoint: &Url) -> HttpRequest {
+    oauth_request("GET", endpoint)
+}
+
+/// Request skeleton with the Host header the HTTP/1.1 serializer
+/// needs (fastmail and others 400 a request without one).
+fn oauth_request(method: &str, endpoint: &Url) -> HttpRequest {
     let host = endpoint.host_str().unwrap_or("");
     let port = endpoint.port_or_known_default().unwrap_or(443);
 
     HttpRequest {
-        method: "POST".into(),
+        method: method.into(),
         url: endpoint.clone(),
         headers: Vec::new(),
         body: Vec::new(),
@@ -1550,7 +2034,7 @@ fn into_card(entry: CardEntry) -> Card {
 
 /// Catches and clears any pending Java exception, surfacing its class
 /// and message (a bare JNI error only says "Java exception was thrown").
-fn clear_and_fail(env: &mut Env, op: &str, err: Error) -> String {
+pub(crate) fn clear_and_fail(env: &mut Env, op: &str, err: Error) -> String {
     match env.exception_catch() {
         Err(Error::CaughtJavaException { name, msg, .. }) => {
             format!("{op} failed: {name}: {msg}")

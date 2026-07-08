@@ -44,6 +44,7 @@ import org.pimalaya.cardamum.client.CardamumClient;
 import org.pimalaya.cardamum.client.OauthSession;
 import org.pimalaya.cardamum.client.OauthTokens;
 import org.pimalaya.cardamum.client.Provider;
+import org.pimalaya.cardamum.client.ServerMetadata;
 import org.pimalaya.cardamum.client.ServiceConfig;
 
 /**
@@ -689,12 +690,14 @@ public class MainActivity extends Activity {
                                                 Oauth.MICROSOFT_SCOPE)));
                 break;
             case OTHER:
-                if (searchedConfigs.isEmpty()) {
-                    container.addView(
-                            configItem(getString(R.string.discover_failed), null, null, null));
-                }
                 for (ServiceConfig config : searchedConfigs) {
                     addConfigItems(container, config);
+                }
+                // Nothing discovered, or nothing the app can drive:
+                // one disabled explanatory row instead of a blank list.
+                if (container.getChildCount() == 0) {
+                    container.addView(
+                            configItem(getString(R.string.discover_failed), null, null, null));
                 }
                 break;
         }
@@ -782,10 +785,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One radio option per authentication variant of a searched config:
-     * password variants prompt for the credentials, OAuth code grants
-     * prompt for a custom client (the endpoints prefilled from the
-     * discovery), the rest stay disabled (no discovered client to use).
+     * One radio option per usable authentication variant of a searched
+     * config: password variants prompt for the credentials, OAuth code
+     * grants prompt for a custom client (the endpoints prefilled from
+     * the discovery). Variants the app cannot drive (no client to use)
+     * are not offered at all.
      */
     private void addConfigItems(LinearLayout container, ServiceConfig config) {
         String protocol = protocolName(config.service);
@@ -836,9 +840,21 @@ public class MainActivity extends Activity {
                                                     method.tokenEndpoint,
                                                     method.scope)));
                     break;
-                default:
+                case OAUTH_ISSUER:
+                    // The server advertised only an issuer: discover
+                    // its metadata and, when it allows dynamic client
+                    // registration (RFC 7591), run the grant with no
+                    // pre-registered client at all.
                     container.addView(
-                            configItem(protocol, host, getString(R.string.config_oauth2), null));
+                            configItem(
+                                    protocol,
+                                    host,
+                                    getString(R.string.config_oauth2),
+                                    () -> startIssuerOauth(baseUrl, method.issuer)));
+                    break;
+                default:
+                    // Nothing the app can drive; not offered.
+                    break;
             }
         }
     }
@@ -1328,6 +1344,122 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /**
+     * Runs the zero-configuration OAuth path from a bare issuer: fetch
+     * its RFC 8414 metadata, register a public client dynamically
+     * (RFC 7591) when the server allows it, then drive the ordinary
+     * code grant with the freshly issued client id over the OS-routed
+     * custom-scheme redirect (the servers that support registration,
+     * fastmail and Stalwart, reject a loopback http redirect but
+     * accept the private-use scheme, RFC 8252 §7.1). When the server
+     * publishes no registration endpoint, falls back to the
+     * custom-client prompt with the endpoints prefilled, so the user
+     * can paste a self-registered client id instead.
+     */
+    private void startIssuerOauth(String baseUrl, String issuer) {
+        setAuthLoading(R.id.config_continue, R.id.config_progress, true);
+
+        io.execute(
+                () -> {
+                    try {
+                        ServerMetadata metadata = client.oauthServerMetadata(issuer);
+                        if (metadata.authorizationEndpoint == null
+                                || metadata.tokenEndpoint == null) {
+                            throw new IllegalStateException(
+                                    getString(R.string.oauth_metadata_incomplete));
+                        }
+
+                        if (!metadata.supportsDynamicRegistration()) {
+                            // No dynamic registration: let the user
+                            // bring a self-registered client id, the
+                            // discovered endpoints prefilled.
+                            main.post(
+                                    () -> {
+                                        resetConfigContinue();
+                                        promptCustomOauth(
+                                                baseUrl,
+                                                metadata.authorizationEndpoint,
+                                                metadata.tokenEndpoint,
+                                                metadata.scopesSupported);
+                                    });
+                            return;
+                        }
+
+                        // A contacts app requests only the contacts
+                        // scope (plus offline_access for refresh), not
+                        // the server's whole supported set: asking for
+                        // mail/calendars/provider extras is what an
+                        // "invalid scope" authorization error is.
+                        String scope = metadata.contactsScope();
+                        String clientId =
+                                client.oauthRegisterClient(
+                                        metadata.registrationEndpoint,
+                                        Oauth.REDIRECT_URI,
+                                        getString(R.string.app_name),
+                                        scope);
+
+                        main.post(
+                                () ->
+                                        launchIssuerGrant(
+                                                baseUrl,
+                                                clientId,
+                                                metadata.authorizationEndpoint,
+                                                metadata.tokenEndpoint,
+                                                scope));
+                    } catch (Exception error) {
+                        Log.w("cardamum", "issuer oauth failed", error);
+                        main.post(
+                                () -> {
+                                    resetConfigContinue();
+                                    showError(error, R.string.connect_failed);
+                                });
+                    }
+                });
+    }
+
+    /**
+     * Opens the browser for a dynamically-registered public client,
+     * mirroring the Google and Microsoft grants: PKCE session over the
+     * OS-routed custom scheme, persisted so the redirect survives the
+     * process, redeemed in {@link #handleOauthRedirect}.
+     */
+    private void launchIssuerGrant(
+            String baseUrl,
+            String clientId,
+            String authEndpoint,
+            String tokenEndpoint,
+            String scope) {
+        pendingOauth = new OauthSession(clientId, null, Oauth.REDIRECT_URI, scope);
+        pendingTokenEndpoint = tokenEndpoint;
+        pendingBaseUrl = baseUrl;
+        pendingAccountEmail = pendingEmail;
+        pendingClientId = clientId;
+        pendingClientSecret = null;
+
+        // access_type=offline + prompt=consent make Google-style
+        // servers issue a refresh token; login_hint preselects the
+        // account. Servers that do not use them ignore them.
+        JSONObject extras = new JSONObject();
+        try {
+            extras.put("access_type", "offline");
+            extras.put("prompt", "consent");
+            extras.put("login_hint", pendingEmail);
+        } catch (JSONException ignored) {
+            // A malformed extras object just omits the hints.
+        }
+
+        try {
+            String url = pendingOauth.authorizeUrl(authEndpoint, extras);
+            persistPendingOauth(clientId, Oauth.REDIRECT_URI);
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception error) {
+            pendingOauth = null;
+            clearPendingOauth();
+            resetConfigContinue();
+            showError(error, R.string.connect_failed);
+        }
+    }
+
     /** One labelled field of the custom-OAuth dialog. */
     private EditText customOauthField(int hint, String value) {
         EditText field = new EditText(this);
@@ -1810,17 +1942,13 @@ public class MainActivity extends Activity {
             }
 
             try {
-                syncAccount(account.account, group.getKey(), group.getValue(), outcome);
+                syncAccount(account.account, group.getValue(), outcome);
             } catch (Exception error) {
                 // An expired OAuth access token: refresh it and retry
                 // the account once.
                 if (expiredToken(error) && account.refreshToken != null) {
                     try {
-                        syncAccount(
-                                refreshAccount(account),
-                                group.getKey(),
-                                group.getValue(),
-                                outcome);
+                        syncAccount(refreshAccount(account), group.getValue(), outcome);
                         continue;
                     } catch (Exception retryError) {
                         error = retryError;
@@ -1856,143 +1984,25 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One account's fetch-push-refetch cycle: account-level backends
-     * (JMAP, Google) list every card once with its m:n memberships;
-     * per-collection backends (CardDAV, Graph) cycle each subscribed
-     * addressbook.
+     * One account's engine pass: every subscribed addressbook
+     * reconciles through io-offline (spine sync, body hydration,
+     * conflict resolution), sharing one driver so the account-level
+     * backends (JMAP, Google) list their cards once per pass.
      */
-    private void syncAccount(
-            Account acc, String email, List<BookEntry> books, SyncOutcome outcome) {
-        if (CardamumClient.isAccountLevel(acc)) {
-            Map<String, String> before = etagsOf(base.loadAccountCards(email));
+    private void syncAccount(Account acc, List<BookEntry> books, SyncOutcome outcome) {
+        OfflineEngine engine = new OfflineEngine(base, client, acc);
 
-            // Fetch first, so staged rows learn the server's resource
-            // names before the push addresses them.
-            List<CardStore.Row> rows = fetchAccountRows(acc, books);
-            countPulled(before, rowCards(rows), outcome);
-            base.replaceAccountCards(email, rows);
-
-            boolean pushed = false;
-            List<CardStore.Pending> pending = base.loadPending(email);
-            if (!pending.isEmpty()) {
-                push(acc, email, pending, cardsById(rowCards(rows)), outcome);
-                pushed = true;
-            }
-
-            // Membership changes push after the cards, so a created
-            // replica's staged memberships address its server id (the
-            // storage key rename of confirmPush carries them over).
-            List<CardStore.MembershipChange> memberships = base.loadPendingMemberships(email);
-            if (!memberships.isEmpty()) {
-                pushMemberships(acc, email, memberships, outcome);
-                pushed = true;
-            }
-
-            if (pushed) {
-                // The push changed the remote; re-fetch its state.
-                base.replaceAccountCards(email, fetchAccountRows(acc, books));
-            }
-        } else {
-            for (BookEntry entry : books) {
-                syncBook(acc, email, entry, outcome);
-            }
-        }
-    }
-
-    /**
-     * The account-level fetch: every card with its memberships mapped
-     * from book ids to the subscribed addressbook URLs. A card with no
-     * subscribed membership is skipped: it neither displays nor stores.
-     */
-    private List<CardStore.Row> fetchAccountRows(Account acc, List<BookEntry> books) {
-        Map<String, String> urlById = new HashMap<>();
         for (BookEntry entry : books) {
-            urlById.put(entry.book.id, entry.book.url);
-        }
-
-        List<CardStore.Row> rows = new ArrayList<>();
-        for (Card card : client.listAccountCards(acc)) {
-            List<String> urls = new ArrayList<>();
-            for (String bookId : card.books) {
-                String url = urlById.get(bookId);
-                if (url != null) {
-                    urls.add(url);
-                }
+            OfflineEngine.Report report;
+            try {
+                report = engine.syncBook(entry.book.url);
+            } catch (org.json.JSONException error) {
+                throw new IllegalStateException(error);
             }
-            if (!urls.isEmpty()) {
-                rows.add(new CardStore.Row(card.id, card, urls));
-            }
+            outcome.pulled += report.pulled;
+            outcome.pushed += report.pushed;
+            outcome.merged += report.merged;
         }
-        return rows;
-    }
-
-    /**
-     * One addressbook's fetch-push-refetch cycle (per-collection
-     * backends), accumulating what it pulled, pushed and merged into
-     * `outcome`.
-     */
-    private void syncBook(Account acc, String email, BookEntry entry, SyncOutcome outcome) {
-        Addressbook book = entry.book;
-
-        // The store as of the last sync, to count what the fetch brings.
-        Map<String, String> before = etagsOf(base.loadCards(book.url));
-
-        // Fetch first, so staged rows learn the server's resource names
-        // before the push addresses them.
-        List<Card> fetched = client.listCards(acc, book.url);
-        countPulled(before, fetched, outcome);
-        base.replaceBookCards(email, book.url, fetched);
-
-        List<CardStore.Pending> pending = base.loadPendingForBook(email, book.url);
-        if (!pending.isEmpty()) {
-            push(acc, email, pending, cardsById(fetched), outcome);
-
-            // The push changed the remote; re-fetch its resulting state.
-            base.replaceBookCards(email, book.url, client.listCards(acc, book.url));
-        }
-    }
-
-    /** The cards keyed by id to their ETag. */
-    private static Map<String, String> etagsOf(List<Card> cards) {
-        Map<String, String> etags = new HashMap<>();
-        for (Card card : cards) {
-            etags.put(card.id, card.etag);
-        }
-        return etags;
-    }
-
-    /** The fetched cards keyed by id. */
-    private static Map<String, Card> cardsById(List<Card> cards) {
-        Map<String, Card> byId = new HashMap<>();
-        for (Card card : cards) {
-            byId.put(card.id, card);
-        }
-        return byId;
-    }
-
-    /** Counts fetched-vs-known ETag differences (added, changed, removed). */
-    private static void countPulled(
-            Map<String, String> before, List<Card> fetched, SyncOutcome outcome) {
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (Card card : fetched) {
-            seen.add(card.id);
-            if (!java.util.Objects.equals(before.get(card.id), card.etag)) {
-                outcome.pulled++;
-            }
-        }
-        for (String id : before.keySet()) {
-            if (!seen.contains(id)) {
-                outcome.pulled++;
-            }
-        }
-    }
-
-    private static List<Card> rowCards(List<CardStore.Row> rows) {
-        List<Card> cards = new ArrayList<>(rows.size());
-        for (CardStore.Row row : rows) {
-            cards.add(row.card);
-        }
-        return cards;
     }
 
     /**
@@ -2002,47 +2012,6 @@ public class MainActivity extends Activity {
      */
     private static String cardKey(Account account, String bookUrl, String id) {
         return CardamumClient.isAccountLevel(account) ? id : CardStore.key(bookUrl, id);
-    }
-
-    /**
-     * Pushes staged membership changes (account-level backends): each
-     * card's adds and removes batch into one client call, the
-     * addressbook URLs mapped back to book ids.
-     */
-    private void pushMemberships(
-            Account acc,
-            String email,
-            List<CardStore.MembershipChange> changes,
-            SyncOutcome outcome) {
-        Map<String, String> idByUrl = new HashMap<>();
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            idByUrl.put(entry.book.url, entry.book.id);
-        }
-
-        Map<String, List<CardStore.MembershipChange>> byCard = new java.util.LinkedHashMap<>();
-        for (CardStore.MembershipChange change : changes) {
-            byCard.computeIfAbsent(change.key, key -> new ArrayList<>()).add(change);
-        }
-
-        for (List<CardStore.MembershipChange> card : byCard.values()) {
-            List<String> add = new ArrayList<>();
-            List<String> remove = new ArrayList<>();
-            for (CardStore.MembershipChange change : card) {
-                String bookId = idByUrl.get(change.bookUrl);
-                if (bookId != null) {
-                    (change.added ? add : remove).add(bookId);
-                }
-            }
-
-            if (!add.isEmpty() || !remove.isEmpty()) {
-                client.updateCardBooks(acc, card.get(0).cardId, add, remove);
-                outcome.pushed++;
-            }
-            // NOTE: changes whose book vanished confirm without a push.
-            for (CardStore.MembershipChange change : card) {
-                base.confirmMembership(email, change.key, change.bookUrl, change.added);
-            }
-        }
     }
 
     /**
@@ -2176,164 +2145,6 @@ public class MainActivity extends Activity {
                 },
                 REQUEST_CONTACTS);
         return false;
-    }
-
-    /**
-     * Pushes staged local changes to the remote, accumulating the
-     * pushed and merged counts into `outcome`. Each replica pushes
-     * against its collection (the first membership URL; per-collection
-     * backends have exactly one, account-level backends only need it
-     * for creates). A 412 means the remote changed under the staged
-     * edit: both sides three-way merge against the staged base (the
-     * local side wins same-field collisions, an update beats a
-     * removal) and the merged card pushes against the fresh server
-     * state, counted as merged. Any other failure aborts the sync
-     * (offline fallback).
-     */
-    private void push(Account account, String email, List<CardStore.Pending> changes,
-            Map<String, Card> serverCards, SyncOutcome outcome) {
-        for (CardStore.Pending pending : changes) {
-            String bookUrl = pending.books.isEmpty() ? null : pending.books.get(0);
-            if (bookUrl == null) {
-                continue;
-            }
-
-            try {
-                if (pending.deleted) {
-                    client.deleteCard(account, bookUrl, pending.card);
-                    base.removeCard(email, pending.key);
-                } else if (pending.card.etag == null) {
-                    // The staged row is addressed by its local key: the
-                    // server may name created resources itself (Graph,
-                    // JMAP, Google assign ids), so the confirmed row may
-                    // land under a new key.
-                    Card created =
-                            client.createCard(
-                                    account, bookUrl, pending.card.id, pending.card.vcard);
-                    base.confirmPush(
-                            email, pending.key, cardKey(account, bookUrl, created.id), created);
-                } else {
-                    Card updated =
-                            client.updateCard(account, bookUrl, pending.card, pending.baseVcard);
-                    base.confirmPush(
-                            email, pending.key, cardKey(account, bookUrl, updated.id), updated);
-                }
-                outcome.pushed++;
-            } catch (Exception error) {
-                String message = error.getMessage();
-                if (message != null && message.contains("HTTP 412")) {
-                    Card server = serverCards.get(pending.card.id);
-                    String serverEtag = server == null ? null : server.etag;
-
-                    if (serverEtag != null && serverEtag.equals(pending.card.etag)) {
-                        // Server quirk (posteo's SabreDAV): some
-                        // resources carry no internal ETag, so their
-                        // If-Match always fails even though the listing
-                        // serves one. The listing was fetched moments
-                        // ago; when it still matches the staged base,
-                        // the remote is provably unchanged and the
-                        // write is safe without If-Match (the same
-                        // guarantee, enforced by us instead).
-                        Log.w(
-                                "cardamum",
-                                "If-Match rejected but listing unchanged, retrying without it: "
-                                        + pending.card.id);
-                        Card unguarded =
-                                new Card(
-                                        pending.card.id,
-                                        pending.card.uri,
-                                        null,
-                                        pending.card.vcard);
-                        if (pending.deleted) {
-                            client.deleteCard(account, bookUrl, unguarded);
-                            base.removeCard(email, pending.key);
-                        } else {
-                            Card updated =
-                                    client.updateCard(
-                                            account, bookUrl, unguarded, pending.baseVcard);
-                            base.confirmPush(
-                                    email,
-                                    pending.key,
-                                    cardKey(account, bookUrl, updated.id),
-                                    updated);
-                        }
-                        outcome.pushed++;
-                    } else if (server != null && pending.deleted) {
-                        // The remote updated what the delete targeted:
-                        // the update wins over the removal, the staged
-                        // delete is dropped and the server card adopted.
-                        Log.w(
-                                "cardamum",
-                                "delete conflict on " + pending.card.id + ": remote update wins");
-                        base.confirmPush(
-                                email,
-                                pending.key,
-                                cardKey(account, bookUrl, server.id),
-                                server);
-                        outcome.merged++;
-                    } else if (server != null && pending.baseVcard != null) {
-                        // The remote genuinely changed under the staged
-                        // edit: three-way merge both sides against the
-                        // staged base and push the merged card against
-                        // the fresh server state.
-                        Log.w(
-                                "cardamum",
-                                "push conflict on " + pending.card.id + ": three-way merging");
-                        String merged =
-                                client.mergeCardChanges(
-                                        pending.baseVcard, pending.card.vcard, server.vcard);
-                        Card resolved =
-                                new Card(pending.card.id, server.uri, server.etag, merged);
-                        Card updated;
-                        try {
-                            updated = client.updateCard(account, bookUrl, resolved, server.vcard);
-                        } catch (Exception retry) {
-                            String retryMessage = retry.getMessage();
-                            if (retryMessage == null || !retryMessage.contains("HTTP 412")) {
-                                throw retry;
-                            }
-                            // The no-internal-ETag quirk again: the
-                            // merge just reconciled against the state
-                            // fetched moments ago, so the unguarded
-                            // write carries the same guarantee.
-                            updated =
-                                    client.updateCard(
-                                            account,
-                                            bookUrl,
-                                            new Card(
-                                                    pending.card.id,
-                                                    server.uri,
-                                                    null,
-                                                    merged),
-                                            server.vcard);
-                        }
-                        base.confirmPush(
-                                email,
-                                pending.key,
-                                cardKey(account, bookUrl, updated.id),
-                                updated);
-                        outcome.merged++;
-                    } else {
-                        // No server state to reconcile against (the
-                        // resource vanished, or no base was captured):
-                        // the change stays staged for the next sync.
-                        outcome.merged++;
-                        Log.w(
-                                "cardamum",
-                                "push conflict on "
-                                        + pending.card.id
-                                        + ": staged etag "
-                                        + pending.card.etag
-                                        + ", server etag "
-                                        + serverEtag);
-                    }
-                } else {
-                    throw error instanceof RuntimeException
-                            ? (RuntimeException) error
-                            : new IllegalStateException(error);
-                }
-            }
-        }
     }
 
     // ---- Contacts screen ----------------------------------------------------
@@ -4030,18 +3841,16 @@ public class MainActivity extends Activity {
 
     /**
      * The fan-out save: the form model applies to every card's own
-     * document.
+     * document, each staged through the engine (editing a conflicted
+     * replica resolves it).
      */
-    private void saveFanOut(JSONObject model) {
+    private void saveFanOut(JSONObject model) throws JSONException {
+        OfflineEngine engine = new OfflineEngine(base, client, null);
         java.util.Set<String> staged = new java.util.HashSet<>();
 
         for (Entry entry : editingReplicas) {
             // An m:n replica appears once per book; stage it once.
             if (!staged.add(replicaRefOf(entry))) {
-                continue;
-            }
-            AccountEntry account = accountFor(entry.accountEmail);
-            if (account == null) {
                 continue;
             }
 
@@ -4053,11 +3862,10 @@ public class MainActivity extends Activity {
             if (!advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
                 continue;
             }
-            base.saveLocal(
-                    entry.accountEmail,
-                    cardKey(account.account, entry.book.url, entry.card.id),
+            engine.mutateEdit(
                     entry.book.url,
-                    new Card(entry.card.id, entry.card.uri, entry.card.etag, vcard));
+                    CardStore.rowHandle(entry.book.url, entry.card.uri, entry.card.id),
+                    vcard);
         }
     }
 
@@ -4065,27 +3873,18 @@ public class MainActivity extends Activity {
      * The merge save: the form model applies to the surviving card and
      * every other card behind the form stages a delete.
      */
-    private void saveMerge(JSONObject model) {
+    private void saveMerge(JSONObject model) throws JSONException {
         Entry survivor = mergeSurvivor;
         mergeSurvivor = null;
 
-        AccountEntry account = accountFor(survivor.accountEmail);
-        if (account == null) {
-            toast(getString(R.string.save_failed));
-            return;
-        }
-
         String vcard = client.applyCard(survivor.card.vcard, model);
         if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
-            base.saveLocal(
-                    survivor.accountEmail,
-                    cardKey(account.account, survivor.book.url, survivor.card.id),
-                    survivor.book.url,
-                    new Card(
-                            survivor.card.id,
-                            survivor.card.uri,
-                            survivor.card.etag,
-                            vcard));
+            new OfflineEngine(base, client, null)
+                    .mutateEdit(
+                            survivor.book.url,
+                            CardStore.rowHandle(
+                                    survivor.book.url, survivor.card.uri, survivor.card.id),
+                            vcard);
         }
 
         String survivorRef = replicaRefOf(survivor);

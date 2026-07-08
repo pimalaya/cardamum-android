@@ -7,3 +7,5 @@ Reference entries, one file per topic, added over time.
 - [google-people.md](google-people.md): the Google People API backend, with the full vCard 4.0 to People field mapping.
 - [custom-data.md](custom-data.md): how the Google and Graph backends preserve vCard data they cannot express natively (the stash), and how provider-only data rides the vCard as X-GOOGLE-* / X-MSGRAPH-* properties.
 - [merged-view.md](merged-view.md): the contact-first pivot: one merged list over per-account replicas (UID-linked), addressbooks demoted to a filter, and the staged plan towards memberships, cross-account copy and divergence handling.
+- [io-offline-migration.md](io-offline-migration.md): the migration of the sync base onto the io-offline replica engine: the mapping, the stages, and what landed where.
+- [providers.md](providers.md): the living log of real-provider testing (posteo, fastmail, Google, Microsoft): status, quirks, and what each round should verify.

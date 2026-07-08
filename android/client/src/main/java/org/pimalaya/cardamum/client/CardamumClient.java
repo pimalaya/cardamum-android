@@ -130,6 +130,45 @@ public class CardamumClient {
         }
     }
 
+    /**
+     * Fetches an authorization server's RFC 8414 metadata from its
+     * issuer, so onboarding can drive the code grant and tell whether
+     * the server lets a public client register itself (RFC 7591).
+     */
+    public ServerMetadata oauthServerMetadata(String issuer) {
+        Transport transport = new Transport();
+        try {
+            return new ServerMetadata(object(Native.oauthServerMetadata(transport, issuer)));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Registers a public client at the given RFC 7591 registration
+     * endpoint (no secret, the loopback redirect URI, code + refresh
+     * grants), returning the server-issued client id. The client
+     * secret rides in {@link OauthTokens}-style JSON but a public
+     * client gets none.
+     */
+    public String oauthRegisterClient(
+            String registrationEndpoint, String redirectUri, String clientName, String scope) {
+        Transport transport = new Transport();
+        try {
+            JSONObject reply =
+                    object(
+                            Native.oauthRegisterClient(
+                                    transport,
+                                    registrationEndpoint,
+                                    redirectUri,
+                                    clientName == null ? "" : clientName,
+                                    scope == null ? "" : scope));
+            return string(reply, "client_id");
+        } finally {
+            transport.close();
+        }
+    }
+
     /** Connects, authenticates and lists once to prove the account is usable. */
     public void verify(Account account) {
         listAddressbooks(account);
@@ -281,6 +320,152 @@ public class CardamumClient {
         } finally {
             transport.close();
         }
+    }
+
+    /**
+     * Enumerates a CardDAV addressbook's card spine (resource name
+     * plus ETag, no body); the bodies are then batch-fetched with
+     * {@link #multigetCards}.
+     */
+    public List<Card> enumCards(Account account, String addressbookUrl) {
+        Transport transport = new Transport();
+        try {
+            JSONArray reply =
+                    array(
+                            Native.enumCards(
+                                    transport,
+                                    addressbookUrl,
+                                    account.login,
+                                    account.password));
+
+            List<Card> cards = new ArrayList<>(reply.length());
+            for (int index = 0; index < reply.length(); index++) {
+                JSONObject entry = object(reply, index);
+                cards.add(
+                        new Card(
+                                string(entry, "id"),
+                                string(entry, "uri"),
+                                optString(entry, "etag"),
+                                ""));
+            }
+            return cards;
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Lists a collection's changes since the given cursor, on every
+     * backend: a CardDAV sync-collection REPORT (RFC 6578), a Graph
+     * contacts delta round (id and changeKey only), a JMAP
+     * ContactCard/changes round (changed cards in full), or a People
+     * connections sync (changed contacts in full, account-wide with
+     * memberships). A null cursor runs the initial round: the complete
+     * member set plus the cursor to delta from next time. A cursor the
+     * server no longer accepts comes back as
+     * {@link CardDelta#invalidToken} so the caller re-runs an initial
+     * round.
+     */
+    public CardDelta syncCards(Account account, String addressbookUrl, String syncToken) {
+        Transport transport = new Transport();
+        try {
+            String cursor = syncToken == null ? "" : syncToken;
+            String reply;
+            if (isGoogle(account)) {
+                reply = Native.syncGoogleCards(transport, account.password, cursor);
+            } else if (isGraph(account)) {
+                reply =
+                        Native.deltaGraphCards(
+                                transport,
+                                account.password,
+                                graphFolder(account, addressbookUrl),
+                                cursor);
+            } else if (isJmap(account)) {
+                reply =
+                        Native.changesJmapCards(
+                                transport,
+                                jmapSessionUrl(account),
+                                account.login,
+                                account.password,
+                                cursor);
+            } else {
+                reply =
+                        Native.syncCards(
+                                transport,
+                                addressbookUrl,
+                                account.login,
+                                account.password,
+                                cursor);
+            }
+
+            JSONObject parsed = object(reply);
+            if (parsed.optBoolean("invalidToken")) {
+                return new CardDelta(List.of(), List.of(), null, true);
+            }
+
+            JSONArray rows = parsed.optJSONArray("changed");
+            List<Card> changed = new ArrayList<>(rows == null ? 0 : rows.length());
+            for (int index = 0; rows != null && index < rows.length(); index++) {
+                changed.add(card(object(rows, index)));
+            }
+
+            JSONArray gone = parsed.optJSONArray("vanished");
+            List<String> vanished = new ArrayList<>(gone == null ? 0 : gone.length());
+            for (int index = 0; gone != null && index < gone.length(); index++) {
+                vanished.add(gone.optString(index));
+            }
+
+            return new CardDelta(changed, vanished, optString(parsed, "token"), false);
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Batch-fetches the cards at the given resource names inside a
+     * CardDAV addressbook via REPORT addressbook-multiget.
+     */
+    public List<Card> multigetCards(Account account, String addressbookUrl, List<String> uris) {
+        Transport transport = new Transport();
+        try {
+            return cards(
+                    Native.multigetCards(
+                            transport,
+                            addressbookUrl,
+                            account.login,
+                            account.password,
+                            new JSONArray(uris).toString()));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Reconciles a collection with its remote through the io-offline
+     * engine, the driver servicing every storage and remote yield;
+     * with {@code full} the checkpoint is ignored and the whole remote
+     * is enumerated. Returns the sync report
+     * {@code {pulled, pushed, conflicts, rejected, refreshed}}.
+     */
+    public JSONObject offlineSync(OfflineDriver driver, String collection, boolean full) {
+        return object(Native.offlineSync(driver, collection, full));
+    }
+
+    /**
+     * Raises the given handles to the full detail tier through the
+     * io-offline engine (bodies deduped by link id against the store).
+     * Returns the upgrade report {@code {upgraded, fetched, deduped}}.
+     */
+    public JSONObject offlineUpgrade(OfflineDriver driver, String collection, List<String> handles) {
+        return object(Native.offlineUpgrade(driver, collection, new JSONArray(handles).toString()));
+    }
+
+    /**
+     * Stages a local mutation through the io-offline engine (storage
+     * yields only, the remote is never touched).
+     */
+    public void offlineMutate(OfflineDriver driver, String collection, JSONObject mutation) {
+        object(Native.offlineMutate(driver, collection, mutation.toString()));
     }
 
     /**

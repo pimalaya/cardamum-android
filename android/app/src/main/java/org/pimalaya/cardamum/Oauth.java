@@ -53,6 +53,15 @@ final class Oauth {
     /** Custom scheme, mirrored by the manifest intent-filter. */
     static final String MICROSOFT_REDIRECT_URI = "cardamum://oauth2redirect";
 
+    /**
+     * The redirect of the dynamic-registration issuer flow: a
+     * reverse-DNS private-use scheme (RFC 8252 §7.1), mirrored by the
+     * manifest intent-filter. Fastmail's registration rejects a
+     * loopback http redirect and a bare (dot-less) scheme alike, and
+     * accepts this reverse-DNS form; Stalwart accepts it too.
+     */
+    static final String REDIRECT_URI = "org.pimalaya.cardamum://oauth2redirect";
+
     /** The `common` tenant serves both personal (MSA) and Entra accounts. */
     static final String MICROSOFT_AUTH_ENDPOINT =
             "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";

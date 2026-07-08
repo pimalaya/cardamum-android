@@ -78,6 +78,28 @@ final class Native {
             String pkceVerifier);
 
     /**
+     * Fetches an authorization server's RFC 8414 metadata from its
+     * issuer (the {@code oauth-authorization-server} well-known,
+     * falling back to the OpenID Connect Discovery document). Returns
+     * the metadata JSON (issuer, endpoints, {@code registration_endpoint}
+     * when the server supports RFC 7591, grants, scopes).
+     */
+    static native String oauthServerMetadata(Transport transport, String issuer);
+
+    /**
+     * Registers a public client at an RFC 7591 registration endpoint
+     * ({@code token_endpoint_auth_method: none}, the given loopback
+     * redirect URI, code + refresh grants, client name and scope).
+     * Returns {@code {"client_id": "..", "client_secret": ".." | null}}.
+     */
+    static native String oauthRegisterClient(
+            Transport transport,
+            String registrationEndpoint,
+            String redirectUri,
+            String clientName,
+            String scope);
+
+    /**
      * Refreshes tokens against the token endpoint; {@code scope} is
      * the space-separated scope list of the original grant (empty
      * keeps the server default) and the client secret rides along when
@@ -234,6 +256,99 @@ final class Native {
             String password,
             String uri,
             String etag);
+
+    /**
+     * Enumerates the addressbook's card spine (resource name plus
+     * ETag, no body) as a JSON array of {@code {id, uri, etag}}.
+     */
+    static native String enumCards(
+            Transport transport, String addressbookUrl, String login, String password);
+
+    /**
+     * Runs a sync-collection REPORT (RFC 6578) against the
+     * addressbook, delta from the given sync token (empty for an
+     * initial sync); returns {@code {"changed": [{id, uri, etag}],
+     * "vanished": [uri], "token": ".."}}, or
+     * {@code {"invalidToken": true}} when the server rejected the
+     * token so the caller falls back to {@link #enumCards}.
+     */
+    static native String syncCards(
+            Transport transport,
+            String addressbookUrl,
+            String login,
+            String password,
+            String syncToken);
+
+    /**
+     * Batch-fetches the cards at the given resource names (a JSON
+     * string array) via REPORT addressbook-multiget; returns a JSON
+     * array of {@code {id, uri, etag, vcard}}.
+     */
+    static native String multigetCards(
+            Transport transport,
+            String addressbookUrl,
+            String login,
+            String password,
+            String uris);
+
+    /**
+     * Lists the ContactCard changes since the given state, the changed
+     * cards fetched in full (empty state runs the initial round: every
+     * card plus the state to delta from); returns {@code {"changed":
+     * [{id, uri, etag, vcard, books}], "vanished": [id], "token":
+     * ".."}}, or {@code {"invalidToken": true}} when the server can no
+     * longer compute changes from the state.
+     */
+    static native String changesJmapCards(
+            Transport transport,
+            String sessionUrl,
+            String login,
+            String password,
+            String state);
+
+    /**
+     * Lists the Graph contact changes since the given delta link, rows
+     * carrying the id and changeKey only (empty link runs the initial
+     * round: every contact plus the link to delta from); same shape as
+     * {@link #changesJmapCards}, {@code invalidToken} when the server
+     * expired the link.
+     */
+    static native String deltaGraphCards(
+            Transport transport, String token, String folder, String deltaLink);
+
+    /**
+     * Lists the People contact changes since the given sync token,
+     * deleted persons riding as vanished ids (empty token runs the
+     * initial round: every contact plus the token to delta from); same
+     * shape as {@link #changesJmapCards}, {@code invalidToken} when
+     * the server expired the token.
+     */
+    static native String syncGoogleCards(Transport transport, String token, String syncToken);
+
+    /**
+     * Reconciles the collection with its remote through the io-offline
+     * engine, servicing every engine yield via the driver; with
+     * {@code full} the checkpoint is ignored and the whole remote is
+     * enumerated. Returns the sync report {@code {pulled, pushed,
+     * conflicts, rejected, refreshed}}.
+     */
+    static native String offlineSync(OfflineDriver driver, String collection, boolean full);
+
+    /**
+     * Raises the given handles (a JSON string array) to the full
+     * detail tier through the io-offline engine, servicing every
+     * engine yield via the driver. Returns the upgrade report
+     * {@code {upgraded, fetched, deduped}}.
+     */
+    static native String offlineUpgrade(OfflineDriver driver, String collection, String handles);
+
+    /**
+     * Stages a local mutation (a JSON object, e.g. {@code {"op":
+     * "edit", handle, hash, size, body, meta}}) through the io-offline
+     * engine, servicing the storage yields via the driver; the remote
+     * is never touched. Returns {@code {}}.
+     */
+    static native String offlineMutate(OfflineDriver driver, String collection, String mutation);
 
     /**
      * Lists the Microsoft Graph contact folders (default Contacts

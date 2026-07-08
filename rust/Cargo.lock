@@ -98,6 +98,7 @@ dependencies = [
  "io-jmap",
  "io-msgraph",
  "io-oauth",
+ "io-offline",
  "io-webdav",
  "jni",
  "pimconf",
@@ -508,7 +509,7 @@ dependencies = [
 [[package]]
 name = "io-http"
 version = "0.1.1"
-source = "git+https://github.com/pimalaya/io-http#cf98a4722bfbb49efca65cdd7ca6fc20044e47a2"
+source = "git+https://github.com/pimalaya/io-http#0ef0eb6a73f6f02853c09f95f669a46c01b3b3f5"
 dependencies = [
  "base64",
  "httparse",
@@ -522,7 +523,7 @@ dependencies = [
 [[package]]
 name = "io-jmap"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-jmap#f7acdd2503c123e8a7b623681f6805ddf172307f"
+source = "git+https://github.com/pimalaya/io-jmap#9df8e996e446ca5a7650176a368e7fc592da1956"
 dependencies = [
  "io-http",
  "log",
@@ -536,7 +537,7 @@ dependencies = [
 [[package]]
 name = "io-msgraph"
 version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-msgraph#691557cfcc99e1b7878f08ce42be410746c5dc62"
+source = "git+https://github.com/pimalaya/io-msgraph#b99061daa45ef1250db5529c44b3e5b9ac6cf723"
 dependencies = [
  "base64",
  "io-http",
@@ -551,7 +552,7 @@ dependencies = [
 [[package]]
 name = "io-oauth"
 version = "0.0.4"
-source = "git+https://github.com/pimalaya/io-oauth#a7b3e5271d93d819138b557d6a7b76b11b9fb36b"
+source = "git+https://github.com/pimalaya/io-oauth#59d84053ab32726d2b89e85c37871534b6d64237"
 dependencies = [
  "base64",
  "io-http",
@@ -562,6 +563,15 @@ dependencies = [
  "sha2",
  "thiserror",
  "url",
+]
+
+[[package]]
+name = "io-offline"
+version = "0.1.0"
+source = "git+https://github.com/pimalaya/io-offline#9e692408e307a64e8285a073438be386ea7dc9d5"
+dependencies = [
+ "log",
+ "thiserror",
 ]
 
 [[package]]
@@ -770,7 +780,7 @@ dependencies = [
 [[package]]
 name = "pimconf"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/pimconf#14e8083662146c55b4941a8b5676a3a4c86e449e"
+source = "git+https://github.com/pimalaya/pimconf#716cadc8c77e62c54ca54d8724b9f74bebd61dd7"
 dependencies = [
  "base64",
  "domain",
