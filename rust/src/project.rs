@@ -220,9 +220,13 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
     let mut card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
     let version = card.version();
 
-    // FN is mandatory: the display name, or composed from N's parts.
+    // FN only persists when the card actually carries a display name;
+    // the views compose one on the fly otherwise, nothing is minted.
     card.remove::<FN>();
-    card.push(text_prop(VcardPropKind::Fn, vec![], &display_name(model)));
+    let display = field(model, "displayName");
+    if !display.is_empty() {
+        card.push(text_prop(VcardPropKind::Fn, vec![], display));
+    }
 
     card.remove::<N>();
     if let Some(name) = model.get("name").and_then(Value::as_object) {
@@ -452,7 +456,10 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&card.to_bytes()).into_owned())
 }
 
-/// The model's display name, composed from the name parts when blank.
+/// The display name to SHOW (never persisted): FN when the card has
+/// one, else composed on the fly from the name parts, else the first
+/// nickname, email or phone, so a nameless card still reads as
+/// something in the lists.
 fn display_name(model: &Value) -> String {
     let display = field(model, "displayName");
     if !display.is_empty() {
@@ -461,14 +468,33 @@ fn display_name(model: &Value) -> String {
 
     let mut composed = Vec::new();
     if let Some(name) = model.get("name").and_then(Value::as_object) {
-        for key in ["given", "family"] {
+        for key in ["prefix", "given", "middle", "family", "suffix"] {
             let part = name.get(key).and_then(Value::as_str).unwrap_or("").trim();
             if !part.is_empty() {
                 composed.push(part);
             }
         }
     }
-    composed.join(" ")
+    if !composed.is_empty() {
+        return composed.join(" ");
+    }
+
+    let nickname = model
+        .get("nicknames")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !nickname.is_empty() {
+        return nickname.to_string();
+    }
+
+    let email = first_entry(model, "emails", "address");
+    if !email.is_empty() {
+        return email;
+    }
+    first_entry(model, "phones", "number")
 }
 
 /// A canonical text property built from an owned value.
@@ -615,7 +641,7 @@ pub(crate) fn full_date(raw: &str) -> Option<String> {
 pub fn index(vcard: &str) -> Result<Value, String> {
     let model = project(vcard)?;
 
-    let name = single_field(&model, "displayName").to_string();
+    let name = display_name(&model);
     let uid = single_field(&model, "uid").to_string();
     let email = first_entry(&model, "emails", "address");
     let phone = first_entry(&model, "phones", "number");
@@ -835,8 +861,200 @@ fn find(parent: &mut [usize], mut index: usize) -> usize {
 /// source order, unfolded, envelope excluded (VERSION included).
 pub fn card_props(vcard: &str) -> Result<Value, String> {
     let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
-    let lines: Vec<String> = card.props.iter().map(raw_line).collect();
-    Ok(json!(lines))
+
+    let props: Vec<Value> = card
+        .props
+        .iter()
+        .map(|prop| {
+            let line = raw_line(prop);
+            let value = line
+                .find(':')
+                .map(|colon| &line[colon + 1..])
+                .unwrap_or("")
+                .to_string();
+            let params: Vec<Value> = prop
+                .params
+                .iter()
+                .map(|param| {
+                    json!({
+                        "name": param.name.get(),
+                        "values": param
+                            .values
+                            .iter()
+                            .map(|value| value.get())
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            let mut entry = json!({
+                "name": prop.name.get(),
+                "params": params,
+                "value": value,
+                "line": line,
+            });
+            if let Some(components) = structured_components(prop, card.version()) {
+                entry["components"] = components;
+            }
+            entry
+        })
+        .collect();
+
+    Ok(json!(props))
+}
+
+/// Recomposes one property from its structured parts (`{"name",
+/// "params": [{"name", "values"}], "value"}`) and rewrites it like
+/// [`card_set_prop`] (-1 appends). Separators and quotes are dropped
+/// from parameter values: the CST's head parser is not quote-aware,
+/// so a quoted separator would not survive a round trip.
+pub fn card_set_prop_parts(vcard: &str, index: i64, prop: &Value) -> Result<String, String> {
+    let name = field(prop, "name").to_uppercase();
+    if name.is_empty() {
+        return Err("Empty property name".into());
+    }
+
+    let mut line = name;
+    for param in array(prop.get("params")) {
+        let param_name = field(param, "name");
+        if param_name.is_empty() {
+            continue;
+        }
+        line.push(';');
+        line.push_str(param_name);
+        let values: Vec<String> = strings(param.get("values"))
+            .iter()
+            .map(|value| quote_param(value))
+            .collect();
+        if !values.is_empty() {
+            line.push('=');
+            line.push_str(&values.join(","));
+        }
+    }
+    // A structured value comes as named components (its shape from
+    // card_prop_labels): every component is a comma list, its items
+    // escaped, the components joined by semicolons. A plain value
+    // rides as-is.
+    line.push(':');
+    if let Some(components) = prop.get("components").and_then(Value::as_array) {
+        let composed = components
+            .iter()
+            .map(|component| {
+                component
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .split(',')
+                    .map(|item| escape_component(item.trim()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .collect::<Vec<_>>()
+            .join(";");
+        line.push_str(&composed);
+    } else {
+        line.push_str(prop.get("value").and_then(Value::as_str).unwrap_or(""));
+    }
+
+    card_set_prop(vcard, index, &line)
+}
+
+/// The component labels of a structured property value (N, ADR,
+/// GENDER), empty for plain values: the advanced editor shapes its
+/// value form from them, mirroring the vcard-rs value types.
+pub fn card_prop_labels(name: &str) -> Vec<&'static str> {
+    match VcardPropKind::from_str(name) {
+        Ok(VcardPropKind::N) => vec![
+            "Family name",
+            "Given name",
+            "Additional names",
+            "Prefixes",
+            "Suffixes",
+        ],
+        Ok(VcardPropKind::Adr) => vec![
+            "PO box",
+            "Extended",
+            "Street",
+            "Locality",
+            "Region",
+            "Postal code",
+            "Country",
+        ],
+        Ok(VcardPropKind::Gender) => vec!["Sex", "Identity"],
+        _ => Vec::new(),
+    }
+}
+
+/// The property's decoded components zipped with their labels, None
+/// for plain values. Multi-valued components read as comma lists.
+fn structured_components(line: &VcardLine, version: VcardVersion) -> Option<Value> {
+    let kind = VcardPropKind::from_str(line.name.get()).ok()?;
+    let values: Vec<String> = match kind {
+        VcardPropKind::N => {
+            let n = N::decode(line, version);
+            vec![
+                n.family.join(","),
+                n.given.join(","),
+                n.additional.join(","),
+                n.prefixes.join(","),
+                n.suffixes.join(","),
+            ]
+        }
+        VcardPropKind::Adr => {
+            let adr = ADR::decode(line, version);
+            vec![
+                adr.po_box.join(","),
+                adr.extended.join(","),
+                adr.street.join(","),
+                adr.locality.join(","),
+                adr.region.join(","),
+                adr.postal_code.join(","),
+                adr.country.join(","),
+            ]
+        }
+        VcardPropKind::Gender => {
+            let gender = GENDER::decode(line, version);
+            vec![gender.sex.to_string(), gender.identity.to_string()]
+        }
+        _ => return None,
+    };
+
+    let components: Vec<Value> = card_prop_labels(line.name.get())
+        .iter()
+        .zip(values)
+        .map(|(label, value)| json!({ "name": label, "value": value }))
+        .collect();
+    Some(Value::Array(components))
+}
+
+/// One escaped item of a structured component (RFC 6350 3.4).
+fn escape_component(item: &str) -> String {
+    let mut out = String::with_capacity(item.len());
+    for next in item.chars() {
+        match next {
+            '\\' => out.push_str("\\\\"),
+            ';' => out.push_str("\\;"),
+            ',' => out.push_str("\\,"),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(next),
+        }
+    }
+    out
+}
+
+/// A parameter value, its separators and quotes dropped.
+fn quote_param(value: &str) -> String {
+    value
+        .chars()
+        .filter(|next| !matches!(next, '"' | ';' | ':' | ','))
+        .collect()
+}
+
+/// Validates a hand-edited vCard source for the advanced editor: it
+/// must reparse, and comes back re-serialized.
+pub fn card_source(vcard: &str) -> Result<String, String> {
+    let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
+    Ok(String::from_utf8_lossy(&card.to_bytes()).into_owned())
 }
 
 /// Rewrites one raw property line for the advanced editor: `index`
@@ -1355,8 +1573,9 @@ mod tests {
         let props = card_props(vcard).unwrap();
         let props = props.as_array().unwrap();
         assert_eq!(props.len(), 3);
-        assert_eq!(props[0], "VERSION:4.0");
-        assert_eq!(props[2], "X-FOO:bar");
+        assert_eq!(props[0]["line"], "VERSION:4.0");
+        assert_eq!(props[2]["name"], "X-FOO");
+        assert_eq!(props[2]["value"], "bar");
 
         let edited = card_set_prop(vcard, 2, "X-FOO:baz").unwrap();
         assert!(edited.contains("X-FOO:baz\r\n"), "got: {edited}");
@@ -1369,6 +1588,51 @@ mod tests {
         assert!(appended.contains("NOTE:hi\r\n"), "got: {appended}");
 
         assert!(card_set_prop(vcard, 9, "X:y").is_err());
+    }
+
+    #[test]
+    fn card_set_prop_parts_recomposes_and_card_source_validates() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Jane\r\nEND:VCARD\r\n";
+
+        let prop = json!({
+            "name": "tel",
+            "params": [{ "name": "TYPE", "values": ["cell", "a;b"] }],
+            "value": "+336",
+        });
+        let fresh = card_set_prop_parts(vcard, -1, &prop).unwrap();
+        assert!(fresh.contains("TEL;TYPE=cell,ab:+336\r\n"), "got: {fresh}");
+
+        let props = card_props(&fresh).unwrap();
+        let tel = &props.as_array().unwrap()[2];
+        assert_eq!(tel["params"][0]["name"], "TYPE");
+        assert_eq!(tel["params"][0]["values"][0], "cell");
+
+        assert!(card_source(&fresh).unwrap().contains("FN:Jane\r\n"));
+        assert!(card_set_prop_parts(vcard, -1, &json!({ "value": "x" })).is_err());
+
+        // Structured values recompose from labeled components, items
+        // escaped; card_props decodes them back.
+        let structured = json!({
+            "name": "N",
+            "params": [],
+            "components": [
+                { "value": "Doe;X" },
+                { "value": "Jane" },
+                { "value": "" },
+                { "value": "Dr" },
+                { "value": "" },
+            ],
+        });
+        let named = card_set_prop_parts(vcard, -1, &structured).unwrap();
+        assert!(named.contains("N:Doe\\;X;Jane;;Dr;\r\n"), "got: {named}");
+
+        let props = card_props(&named).unwrap();
+        let n = &props.as_array().unwrap()[2];
+        assert_eq!(n["components"][0]["name"], "Family name");
+        assert_eq!(n["components"][0]["value"], "Doe;X");
+        assert_eq!(n["components"][3]["value"], "Dr");
+        assert_eq!(card_prop_labels("ADR").len(), 7);
+        assert!(card_prop_labels("TEL").is_empty());
     }
 
     #[test]
@@ -1557,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_composes_fn_and_drops_emptied_fields() {
+    fn apply_never_mints_fn_and_drops_emptied_fields() {
         let vcard =
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Old\r\nTITLE:Boss\r\nNOTE:gone\r\nEND:VCARD\r\n";
         let model = json!({
@@ -1567,9 +1831,14 @@ mod tests {
             "notes": [],
         });
 
+        // An emptied display name drops FN instead of persisting a
+        // composed one; the views compose on the fly (index name).
         let patched = apply(vcard, &model).unwrap();
-        assert!(patched.contains("FN:Jane Doe\r\n"));
+        assert!(!patched.contains("FN:"), "got: {patched}");
         assert!(!patched.contains("TITLE"));
         assert!(!patched.contains("NOTE"));
+
+        let indexed = index(&patched).unwrap();
+        assert_eq!(indexed["name"], "Jane Doe");
     }
 }

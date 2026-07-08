@@ -140,18 +140,26 @@ final class ContactForm {
     private void render() {
         container.removeAllViews();
 
-        // Identity holds the solo fields: the name card and birthday.
-        // Every multi-valued list is its own section below.
+        // Identity holds the solo fields: the display name (its own
+        // line), the name parts, the dates and the gender. Every
+        // multi-valued list is its own section below.
         List<View> identity = new ArrayList<>();
+        if (!conflict() || conflicted("displayName")) {
+            identity.add(
+                    entryItem(
+                            getS(R.string.hint_display_name),
+                            value(model.optString("displayName")),
+                            this::displayNameDialog));
+        }
         if (!conflict()
                 || conflicted(
-                        "displayName",
                         "name.prefix",
                         "name.given",
                         "name.middle",
                         "name.family",
                         "name.suffix")) {
-            identity.add(entryItem(nameSummary(), null, this::nameDialog));
+            identity.add(
+                    entryItem(getS(R.string.item_name), nameSummary(), this::nameDialog));
         }
         if (!conflict() || conflicted("birthday")) {
             identity.add(
@@ -171,7 +179,7 @@ final class ContactForm {
             identity.add(
                     entryItem(getS(R.string.item_gender), genderSummary(), this::genderDialog));
         }
-        section(R.string.section_identity, identity);
+        section(R.string.section_identity, R.drawable.ic_section_person, identity);
 
         if (!conflict() || changedLists.contains("nicknames")) {
             List<View> items = new ArrayList<>();
@@ -185,7 +193,7 @@ final class ContactForm {
                                 () -> stringDialog("nicknames", at, R.string.item_nickname, 0,
                                         TEXT_NAME)));
             }
-            listSection(R.string.section_nicknames, R.string.add_nickname, items,
+            listSection(R.string.section_nicknames, R.drawable.ic_section_label, R.string.add_nickname, items,
                     () -> stringDialog("nicknames", -1, R.string.item_nickname, 0, TEXT_NAME));
         }
 
@@ -199,7 +207,7 @@ final class ContactForm {
                             organizationSummary(),
                             this::organizationDialog));
         }
-        section(R.string.tab_work, work);
+        section(R.string.tab_work, R.drawable.ic_section_work, work);
 
         if (!conflict() || changedLists.contains("relations")) {
             List<View> items = new ArrayList<>();
@@ -215,7 +223,7 @@ final class ContactForm {
                                         typeIndex(entry, RELATION_TYPES)),
                                 () -> relationDialog(at)));
             }
-            listSection(R.string.section_relations, R.string.add_relation, items,
+            listSection(R.string.section_relations, R.drawable.ic_section_group, R.string.add_relation, items,
                     () -> relationDialog(-1));
         }
 
@@ -231,7 +239,7 @@ final class ContactForm {
                                 typeLabel(R.array.phone_types, phoneTypeIndex(entry)),
                                 () -> phoneDialog(at)));
             }
-            listSection(R.string.section_phones, R.string.add_phone, items,
+            listSection(R.string.section_phones, R.drawable.ic_section_call, R.string.add_phone, items,
                     () -> phoneDialog(-1));
         }
 
@@ -247,7 +255,7 @@ final class ContactForm {
                                 typeLabel(R.array.email_types, typeIndex(entry, HOME_WORK_OTHER)),
                                 () -> emailDialog(at)));
             }
-            listSection(R.string.section_emails, R.string.add_email, items,
+            listSection(R.string.section_emails, R.drawable.ic_section_mail, R.string.add_email, items,
                     () -> emailDialog(-1));
         }
 
@@ -265,7 +273,7 @@ final class ContactForm {
                                         InputType.TYPE_CLASS_TEXT
                                                 | InputType.TYPE_TEXT_VARIATION_URI)));
             }
-            listSection(R.string.section_impps, R.string.add_impp, items,
+            listSection(R.string.section_impps, R.drawable.ic_section_chat, R.string.add_impp, items,
                     () -> stringDialog("impps", -1, R.string.item_impp, R.string.hint_impp,
                             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
         }
@@ -284,7 +292,7 @@ final class ContactForm {
                                         typeIndex(entry, HOME_WORK_OTHER)),
                                 () -> addressDialog(at)));
             }
-            listSection(R.string.section_addresses, R.string.add_address, items,
+            listSection(R.string.section_addresses, R.drawable.ic_section_location_on, R.string.add_address, items,
                     () -> addressDialog(-1));
         }
 
@@ -302,7 +310,7 @@ final class ContactForm {
                                         InputType.TYPE_CLASS_TEXT
                                                 | InputType.TYPE_TEXT_VARIATION_URI)));
             }
-            listSection(R.string.section_websites, R.string.add_website, items,
+            listSection(R.string.section_websites, R.drawable.ic_section_language, R.string.add_website, items,
                     () -> stringDialog("websites", -1, R.string.item_website,
                             R.string.hint_url,
                             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
@@ -320,7 +328,7 @@ final class ContactForm {
                                 () -> stringDialog("languages", at, R.string.item_language,
                                         R.string.hint_language, InputType.TYPE_CLASS_TEXT)));
             }
-            listSection(R.string.section_languages, R.string.add_language, items,
+            listSection(R.string.section_languages, R.drawable.ic_section_translate, R.string.add_language, items,
                     () -> stringDialog("languages", -1, R.string.item_language,
                             R.string.hint_language, InputType.TYPE_CLASS_TEXT));
         }
@@ -332,17 +340,18 @@ final class ContactForm {
                 int at = index;
                 items.add(entryItem(notes.optString(index), null, () -> noteDialog(at)));
             }
-            listSection(R.string.section_notes, R.string.add_note, items,
+            listSection(R.string.section_notes, R.drawable.ic_section_notes, R.string.add_note, items,
                     () -> noteDialog(-1));
         }
 
     }
 
     /**
-     * Adds a section header and its items, separated from the previous
-     * section by a line in the app bar tone; an empty section vanishes.
+     * Adds a section header (its icon in front of the accent label)
+     * and its items, separated from the previous section by a line in
+     * the app bar tone; an empty section vanishes.
      */
-    private void section(int title, List<View> items) {
+    private void section(int title, int icon, List<View> items) {
         if (items.isEmpty()) {
             return;
         }
@@ -357,11 +366,26 @@ final class ContactForm {
             container.addView(line, params);
         }
 
-        TextView header = new TextView(activity);
-        header.setText(title);
-        header.setTextColor(accentColor);
-        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        ImageView iconView = new ImageView(activity);
+        iconView.setImageResource(icon);
+        iconView.setImageTintList(ColorStateList.valueOf(accentColor));
+
+        TextView label = new TextView(activity);
+        label.setText(title);
+        label.setTextColor(accentColor);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams labelParams =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        labelParams.setMarginStart(dp(8));
+
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(12), dp(16), dp(4));
+        header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
+        header.addView(label, labelParams);
         container.addView(header);
 
         for (View item : items) {
@@ -374,10 +398,10 @@ final class ContactForm {
      * "Add ..." row. An empty list still shows its header and add row,
      * since that row is the way in.
      */
-    private void listSection(int title, int addLabel, List<View> items, Runnable onAdd) {
+    private void listSection(int title, int icon, int addLabel, List<View> items, Runnable onAdd) {
         List<View> rows = new ArrayList<>(items);
         rows.add(addItem(addLabel, onAdd));
-        section(title, rows);
+        section(title, icon, rows);
     }
 
     /** The add action closing a repeatable section. */
@@ -436,12 +460,8 @@ final class ContactForm {
 
     // ---- Item summaries -----------------------------------------------------
 
+    /** The name parts composed (the display name has its own row). */
     private String nameSummary() {
-        String display = model.optString("displayName").trim();
-        if (!display.isEmpty()) {
-            return display;
-        }
-
         JSONObject name = model.optJSONObject("name");
         StringBuilder composed = new StringBuilder();
         if (name != null) {
@@ -524,14 +544,32 @@ final class ContactForm {
 
     // ---- Dialogs ------------------------------------------------------------
 
+    /** The display name has its own row: one field, view-composed
+     * otherwise (the bridge never mints an FN). */
+    private void displayNameDialog() {
+        LinearLayout content = dialogContent();
+        EditText display =
+                dialogField(content, "displayName", R.string.hint_display_name,
+                        model.optString("displayName"), TEXT_NAME);
+
+        showDialog(
+                getS(R.string.hint_display_name),
+                content,
+                () -> {
+                    try {
+                        model.put("displayName", text(display));
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                null);
+    }
+
     private void nameDialog() {
         JSONObject name = model.optJSONObject("name");
         JSONObject safe = name == null ? new JSONObject() : name;
 
         LinearLayout content = dialogContent();
-        EditText display =
-                dialogField(content, "displayName", R.string.hint_display_name,
-                        model.optString("displayName"), TEXT_NAME);
         EditText prefix =
                 dialogField(content, "name.prefix", R.string.hint_prefix,
                         safe.optString("prefix"), TEXT_NAME);
@@ -553,7 +591,6 @@ final class ContactForm {
                 content,
                 () -> {
                     try {
-                        model.put("displayName", text(display));
                         model.put(
                                 "name",
                                 new JSONObject()

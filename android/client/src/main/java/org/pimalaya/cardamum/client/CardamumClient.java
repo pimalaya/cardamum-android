@@ -568,6 +568,32 @@ public class CardamumClient {
         return string(object(Native.cardSetProp(vcard, index, line)), "vcard");
     }
 
+    /**
+     * Recomposes one property from its structured parts ({@code {name,
+     * params: [{name, values}], value}}) and rewrites it (index -1
+     * appends). Pure computation, no transport.
+     */
+    public String cardSetPropParts(String vcard, int index, JSONObject prop) {
+        return string(object(Native.cardSetPropParts(vcard, index, prop.toString())), "vcard");
+    }
+
+    /**
+     * The component labels of a structured property name (N, ADR,
+     * GENDER), empty for plain values: the advanced editor shapes its
+     * value form from them. Pure computation, no transport.
+     */
+    public JSONArray cardPropLabels(String name) {
+        return object(Native.cardPropLabels(name)).optJSONArray("labels");
+    }
+
+    /**
+     * Validates a hand-edited vCard source (it must reparse) and
+     * returns it re-serialized. Pure computation, no transport.
+     */
+    public String cardSource(String vcard) {
+        return string(object(Native.cardSource(vcard)), "vcard");
+    }
+
     /** Deletes the card from the addressbook collection. */
     public void deleteCard(Account account, String addressbookUrl, Card card) {
         Transport transport = new Transport();

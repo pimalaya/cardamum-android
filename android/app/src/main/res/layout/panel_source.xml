@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The full vCard source editor, the advanced editor's second level:
+     free-hand text, validated by reparse when the check FAB applies
+     it. Its bar elements live in the persistent chrome. -->
+<EditText xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/source_input"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@null"
+    android:gravity="top|start"
+    android:inputType="textMultiLine|textNoSuggestions"
+    android:padding="16dp"
+    android:textColor="?android:attr/textColorPrimary"
+    android:textSize="13sp"
+    android:typeface="monospace" />

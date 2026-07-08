@@ -19,8 +19,8 @@ use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
     project::{
-        apply, card_props, card_set_prop, find_duplicates, index, merge_cards, merge_conflict,
-        project, set_uid,
+        apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
+        find_duplicates, index, merge_cards, merge_conflict, project, set_uid,
     },
     types::Credentials,
 };
@@ -1316,6 +1316,75 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSetProp<'loc
         let line = read_string(env, &line);
 
         let json = match card_set_prop(&vcard, index as i64, &line) {
+            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardSetPropParts`: recomposes one property from its
+/// structured parts (`{"name", "params": [{"name", "values"}],
+/// "value"}`) and rewrites it (index -1 appends); pure computation, no
+/// transport. Returns `{"vcard": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSetPropParts<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+    index: jint,
+    prop: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+        let prop = read_string(env, &prop);
+
+        let json = match serde_json::from_str(&prop) {
+            Err(err) => error_json(&format!("Invalid property: {err}")),
+            Ok(prop) => match card_set_prop_parts(&vcard, index as i64, &prop) {
+                Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardPropLabels`: the component labels of a structured
+/// property name (N, ADR, GENDER; empty for plain values), shaping the
+/// advanced editor's value form; pure computation, no transport.
+/// Returns `{"labels": [...]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardPropLabels<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    name: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let name = read_string(env, &name);
+        let json = serde_json::json!({ "labels": card_prop_labels(&name) }).to_string();
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardSource`: validates a hand-edited vCard source (it must
+/// reparse) and returns it re-serialized; pure computation, no
+/// transport. Returns `{"vcard": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSource<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+
+        let json = match card_source(&vcard) {
             Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
             Err(err) => error_json(&err),
         };

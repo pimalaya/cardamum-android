@@ -149,6 +149,16 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
+        <!-- Contacts: the duplicate remover, between search and sync. -->
+        <ImageButton
+            android:id="@+id/contacts_duplicates"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/dup_find"
+            android:src="@drawable/ic_merge"
+            android:tint="?android:attr/textColorPrimary" />
+
         <!-- Contacts: the sync icon gives way to a spinner while a
              sync runs. -->
         <FrameLayout
@@ -212,6 +222,8 @@
         <include layout="@layout/panel_contact" />
 
         <include layout="@layout/panel_advanced" />
+
+        <include layout="@layout/panel_source" />
 
     </ViewFlipper>
 

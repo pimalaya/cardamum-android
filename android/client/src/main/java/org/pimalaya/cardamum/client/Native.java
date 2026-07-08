@@ -189,6 +189,28 @@ final class Native {
     static native String cardSetProp(String vcard, int index, String line);
 
     /**
+     * Recomposes one property from its structured parts
+     * ({@code {name, params: [{name, values}], value}}) and rewrites
+     * it (index -1 appends); pure computation, no transport. Returns
+     * {@code {"vcard": ".."}}.
+     */
+    static native String cardSetPropParts(String vcard, int index, String prop);
+
+    /**
+     * The component labels of a structured property name (N, ADR,
+     * GENDER; empty for plain values); pure computation, no transport.
+     * Returns {@code {"labels": [...]}}.
+     */
+    static native String cardPropLabels(String name);
+
+    /**
+     * Validates a hand-edited vCard source (it must reparse) and
+     * returns it re-serialized; pure computation, no transport.
+     * Returns {@code {"vcard": ".."}}.
+     */
+    static native String cardSource(String vcard);
+
+    /**
      * Projects a vCard onto the neutral field model the app maps to
      * ContactsContract rows; pure computation, no transport.
      */

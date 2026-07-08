@@ -176,10 +176,8 @@
     <string name="clear">Clear</string>
 
     <string name="dup_find">Find duplicates</string>
-    <string name="dup_find_hint">Review similar contacts one by one</string>
-    <string name="dup_title">Possible duplicate (%1$d/%2$d)</string>
+    <string name="dup_title">Possible duplicate</string>
     <string name="dup_none">No duplicates found</string>
-    <string name="dup_done">Review finished</string>
     <string name="dup_ignore">Ignore</string>
     <string name="dup_merge">Merge</string>
     <string name="dup_link">Link</string>
@@ -192,6 +190,11 @@
     <string name="advanced_add">Add property</string>
     <string name="advanced_source">Source</string>
     <string name="advanced_hint">NAME;PARAM=value:value</string>
+    <string name="advanced_prop_name">Name</string>
+    <string name="advanced_value">Value</string>
+    <string name="advanced_param_name">Parameter</string>
+    <string name="advanced_param_values">Values (comma-separated)</string>
+    <string name="advanced_add_param">Add parameter</string>
     <string name="advanced_invalid">Invalid property</string>
 
     <string-array name="phone_types">
