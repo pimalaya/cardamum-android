@@ -167,6 +167,20 @@ final class Native {
     static native String setCardUid(String vcard, String uid);
 
     /**
+     * Lists the card's raw property lines for the advanced editor;
+     * pure computation, no transport. Returns
+     * {@code {"props": ["VERSION:4.0", ...]}}.
+     */
+    static native String cardProps(String vcard);
+
+    /**
+     * Rewrites one raw property line for the advanced editor (a blank
+     * line removes, index -1 appends); pure computation, no transport.
+     * Returns {@code {"vcard": ".."}}.
+     */
+    static native String cardSetProp(String vcard, int index, String line);
+
+    /**
      * Projects a vCard onto the neutral field model the app maps to
      * ContactsContract rows; pure computation, no transport.
      */

@@ -4,7 +4,7 @@
 //! maps to ContactsContract rows and edit-form fields; [`apply`] patches
 //! an edited model back onto the original vCard through the vcard-rs
 //! CST, so every property the model does not manage (PHOTO, CATEGORIES,
-//! IMPP, X-*, parameters of unmanaged lines) survives byte for byte.
+//! KIND, X-*, parameters of unmanaged lines) survives byte for byte.
 //! See docs/contacts-mapping.md. First version: well-defined properties
 //! only, per the custom property policy; X-* properties are neither
 //! read nor written. Types are passed through as a lowercase list; the
@@ -22,15 +22,18 @@ use vcard::{
         line::VcardLine,
         merge::merge,
         prop::{
-            VcardPropLens, adr::ADR, bday::BDAY, categories::CATEGORIES, email::EMAIL, r#fn::FN,
-            n::N, nickname::NICKNAME, note::NOTE, org::ORG, role::ROLE, tel::TEL, title::TITLE,
-            uid::UID, url::URL,
+            VcardPropLens, adr::ADR, anniversary::ANNIVERSARY, bday::BDAY, categories::CATEGORIES,
+            email::EMAIL, r#fn::FN, gender::GENDER, impp::IMPP, lang::LANG, n::N,
+            nickname::NICKNAME, note::NOTE, org::ORG, related::RELATED, role::ROLE, tel::TEL,
+            title::TITLE, uid::UID, url::URL,
         },
     },
     value::{
         VcardValue,
         adr::VcardAdr,
         datetime::VcardDateAndOrTime,
+        gender::VcardGender,
+        language::VcardLanguageTag,
         n::VcardN,
         org::VcardOrg,
         text::{VcardText, VcardTextList},
@@ -52,6 +55,9 @@ pub fn project(vcard: &str) -> Result<Value, String> {
     let mut nicknames = Vec::new();
     let mut notes = Vec::new();
     let mut categories = Vec::new();
+    let mut impps = Vec::new();
+    let mut languages = Vec::new();
+    let mut relations = Vec::new();
 
     for line in &card.props {
         let Ok(kind) = VcardPropKind::from_str(line.name.get()) else {
@@ -146,6 +152,36 @@ pub fn project(vcard: &str) -> Result<Value, String> {
                     first(&mut model, "birthday", Value::String(date));
                 }
             }
+            VcardPropKind::Anniversary => {
+                if let Some(date) = full_date(&line.raw_value_str()) {
+                    first(&mut model, "anniversary", Value::String(date));
+                }
+            }
+            VcardPropKind::Gender => {
+                let gender = GENDER::decode(line, version);
+                first(
+                    &mut model,
+                    "gender",
+                    json!({ "sex": text(&gender.sex), "identity": text(&gender.identity) }),
+                );
+            }
+            VcardPropKind::Impp => {
+                let impp = IMPP::decode(line, version);
+                impps.push(text(&impp.0));
+            }
+            VcardPropKind::Lang => {
+                let lang = LANG::decode(line, version);
+                languages.push(text(&lang.0));
+            }
+            VcardPropKind::Related => {
+                let related = RELATED::decode(line, version);
+                let (types, pref) = types(line);
+                relations.push(json!({
+                    "value": text(&related.0),
+                    "types": types,
+                    "pref": pref,
+                }));
+            }
             VcardPropKind::Note => {
                 let note = NOTE::decode(line, version);
                 notes.push(text(&note.0));
@@ -168,6 +204,9 @@ pub fn project(vcard: &str) -> Result<Value, String> {
     model.insert("nicknames".into(), Value::Array(nicknames));
     model.insert("notes".into(), Value::Array(notes));
     model.insert("categories".into(), Value::Array(categories));
+    model.insert("impps".into(), Value::Array(impps));
+    model.insert("languages".into(), Value::Array(languages));
+    model.insert("relations".into(), Value::Array(relations));
 
     Ok(Value::Object(model))
 }
@@ -175,7 +214,7 @@ pub fn project(vcard: &str) -> Result<Value, String> {
 /// Patches the edited field model back onto the vCard. Every managed
 /// property is removed and rewritten from the model in canonical form
 /// (appended at the end of the card); every other line keeps its exact
-/// bytes, so unmanaged data (PHOTO, CATEGORIES, IMPP, X-*) survives.
+/// bytes, so unmanaged data (PHOTO, CATEGORIES, KIND, X-*) survives.
 pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
     let mut card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
     let version = card.version();
@@ -335,6 +374,80 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
         card.push(text_prop(VcardPropKind::Note, vec![], &note));
     }
 
+    card.remove::<ANNIVERSARY>();
+    if let Some(date) = full_date(field(model, "anniversary")) {
+        card.push(VcardProp {
+            name: VcardPropName::Kind(VcardPropKind::Anniversary),
+            params: vec![],
+            value: VcardValue::DateAndOrTime(VcardDateAndOrTime(Cow::Owned(date))),
+        });
+    }
+
+    card.remove::<GENDER>();
+    if let Some(gender) = model.get("gender").and_then(Value::as_object) {
+        let sex = gender
+            .get("sex")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let identity = gender
+            .get("identity")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+
+        if !sex.is_empty() || !identity.is_empty() {
+            card.push(VcardProp {
+                name: VcardPropName::Kind(VcardPropKind::Gender),
+                params: vec![],
+                value: VcardValue::Gender(VcardGender {
+                    sex: Cow::Owned(sex.to_string()),
+                    identity: Cow::Owned(identity.to_string()),
+                }),
+            });
+        }
+    }
+
+    card.remove::<IMPP>();
+    for impp in strings(model.get("impps")) {
+        card.push(VcardProp {
+            name: VcardPropName::Kind(VcardPropKind::Impp),
+            params: vec![],
+            value: VcardValue::Uri(VcardUri(Cow::Owned(impp))),
+        });
+    }
+
+    card.remove::<LANG>();
+    for tag in strings(model.get("languages")) {
+        card.push(VcardProp {
+            name: VcardPropName::Kind(VcardPropKind::Lang),
+            params: vec![],
+            value: VcardValue::LanguageTag(VcardLanguageTag(Cow::Owned(tag))),
+        });
+    }
+
+    // RELATED defaults to a URI value; a free-text relation (no URI
+    // scheme) must say VALUE=text (RFC 6350 6.6.6).
+    card.remove::<RELATED>();
+    for relation in array(model.get("relations")) {
+        let value = field(relation, "value");
+        if value.is_empty() {
+            continue;
+        }
+
+        let mut params = type_params(relation, version);
+        if value.contains(':') {
+            card.push(VcardProp {
+                name: VcardPropName::Kind(VcardPropKind::Related),
+                params,
+                value: VcardValue::Uri(VcardUri(Cow::Owned(value.to_string()))),
+            });
+        } else {
+            params.push(VcardParam::Value(Cow::Borrowed("text")));
+            card.push(text_prop(VcardPropKind::Related, params, value));
+        }
+    }
+
     Ok(String::from_utf8_lossy(&card.to_bytes()).into_owned())
 }
 
@@ -491,13 +604,13 @@ pub(crate) fn full_date(raw: &str) -> Option<String> {
 
 /// Indexes a vCard for the app's store, computed once at write time:
 /// the fields the contacts list renders (FN, first EMAIL, first TEL,
-/// UID) and a normalized content hash for the divergence flag of
-/// linked replicas. The hash is FNV-1a over the canonical field model
-/// with its arrays sorted and the identity and unmanaged data excluded
-/// (UID, CATEGORIES, X-*, PHOTO), so linked replicas read as one
-/// contact as long as the content the edit form manages agrees;
-/// per-replica identity and backend-specific baggage never read as
-/// divergence.
+/// a fallback info line, UID) and a normalized content hash for the
+/// divergence flag of linked replicas. The hash is FNV-1a over the
+/// canonical field model with its arrays sorted and the identity and
+/// unmanaged data excluded (UID, CATEGORIES, X-*, PHOTO), so linked
+/// replicas read as one contact as long as the content the edit form
+/// manages agrees; per-replica identity and backend-specific baggage
+/// never read as divergence.
 pub fn index(vcard: &str) -> Result<Value, String> {
     let model = project(vcard)?;
 
@@ -505,6 +618,7 @@ pub fn index(vcard: &str) -> Result<Value, String> {
     let uid = single_field(&model, "uid").to_string();
     let email = first_entry(&model, "emails", "address");
     let phone = first_entry(&model, "phones", "number");
+    let info = fallback_info(&model);
 
     let mut canon = model;
     if let Some(map) = canon.as_object_mut() {
@@ -518,9 +632,36 @@ pub fn index(vcard: &str) -> Result<Value, String> {
         "name": name,
         "email": email,
         "phone": phone,
+        "info": info,
         "uid": uid,
         "hash": format!("{hash:016x}"),
     }))
+}
+
+/// The list row's fallback line for cards with no phone and no email:
+/// the first valuable field the card carries, first line only.
+fn fallback_info(model: &Value) -> String {
+    for field in ["organization.company", "title", "role"] {
+        let value = single_field(model, field);
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+
+    for list in ["websites", "nicknames", "notes"] {
+        let first = model
+            .get(list)
+            .and_then(Value::as_array)
+            .and_then(|entries| entries.first())
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !first.is_empty() {
+            return first.lines().next().unwrap_or("").to_string();
+        }
+    }
+
+    String::new()
 }
 
 /// Three-way merges a conflicted push: the staged local edit and the
@@ -554,6 +695,74 @@ pub fn set_uid(vcard: &str, uid: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&card.to_bytes()).into_owned())
 }
 
+/// Lists the card's raw property lines for the advanced editor, in
+/// source order, unfolded, envelope excluded (VERSION included).
+pub fn card_props(vcard: &str) -> Result<Value, String> {
+    let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
+    let lines: Vec<String> = card.props.iter().map(raw_line).collect();
+    Ok(json!(lines))
+}
+
+/// Rewrites one raw property line for the advanced editor: `index`
+/// replaces that line (a blank line removes it), -1 appends. The
+/// result must reparse as a vCard; untouched lines keep their content,
+/// re-emitted unfolded.
+pub fn card_set_prop(vcard: &str, index: i64, line: &str) -> Result<String, String> {
+    let card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
+    let mut lines: Vec<String> = card.props.iter().map(raw_line).collect();
+
+    let line = line.trim();
+    if index < 0 {
+        if line.is_empty() {
+            return Err("Empty property".into());
+        }
+        lines.push(line.to_string());
+    } else {
+        let index = index as usize;
+        if index >= lines.len() {
+            return Err("No such property".into());
+        }
+        if line.is_empty() {
+            lines.remove(index);
+        } else {
+            lines[index] = line.to_string();
+        }
+    }
+
+    let mut source = String::from("BEGIN:VCARD\r\n");
+    for entry in &lines {
+        source.push_str(entry);
+        source.push_str("\r\n");
+    }
+    source.push_str("END:VCARD\r\n");
+
+    let fresh = VcardCst::parse(&source).map_err(|err| format!("Invalid vCard: {err}"))?;
+    Ok(String::from_utf8_lossy(&fresh.to_bytes()).into_owned())
+}
+
+/// One property as a single unfolded content line, EOL dropped.
+fn raw_line(line: &VcardLine) -> String {
+    let text = line.to_string();
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(next) = chars.next() {
+        if next == '\r' || next == '\n' {
+            if next == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            // A fold break eats the continuation's leading blank.
+            if matches!(chars.peek(), Some(' ') | Some('\t')) {
+                chars.next();
+            }
+            continue;
+        }
+        out.push(next);
+    }
+
+    out
+}
+
 /// The model's list sections, compared across merged cards for the
 /// conflict view's changed set.
 const LIST_FIELDS: &[&str] = &[
@@ -563,6 +772,9 @@ const LIST_FIELDS: &[&str] = &[
     "websites",
     "nicknames",
     "notes",
+    "impps",
+    "languages",
+    "relations",
 ];
 
 /// The model's single-valued fields the merge form offers alternative
@@ -579,6 +791,9 @@ const SINGLE_FIELDS: &[&str] = &[
     "title",
     "role",
     "birthday",
+    "anniversary",
+    "gender.sex",
+    "gender.identity",
 ];
 
 /// Merges several vCards into one union document through the vcard-rs
@@ -631,11 +846,14 @@ pub fn merge_cards(cards: &[String]) -> Result<Value, String> {
         let mut values: Vec<&str> = Vec::new();
         for candidate in &models {
             let value = single_field(candidate, field);
-            if !value.is_empty() && !values.contains(&value) {
+            if !values.contains(&value) {
                 values.push(value);
             }
         }
-        if values.len() > 1 {
+        // Present-vs-absent is a conflict too: the empty state rides
+        // along as a pickable alternative, so the conflict view never
+        // comes up blank on a field one card carries and another lacks.
+        if values.len() > 1 && values.iter().any(|value| !value.is_empty()) {
             alternatives.insert((*field).into(), json!(values));
         }
     }
@@ -673,6 +891,7 @@ pub fn merge_cards(cards: &[String]) -> Result<Value, String> {
 fn dedup_lists(model: &mut Value) {
     dedup_entries(model, "phones", &["number"]);
     dedup_entries(model, "emails", &["address"]);
+    dedup_entries(model, "relations", &["value"]);
     dedup_entries(
         model,
         "addresses",
@@ -680,7 +899,14 @@ fn dedup_lists(model: &mut Value) {
             "pobox", "ext", "street", "city", "region", "postcode", "country",
         ],
     );
-    for list in ["websites", "nicknames", "notes", "categories"] {
+    for list in [
+        "websites",
+        "nicknames",
+        "notes",
+        "categories",
+        "impps",
+        "languages",
+    ] {
         dedup_strings(model, list);
     }
 }
@@ -935,6 +1161,78 @@ mod tests {
         assert!(merged.contains("FN:Janet\r\n"), "got: {merged}");
         assert!(merged.contains("TEL:+332222\r\n"), "got: {merged}");
         assert_eq!(report["conflicts"], 0);
+    }
+
+    #[test]
+    fn extended_fields_round_trip() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Jane\r\n\
+            ANNIVERSARY:20200102\r\nGENDER:F;girl\r\n\
+            IMPP:xmpp:jane@chat.example\r\nLANG:fr\r\nLANG:en\r\n\
+            RELATED;TYPE=spouse;VALUE=text:John Doe\r\n\
+            X-FOO:bar\r\nEND:VCARD\r\n";
+
+        let model = project(vcard).unwrap();
+        assert_eq!(model["anniversary"], "2020-01-02");
+        assert_eq!(model["gender"]["sex"], "F");
+        assert_eq!(model["gender"]["identity"], "girl");
+        assert_eq!(model["impps"][0], "xmpp:jane@chat.example");
+        assert_eq!(model["languages"][1], "en");
+        assert_eq!(model["relations"][0]["value"], "John Doe");
+        assert_eq!(model["relations"][0]["types"][0], "spouse");
+
+        let fresh = apply(vcard, &model).unwrap();
+        assert!(fresh.contains("ANNIVERSARY:2020-01-02\r\n"), "got: {fresh}");
+        assert!(fresh.contains("GENDER:F;girl\r\n"), "got: {fresh}");
+        assert!(
+            fresh.contains("IMPP:xmpp:jane@chat.example\r\n"),
+            "got: {fresh}"
+        );
+        assert!(fresh.contains("LANG:fr\r\n"), "got: {fresh}");
+        assert!(
+            fresh.contains("RELATED;TYPE=spouse;VALUE=text:John Doe\r\n"),
+            "got: {fresh}"
+        );
+        assert!(fresh.contains("X-FOO:bar\r\n"), "got: {fresh}");
+    }
+
+    #[test]
+    fn merge_cards_flags_present_vs_absent_single_fields() {
+        let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            TITLE:Boss\r\nEND:VCARD\r\n";
+        let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\nEND:VCARD\r\n";
+
+        let merged = merge_cards(&[a.to_string(), b.to_string()]).unwrap();
+
+        let title = merged["alternatives"]["title"].as_array().unwrap();
+        assert!(
+            title.contains(&Value::String("Boss".into())),
+            "got: {title:?}"
+        );
+        assert!(title.contains(&Value::String("".into())), "got: {title:?}");
+    }
+
+    #[test]
+    fn card_props_lists_and_card_set_prop_rewrites() {
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Jane\r\n\
+            X-FOO:bar\r\nEND:VCARD\r\n";
+
+        let props = card_props(vcard).unwrap();
+        let props = props.as_array().unwrap();
+        assert_eq!(props.len(), 3);
+        assert_eq!(props[0], "VERSION:4.0");
+        assert_eq!(props[2], "X-FOO:bar");
+
+        let edited = card_set_prop(vcard, 2, "X-FOO:baz").unwrap();
+        assert!(edited.contains("X-FOO:baz\r\n"), "got: {edited}");
+        assert!(!edited.contains("X-FOO:bar"), "got: {edited}");
+
+        let removed = card_set_prop(&edited, 2, "").unwrap();
+        assert!(!removed.contains("X-FOO"), "got: {removed}");
+
+        let appended = card_set_prop(&removed, -1, "NOTE:hi").unwrap();
+        assert!(appended.contains("NOTE:hi\r\n"), "got: {appended}");
+
+        assert!(card_set_prop(vcard, 9, "X:y").is_err());
     }
 
     #[test]

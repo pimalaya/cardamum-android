@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bounded circular ripple: unlike the borderless one, it is drawn by
+     the view itself instead of projected into the nearest background
+     ancestor, so it stays above overlapping siblings (the search pill
+     sliding under the clear cross). -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="?android:attr/colorControlHighlight">
+    <item android:id="@android:id/mask">
+        <shape android:shape="oval">
+            <solid android:color="@android:color/white" />
+        </shape>
+    </item>
+</ripple>

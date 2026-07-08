@@ -9,7 +9,7 @@
         android:layout_height="wrap_content"
         android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
-        android:minHeight="56dp"
+        android:minHeight="@dimen/app_bar_height"
         android:orientation="horizontal"
         android:paddingStart="@dimen/app_bar_padding"
         android:paddingEnd="@dimen/app_bar_padding">
@@ -17,9 +17,9 @@
         <!-- Back to the app's root, the merged contacts list. -->
         <ImageButton
             android:id="@+id/home_back"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/back"
             android:src="@drawable/ic_arrow_back"
             android:tint="?android:attr/textColorPrimary" />
@@ -29,6 +29,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:paddingStart="@dimen/app_bar_title_padding"
+            android:paddingEnd="@dimen/app_bar_title_padding"
             android:text="@string/subscriptions_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
@@ -53,16 +54,46 @@
 
         </ScrollView>
 
+        <!-- The contacts list's empty state, for the no-account case. -->
+        <LinearLayout
+            android:id="@+id/home_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingStart="48dp"
+            android:paddingEnd="48dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_folder_open"
+                android:tint="?android:attr/textColorSecondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:text="@string/empty_title"
+                android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+                android:textColor="?android:attr/textColorSecondary" />
+
+        </LinearLayout>
+
         <!-- Connect a further account. -->
         <ImageButton
             android:id="@+id/home_add"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
+            android:layout_width="@dimen/fab"
+            android:layout_height="@dimen/fab"
             android:layout_gravity="bottom|end"
-            android:layout_margin="16dp"
+            android:layout_margin="@dimen/fab_margin"
             android:background="@drawable/fab_background"
             android:contentDescription="@string/add_account"
-            android:elevation="6dp"
+            android:elevation="@dimen/fab_elevation"
             android:src="@drawable/ic_add" />
 
     </FrameLayout>

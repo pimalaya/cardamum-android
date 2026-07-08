@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Round accent background for the floating add button; the accent is
-     distinct from the window background in both themes. The icon tint is
-     set in code to contrast the accent's luminance. -->
+<!-- Accent background for the floating action buttons, on the M3 FAB
+     shape (16dp corners on the 56dp container). The accent is distinct
+     from the window background in both themes; the icon tint is set in
+     code to contrast the accent's luminance. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="oval">
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
     <solid android:color="?android:attr/colorAccent" />
 </shape>

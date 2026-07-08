@@ -12,4 +12,6 @@
 
     <include layout="@layout/panel_home" />
 
+    <include layout="@layout/panel_advanced" />
+
 </ViewFlipper>

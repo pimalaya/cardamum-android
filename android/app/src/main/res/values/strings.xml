@@ -8,7 +8,10 @@
     <string name="welcome">Cardamum</string>
     <string name="welcome_value">All your contacts, from every account, in one place.</string>
     <string name="welcome_description">Enter your email address to get started; Cardamum finds your server settings automatically.</string>
-    <string name="email_hint">you@example.org</string>
+    <string name="email_hint">Email, server or URI</string>
+    <string name="auth_step_email">Welcome</string>
+    <string name="auth_step_config">Configuration</string>
+    <string name="auth_step_books">Selection</string>
     <string name="email_submit">Continue</string>
     <string name="email_invalid">Enter a valid email address</string>
     <string name="discover_failed">Could not find your contacts server settings</string>
@@ -25,10 +28,7 @@
     <string name="config_oauth2_cardamum">OAuth 2.0 (Cardamum)</string>
     <string name="config_oauth2_custom">OAuth 2.0 (custom client)</string>
     <string name="config_oauth">Sign in with your browser</string>
-    <string name="config_custom">Manual configuration</string>
-    <string name="custom_url">Server URL</string>
     <string name="custom_login">Login (empty for an API token)</string>
-    <string name="custom_url_empty">Enter the server URL</string>
 
     <string name="oauth_custom_title">Custom OAuth 2.0 client</string>
     <string name="oauth_client_id">Client ID</string>
@@ -72,9 +72,9 @@
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>
     <string name="sync_remote">Remote sync</string>
-    <string name="sync_remote_hint">Push and fetch changes with the remote server</string>
+    <string name="sync_remote_hint">Sync contacts with the remote server</string>
     <string name="sync_local">Local sync</string>
-    <string name="sync_local_hint">Project contacts into this phone\'s Contacts application</string>
+    <string name="sync_local_hint">Sync contacts with the local Contacts app</string>
     <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
     <string name="sync_local_done">Contacts projected to this phone</string>
     <string name="contacts_add">Add</string>
@@ -87,8 +87,7 @@
     <string name="manage_books_title">Addressbooks of this contact</string>
     <string name="manage_books_locked">The contact must keep at least one addressbook</string>
     <string name="contact_open_failed">Could not open the contact</string>
-    <string name="empty_search_title">Empty result</string>
-    <string name="empty_book_title">Empty addressbook</string>
+    <string name="empty_title">No content found</string>
 
     <string name="back">Back</string>
     <string name="more">More</string>
@@ -142,6 +141,16 @@
     <string name="hint_job_title">Title</string>
     <string name="hint_role">Role</string>
     <string name="hint_birthday">Birthday</string>
+    <string name="item_anniversary">Anniversary</string>
+    <string name="item_gender">Gender</string>
+    <string name="hint_gender_identity">Identity</string>
+    <string name="item_impp">Messaging address</string>
+    <string name="hint_impp">URI</string>
+    <string name="item_language">Language</string>
+    <string name="hint_language">Language tag</string>
+    <string name="item_relation">Relation</string>
+    <string name="hint_relation">Name or URI</string>
+    <string name="invalid_anniversary">Anniversary must be a full date</string>
 
     <string name="section_nicknames">Nicknames</string>
     <string name="section_phones">Phones</string>
@@ -149,6 +158,9 @@
     <string name="section_addresses">Addresses</string>
     <string name="section_websites">Websites</string>
     <string name="section_notes">Notes</string>
+    <string name="section_impps">Messaging</string>
+    <string name="section_languages">Languages</string>
+    <string name="section_relations">Relations</string>
 
     <string name="add">Add more</string>
     <string name="add_nickname">Add nickname</string>
@@ -157,8 +169,18 @@
     <string name="add_address">Add address</string>
     <string name="add_website">Add website</string>
     <string name="add_note">Add note</string>
+    <string name="add_impp">Add messaging address</string>
+    <string name="add_language">Add language</string>
+    <string name="add_relation">Add relation</string>
     <string name="remove_row">Remove</string>
     <string name="clear">Clear</string>
+
+    <string name="advanced_title">All properties</string>
+    <string name="advanced_open">Advanced editing</string>
+    <string name="advanced_add">Add property</string>
+    <string name="advanced_source">Source</string>
+    <string name="advanced_hint">NAME;PARAM=value:value</string>
+    <string name="advanced_invalid">Invalid property</string>
 
     <string-array name="phone_types">
         <item>Mobile</item>
@@ -181,6 +203,26 @@
         <item>Home</item>
         <item>Work</item>
         <item>Other</item>
+    </string-array>
+
+    <string-array name="relation_types">
+        <item>Spouse</item>
+        <item>Child</item>
+        <item>Parent</item>
+        <item>Sibling</item>
+        <item>Friend</item>
+        <item>Colleague</item>
+        <item>Emergency</item>
+        <item>Other</item>
+    </string-array>
+
+    <string-array name="gender_types">
+        <item>Not set</item>
+        <item>Male</item>
+        <item>Female</item>
+        <item>Other</item>
+        <item>None</item>
+        <item>Unknown</item>
     </string-array>
 
 </resources>

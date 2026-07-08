@@ -1,35 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The min height fits the fullest row (name plus email plus phone),
-     so a third text line never grows the row past its siblings. -->
+<!-- M3 two-line list item. The 40dp start padding plus the avatar's
+     16dp margin land the avatar's left edge at 56dp, aligned with the
+     app bar title (4dp bar padding + 48dp button + 4dp title padding);
+     the row stays full-bleed so its ripple spans the whole line. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="?android:attr/selectableItemBackground"
     android:gravity="center_vertical"
-    android:minHeight="76dp"
     android:orientation="horizontal"
-    android:paddingStart="64dp"
-    android:paddingTop="12dp"
-    android:paddingEnd="4dp"
-    android:paddingBottom="12dp">
+    android:paddingStart="40dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="@dimen/app_bar_padding"
+    android:paddingBottom="10dp">
 
     <TextView
         android:id="@+id/contact_avatar"
-        android:layout_width="42dp"
-        android:layout_height="42dp"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
         android:gravity="center"
-        android:textColor="#FFFFFF"
-        android:textSize="22sp" />
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="16sp" />
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:orientation="vertical"
-        android:paddingStart="16dp">
+        android:orientation="vertical">
 
-        <!-- Name row: the display name, plus a link glyph and the
-             linked-cards count when several physical cards back it. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -40,6 +40,8 @@
                 android:id="@+id/contact_name"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:lineHeight="24dp"
                 android:textColor="?android:attr/textColorPrimary"
                 android:textSize="16sp" />
 
@@ -64,31 +66,19 @@
         </LinearLayout>
 
         <TextView
-            android:id="@+id/contact_email"
+            android:id="@+id/contact_subtitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:lineHeight="16dp"
             android:textColor="?android:attr/textColorSecondary"
-            android:textSize="12sp"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/contact_phone"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="?android:attr/textColorSecondary"
-            android:textSize="12sp"
+            android:textSize="11sp"
             android:visibility="gone" />
 
     </LinearLayout>
 
-    <!-- Trailing 48dp-wide slot centred under the app bar's last icon
-         (the bar's 4dp end padding matches the row's): the selection
-         checkbox, or the divergence flag outside selection. The slot
-         hugs its content so showing it never changes the row height,
-         and the flag mirrors the checkbox's 32dp box and centre. -->
     <FrameLayout
         android:id="@+id/contact_end_slot"
-        android:layout_width="48dp"
+        android:layout_width="@dimen/app_bar_button"
         android:layout_height="wrap_content"
         android:visibility="gone">
 
@@ -100,9 +90,6 @@
             android:clickable="false"
             android:focusable="false"
             android:visibility="gone" />
-
-        <!-- Tinted in code: the theme's error colour when the platform
-             defines it, the secondary tone otherwise. -->
         <ImageView
             android:id="@+id/contact_diverged"
             android:layout_width="32dp"

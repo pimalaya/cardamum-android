@@ -11,13 +11,16 @@ use jni::{
     Env, EnvUnowned,
     errors::{Error, LogErrorAndDefault},
     objects::{JClass, JObject, JString},
+    sys::jint,
 };
 use url::Url;
 
 use crate::{
     client::Client,
     oauth::{authorize_url, validate_redirect},
-    project::{apply, index, merge_cards, merge_conflict, project, set_uid},
+    project::{
+        apply, card_props, card_set_prop, index, merge_cards, merge_conflict, project, set_uid,
+    },
     types::Credentials,
 };
 
@@ -1238,6 +1241,53 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_setCardUid<'loca
         let uid = read_string(env, &uid);
 
         let json = match set_uid(&vcard, &uid) {
+            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardProps`: lists the card's raw property lines for the
+/// advanced editor; pure computation, no transport. Returns
+/// `{"props": ["VERSION:4.0", ...]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardProps<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+
+        let json = match card_props(&vcard) {
+            Ok(props) => serde_json::json!({ "props": props }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardSetProp`: rewrites one raw property line for the
+/// advanced editor (a blank line removes, index -1 appends); pure
+/// computation, no transport. Returns `{"vcard": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSetProp<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    vcard: JString<'local>,
+    index: jint,
+    line: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let vcard = read_string(env, &vcard);
+        let line = read_string(env, &line);
+
+        let json = match card_set_prop(&vcard, index as i64, &line) {
             Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
             Err(err) => error_json(&err),
         };

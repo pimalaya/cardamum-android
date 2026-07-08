@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
     private static final int PANEL_CONTACTS = 1;
     private static final int PANEL_CONTACT = 2;
     private static final int PANEL_HOME = 3;
+    private static final int PANEL_ADVANCED = 4;
 
     /** The auth flow's steps, inside its own flipper under one bar. */
     private static final int STEP_EMAIL = 0;
@@ -85,6 +86,7 @@ public class MainActivity extends Activity {
         final String name;
         final String email;
         final String phone;
+        final String info;
         final String uid;
         final String hash;
 
@@ -95,6 +97,7 @@ public class MainActivity extends Activity {
             this.name = indexed.name;
             this.email = indexed.email;
             this.phone = indexed.phone;
+            this.info = indexed.info;
             this.uid = indexed.uid;
             this.hash = indexed.hash;
         }
@@ -192,6 +195,12 @@ public class MainActivity extends Activity {
     /** The vCard the editor patches: the card's, or a fresh template. */
     private String editingVcard;
 
+    /** The just-connected account, persisted when the selection confirms. */
+    private AccountEntry pendingAccount;
+
+    /** The just-connected account's fetched addressbooks. */
+    private List<Addressbook> pendingBooks;
+
     /** The merged group's replicas behind the editor; saving fans out. */
     private List<Entry> editingReplicas = new ArrayList<>();
 
@@ -200,6 +209,12 @@ public class MainActivity extends Activity {
 
     /** The addressbooks dialog's desired state, applied on save. */
     private Map<String, Boolean> pendingBookState;
+
+    /** The advanced editor's working document; null until it opens. */
+    private String advancedVcard;
+
+    /** Set by a raw edit: staging must not skip on an unchanged hash. */
+    private boolean advancedDirty;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -261,11 +276,13 @@ public class MainActivity extends Activity {
      * starts with no account, so it has no way out.
      */
     private void startAuth(boolean adding) {
-        addingAccount = adding;
+        // With no account stored the flow has no way out, wherever it
+        // was entered from: no cross, no back arrow on the welcome.
+        addingAccount = adding && !accounts.isEmpty();
         pendingEmail = null;
         searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
-        findViewById(R.id.auth_cancel).setVisibility(adding ? View.VISIBLE : View.GONE);
+        findViewById(R.id.auth_cancel).setVisibility(addingAccount ? View.VISIBLE : View.GONE);
 
         showAuth(STEP_EMAIL);
     }
@@ -284,7 +301,9 @@ public class MainActivity extends Activity {
      * Shows an auth step under the flow's one persistent bar: only the
      * inner step view transitions. Entering the flow from outside
      * jumps the inner flipper without animation (the outer panel slide
-     * is the transition), and the bar hides on the first-run welcome.
+     * is the transition). The bar always stays for its title; only its
+     * back arrow goes on the welcome step when no account is stored
+     * (nothing to go back to).
      */
     private void showAuth(int step, boolean back) {
         boolean inside = flipper.getDisplayedChild() == PANEL_AUTH;
@@ -298,8 +317,15 @@ public class MainActivity extends Activity {
             authFlipper.setOutAnimation(null);
         }
 
-        findViewById(R.id.auth_bar)
+        findViewById(R.id.auth_back)
                 .setVisibility(step == STEP_EMAIL && !addingAccount ? View.GONE : View.VISIBLE);
+        ((TextView) findViewById(R.id.auth_title))
+                .setText(
+                        step == STEP_EMAIL
+                                ? R.string.auth_step_email
+                                : step == STEP_CONFIG
+                                        ? R.string.auth_step_config
+                                        : R.string.auth_step_books);
         authFlipper.setDisplayedChild(step);
 
         if (!inside) {
@@ -309,12 +335,15 @@ public class MainActivity extends Activity {
 
     /** The auth bar's back arrow, per step. */
     private void authBack() {
-        if (authFlipper.getDisplayedChild() == STEP_CONFIG) {
+        int step = authFlipper.getDisplayedChild();
+        if (step == STEP_BOOKS) {
+            // Nothing persists before the selection confirms, so the
+            // books step steps back into the flow like any other.
+            showAuthBack(STEP_CONFIG);
+        } else if (step == STEP_CONFIG) {
             showAuthBack(STEP_EMAIL);
         } else {
-            // The email step (only reachable when adding an account)
-            // and the books step (the account is already stored by
-            // then, all-subscribed) both leave the flow.
+            // The email step is only reachable when adding an account.
             goHome();
         }
     }
@@ -359,11 +388,18 @@ public class MainActivity extends Activity {
                 }
                 break;
             case PANEL_CONTACTS:
+                if (findViewById(R.id.contacts_search_pill).getVisibility() == View.VISIBLE) {
+                    closeSearch();
+                    break;
+                }
                 // The merged list is the app's root itself.
                 super.onBackPressed();
                 break;
             case PANEL_CONTACT:
                 closeContact();
+                break;
+            case PANEL_ADVANCED:
+                closeAdvanced();
                 break;
             case PANEL_HOME:
                 goHome();
@@ -376,7 +412,7 @@ public class MainActivity extends Activity {
     /** The app's root: the merged contacts list across every account. */
     private void goHome() {
         searchQuery = "";
-        clearSearch();
+        closeSearch();
         exitSelection();
 
         contacts = loadEntries();
@@ -406,9 +442,9 @@ public class MainActivity extends Activity {
                         });
 
         View submit = findViewById(R.id.email_submit);
-        // Continue stays disabled until the field holds a plausible
-        // address, so an empty or malformed one is simply not
-        // submittable (no toast).
+        // Continue stays disabled until the field holds something
+        // plausible (an email, a server, or a connection URI), so an
+        // empty or malformed input is simply not submittable.
         setFabEnabled(R.id.email_submit, false);
         email.addTextChangedListener(
                 new android.text.TextWatcher() {
@@ -423,7 +459,7 @@ public class MainActivity extends Activity {
                         String address = s.toString().trim();
                         setFabEnabled(
                                 R.id.email_submit,
-                                !address.isEmpty() && address.contains("@"));
+                                !address.isEmpty() && !address.contains(" "));
                     }
                 });
 
@@ -433,9 +469,15 @@ public class MainActivity extends Activity {
                     // drop the field's focus so the keyboard leaves.
                     hideKeyboard();
 
+                    // One field covers every case, the CLI way: an
+                    // email goes through discovery, anything else (a
+                    // host[:port] or a connection URI) is a server to
+                    // configure by hand.
                     String address = email.getText().toString().trim();
                     pendingEmail = address;
-                    if (Provider.detect(address) == Provider.OTHER) {
+                    if (address.contains("://") || !address.contains("@")) {
+                        showManualConfigs(address);
+                    } else if (Provider.detect(address) == Provider.OTHER) {
                         search();
                     } else {
                         showConfigs(Provider.detect(address));
@@ -489,7 +531,7 @@ public class MainActivity extends Activity {
      */
     private void setAuthLoading(int buttonId, int progressId, boolean loading) {
         android.widget.ImageButton button = findViewById(buttonId);
-        button.setEnabled(!loading);
+        setFabEnabled(buttonId, !loading);
         button.setImageAlpha(loading ? 0 : 255);
         findViewById(progressId).setVisibility(loading ? View.VISIBLE : View.GONE);
     }
@@ -611,67 +653,83 @@ public class MainActivity extends Activity {
                 break;
         }
 
-        // Manual configuration is always on offer: discovery can miss
-        // a server, and users may want to override what it found.
+        showAuth(STEP_CONFIG);
+    }
+
+    /**
+     * The config options for a server typed directly in the first
+     * field (a host[:port], or a connection URI): no discovery, the
+     * same server offered over CardDAV and JMAP, the credentials asked
+     * next (an empty login sends the secret as a Bearer token).
+     */
+    private void showManualConfigs(String address) {
+        String url = address.contains("://") ? address : "https://" + address;
+        String host = hostOf(url);
+        String jmapUrl = CardamumClient.JMAP_PREFIX + url.replaceFirst("^https?://", "");
+
+        ((TextView) findViewById(R.id.config_email)).setText(pendingEmail);
+        selectedConfig = null;
+        resetConfigContinue();
+
+        LinearLayout container = findViewById(R.id.config_container);
+        container.removeAllViews();
         container.addView(
                 configItem(
-                        getString(R.string.config_custom),
-                        null,
+                        getString(R.string.config_carddav),
+                        host,
                         getString(R.string.config_password),
-                        this::promptCustomConfig));
+                        () -> promptCredentials(url, host)));
+        container.addView(
+                configItem(
+                        getString(R.string.config_jmap),
+                        host,
+                        getString(R.string.config_password),
+                        () -> promptCredentials(jmapUrl, host)));
 
         showAuth(STEP_CONFIG);
     }
 
     /**
-     * Manual configuration: the protocol, server URL and login typed
-     * directly, for servers discovery cannot see or to override what
-     * it proposed. An empty login sends the secret as a Bearer token.
+     * Prompts for the login and secret of a manually-entered server
+     * (nothing discovered to prefill the login; leaving it empty sends
+     * the secret as a Bearer token), then verifies the account.
      */
-    private void promptCustomConfig() {
-        android.widget.RadioGroup protocols = new android.widget.RadioGroup(this);
-        protocols.setOrientation(LinearLayout.HORIZONTAL);
-        String[] labels = {getString(R.string.config_carddav), getString(R.string.config_jmap)};
-        for (int index = 0; index < labels.length; index++) {
-            android.widget.RadioButton option = new android.widget.RadioButton(this);
-            option.setText(labels[index]);
-            option.setId(index + 1);
-            protocols.addView(option);
-        }
-        protocols.check(1);
-
-        EditText url = customOauthField(R.string.custom_url, "");
-        EditText login = customOauthField(R.string.custom_login, pendingEmail);
+    private void promptCredentials(String baseUrl, String host) {
+        EditText login = customOauthField(R.string.custom_login, "");
+        EditText secret = new EditText(this);
+        secret.setInputType(
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        secret.setHint(R.string.password_hint);
 
         LinearLayout fields = new LinearLayout(this);
         fields.setOrientation(LinearLayout.VERTICAL);
         fields.setPadding(dp(24), dp(8), dp(24), 0);
-        fields.addView(protocols);
-        fields.addView(url);
         fields.addView(login);
+        fields.addView(secret);
 
         new AlertDialog.Builder(this)
-                .setTitle(R.string.config_custom)
+                .setTitle(R.string.password_title)
+                .setMessage(getString(R.string.password_server, pendingEmail, host))
                 .setView(fields)
                 .setPositiveButton(
-                        R.string.email_submit,
+                        R.string.password_submit,
                         (dialog, which) -> {
-                            String address = url.getText().toString().trim();
-                            if (address.isEmpty()) {
-                                toast(getString(R.string.custom_url_empty));
+                            String password = secret.getText().toString();
+                            if (password.isEmpty()) {
+                                toast(getString(R.string.password_empty));
                                 return;
                             }
-                            boolean jmap = protocols.getCheckedRadioButtonId() == 2;
-                            String baseUrl =
-                                    jmap
-                                            ? CardamumClient.JMAP_PREFIX
-                                                    + address.replaceFirst("^https?://", "")
-                                            : address;
-                            promptPassword(
-                                    baseUrl,
-                                    hostOf(address),
-                                    login.getText().toString().trim(),
-                                    R.string.password_hint);
+                            connect(
+                                    new Account(
+                                            baseUrl,
+                                            login.getText().toString().trim(),
+                                            password),
+                                    pendingEmail,
+                                    null,
+                                    null,
+                                    null,
+                                    null);
                         })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
@@ -848,10 +906,13 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Verifies the account connects before persisting it and selecting
-     * books. The last four parameters carry the refresh material of an
-     * OAuth account (all null for a password one), so expired access
-     * tokens can be refreshed on later syncs.
+     * Verifies the account connects, then moves to the addressbook
+     * selection. Nothing persists yet: the account and its books only
+     * store when the selection confirms, so backing out of the flow
+     * before that leaves everything untouched. The last four parameters
+     * carry the refresh material of an OAuth account (all null for a
+     * password one), so expired access tokens can be refreshed on later
+     * syncs.
      */
     private void connect(
             Account candidate,
@@ -869,8 +930,7 @@ public class MainActivity extends Activity {
                         main.post(
                                 () -> {
                                     resetConfigContinue();
-                                    accounts.removeIf(entry -> entry.email.equals(email));
-                                    AccountEntry entry =
+                                    pendingAccount =
                                             new AccountEntry(
                                                     candidate,
                                                     email,
@@ -878,11 +938,7 @@ public class MainActivity extends Activity {
                                                     tokenEndpoint,
                                                     clientId,
                                                     clientSecret);
-                                    accounts.add(entry);
-                                    store.add(entry);
-                                    // Stored all-subscribed; the selection
-                                    // step trims the set before the first sync.
-                                    base.replaceAddressbooks(email, fetched);
+                                    pendingBooks = fetched;
                                     openBooksSelection(email, fetched);
                                 });
                     } catch (Exception error) {
@@ -934,8 +990,8 @@ public class MainActivity extends Activity {
             bookBoxes.add(box);
         }
 
-        updateBooksContinue();
         setAuthLoading(R.id.books_continue, R.id.books_progress, false);
+        updateBooksContinue();
         showAuth(STEP_BOOKS);
     }
 
@@ -951,7 +1007,11 @@ public class MainActivity extends Activity {
         setFabEnabled(R.id.books_continue, any);
     }
 
-    /** Applies the checked subscriptions, then runs the account's first sync. */
+    /**
+     * The flow's real commit: persists the connected account and its
+     * addressbooks, applies the checked subscriptions, then runs the
+     * account's first sync.
+     */
     private void confirmBooks() {
         java.util.Set<String> subscribed = new java.util.HashSet<>();
         for (CheckBox box : bookBoxes) {
@@ -959,7 +1019,14 @@ public class MainActivity extends Activity {
                 subscribed.add((String) box.getTag());
             }
         }
+
+        accounts.removeIf(entry -> entry.email.equals(connectedEmail));
+        accounts.add(pendingAccount);
+        store.add(pendingAccount);
+        pendingAccount = null;
+        base.replaceAddressbooks(connectedEmail, pendingBooks);
         base.setSubscriptions(connectedEmail, subscribed);
+
         setAuthLoading(R.id.books_continue, R.id.books_progress, true);
         syncRemote(true);
     }
@@ -1408,12 +1475,9 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.home_container);
         container.removeAllViews();
 
+        findViewById(R.id.home_empty)
+                .setVisibility(homeBooks.isEmpty() ? View.VISIBLE : View.GONE);
         if (homeBooks.isEmpty()) {
-            TextView empty = new TextView(this);
-            empty.setText(R.string.home_empty);
-            empty.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            empty.setPadding(dp(16), dp(16), dp(16), dp(16));
-            container.addView(empty);
             return;
         }
 
@@ -1664,6 +1728,26 @@ public class MainActivity extends Activity {
     /** The remote sync pass itself, off the main thread. */
     private SyncOutcome runRemoteSync() {
         SyncOutcome outcome = new SyncOutcome();
+
+        // Self-heal: an account whose addressbooks are missing from
+        // the base (a schema rebuild dropped them) gets them
+        // re-fetched, all-subscribed, so the sync has something to
+        // walk again.
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            known.add(entry.accountEmail);
+        }
+        for (AccountEntry account : new ArrayList<>(accounts)) {
+            if (known.contains(account.email)) {
+                continue;
+            }
+            try {
+                base.replaceAddressbooks(
+                        account.email, client.listAddressbooks(account.account));
+            } catch (Exception error) {
+                Log.w("cardamum", "addressbook recovery failed", error);
+            }
+        }
 
         Map<String, List<BookEntry>> byAccount = new java.util.LinkedHashMap<>();
         for (BookEntry entry : base.loadSubscribedAddressbooks()) {
@@ -2209,14 +2293,14 @@ public class MainActivity extends Activity {
 
     private void setUpContactsPanel() {
         findViewById(R.id.contacts_sync).setOnClickListener(this::showSyncMenu);
-        findViewById(R.id.contacts_back).setOnClickListener(view -> goHome());
-        findViewById(R.id.contacts_books).setOnClickListener(view -> openBooksManager());
+        findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
         findViewById(R.id.contacts_add).setOnClickListener(view -> addContact());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
 
-        findViewById(R.id.contacts_search_close).setOnClickListener(view -> clearSearch());
+        findViewById(R.id.contacts_search).setOnClickListener(view -> openSearch());
+        findViewById(R.id.contacts_search_close).setOnClickListener(view -> closeSearch());
         ((EditText) findViewById(R.id.contacts_search_input))
                 .addTextChangedListener(
                         new android.text.TextWatcher() {
@@ -2295,6 +2379,12 @@ public class MainActivity extends Activity {
      * landing cards where the user does not expect them.
      */
     private void addContact() {
+        // No account yet: the plus leads straight into onboarding.
+        if (accounts.isEmpty()) {
+            startAuth(false);
+            return;
+        }
+
         List<BookEntry> books = base.loadSubscribedAddressbooks();
         if (books.isEmpty()) {
             toast(getString(R.string.home_empty));
@@ -2380,18 +2470,10 @@ public class MainActivity extends Activity {
                         String.CASE_INSENSITIVE_ORDER));
         adapter.notifyDataSetChanged();
 
+        // One empty state for every cause: a search miss, an empty
+        // addressbook, or no account at all.
         boolean empty = sortedContacts.isEmpty();
         findViewById(R.id.contacts_empty).setVisibility(empty ? View.VISIBLE : View.GONE);
-        if (empty) {
-            // Distinguish a search miss from a genuinely empty addressbook.
-            boolean searching = !searchQuery.isEmpty();
-            ((android.widget.ImageView) findViewById(R.id.contacts_empty_icon))
-                    .setImageResource(
-                            searching ? R.drawable.ic_search_x : R.drawable.ic_folder_open);
-            ((TextView) findViewById(R.id.contacts_empty_title))
-                    .setText(
-                            searching ? R.string.empty_search_title : R.string.empty_book_title);
-        }
         sticky.setText(empty ? "" : letter(displayName(sortedContacts.get(0).primary())));
 
         // Rows are uniform (empty sub-lines keep their space): size the
@@ -2442,8 +2524,16 @@ public class MainActivity extends Activity {
 
             ((TextView) row.findViewById(R.id.contact_name)).setText(name);
 
-            bindLine(row.findViewById(R.id.contact_email), entry.email);
-            bindLine(row.findViewById(R.id.contact_phone), entry.phone);
+            // One supporting line: the first phone, else the first
+            // email, else the card's fallback info.
+            String subtitle = entry.phone;
+            if (subtitle == null || subtitle.isEmpty()) {
+                subtitle = entry.email;
+            }
+            if (subtitle == null || subtitle.isEmpty()) {
+                subtitle = entry.info;
+            }
+            bindLine(row.findViewById(R.id.contact_subtitle), subtitle);
 
             // The link glyph and card count, for a contact backed by
             // several physical cards.
@@ -2721,8 +2811,37 @@ public class MainActivity extends Activity {
     }
 
     /** Clears the search query (the bar itself is always visible). */
-    private void clearSearch() {
+    /** Swaps the title for the search pill and opens the keyboard. */
+    private void openSearch() {
+        findViewById(R.id.contacts_title).setVisibility(View.GONE);
+        findViewById(R.id.contacts_bar_spacer).setVisibility(View.GONE);
+        findViewById(R.id.contacts_search).setVisibility(View.GONE);
+        findViewById(R.id.contacts_search_pill).setVisibility(View.VISIBLE);
+        findViewById(R.id.contacts_search_close).setVisibility(View.VISIBLE);
+
+        EditText input = findViewById(R.id.contacts_search_input);
+        input.requestFocus();
+        android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager)
+                        getSystemService(INPUT_METHOD_SERVICE);
+        imm.showSoftInput(input, 0);
+    }
+
+    /** Clears the query and gives the title its place back. */
+    private void closeSearch() {
         ((EditText) findViewById(R.id.contacts_search_input)).setText("");
+        View pill = findViewById(R.id.contacts_search_pill);
+        if (pill.getVisibility() != View.VISIBLE) {
+            return;
+        }
+
+        hideKeyboard();
+        pill.setVisibility(View.GONE);
+        findViewById(R.id.contacts_search_close).setVisibility(View.GONE);
+        findViewById(R.id.contacts_title).setVisibility(View.VISIBLE);
+        findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
+        findViewById(R.id.contacts_search)
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
     /** The list title gives way to the selected count while selecting. */
@@ -2734,8 +2853,18 @@ public class MainActivity extends Activity {
             title.setText(R.string.contacts_title);
         }
 
-        // The merged root is the app's root: nothing to go back to.
-        findViewById(R.id.contacts_back).setVisibility(View.GONE);
+        // The selected count takes the title's spot, so an open search
+        // gives way (and its query with it).
+        if (selectionMode) {
+            closeSearch();
+        }
+        // Rendering runs on every query keystroke: an open search keeps
+        // its cross, the icon only comes back with the title.
+        boolean searchOpen =
+                findViewById(R.id.contacts_search_pill).getVisibility() == View.VISIBLE;
+        findViewById(R.id.contacts_search)
+                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_menu).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_close)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         // Merging needs at least two physical cards (one merged row
@@ -2751,7 +2880,6 @@ public class MainActivity extends Activity {
         // 48dp frame would push the selection icons off the edge.
         findViewById(R.id.contacts_sync_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_books).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_add).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
@@ -2843,10 +2971,13 @@ public class MainActivity extends Activity {
         editingReplicas = new ArrayList<>();
         mergeSurvivor = null;
         pendingBookState = null;
+        advancedVcard = null;
+        advancedDirty = false;
         editingVcard = newVcard();
 
         ((TextView) findViewById(R.id.contact_title)).setText(R.string.contact_new);
         findViewById(R.id.contact_books).setVisibility(View.GONE);
+        findViewById(R.id.contact_advanced).setVisibility(View.VISIBLE);
 
         form.load(null, null, null);
         show(PANEL_CONTACT);
@@ -2866,6 +2997,8 @@ public class MainActivity extends Activity {
         editingReplicas = new ArrayList<>(replicas);
         mergeSurvivor = null;
         pendingBookState = null;
+        advancedVcard = null;
+        advancedDirty = false;
 
         // The distinct documents behind the group: one per normalized
         // content hash. One document means a plain edit; several go
@@ -2904,6 +3037,10 @@ public class MainActivity extends Activity {
 
         ((TextView) findViewById(R.id.contact_title)).setText(displayName(primary));
         findViewById(R.id.contact_books).setVisibility(View.VISIBLE);
+        // Raw lines cannot fan out to several physical documents, so
+        // the advanced editor only opens on single-card contacts.
+        findViewById(R.id.contact_advanced)
+                .setVisibility(distinctRefs(replicas).size() == 1 ? View.VISIBLE : View.GONE);
 
         form.load(model, alternatives, changed);
         show(PANEL_CONTACT);
@@ -2913,7 +3050,9 @@ public class MainActivity extends Activity {
     private void setUpContactPanel() {
         findViewById(R.id.contact_save).setOnClickListener(view -> saveContact());
         findViewById(R.id.contact_books).setOnClickListener(view -> manageBooks());
+        findViewById(R.id.contact_advanced).setOnClickListener(view -> openAdvanced());
         findViewById(R.id.contact_back).setOnClickListener(view -> closeContact());
+        findViewById(R.id.advanced_back).setOnClickListener(view -> closeAdvanced());
     }
 
     /**
@@ -2924,8 +3063,164 @@ public class MainActivity extends Activity {
     private void closeContact() {
         mergeSurvivor = null;
         pendingBookState = null;
+        advancedVcard = null;
+        advancedDirty = false;
         reloadContacts();
         showBack(PANEL_CONTACTS);
+    }
+
+    // ---- Advanced editor ----------------------------------------------------
+
+    /**
+     * Opens the raw-property editor on the working document, the form's
+     * current state baked in first so both views agree. Only offered on
+     * single-card contacts (and new ones): raw lines cannot fan out to
+     * several physical documents.
+     */
+    private void openAdvanced() {
+        try {
+            String working = advancedVcard != null ? advancedVcard : editingVcard;
+            advancedVcard = client.applyCard(working, form.collect());
+            renderAdvanced();
+        } catch (Exception error) {
+            showError(error, R.string.contact_open_failed);
+            return;
+        }
+        show(PANEL_ADVANCED);
+    }
+
+    /** Back to the form, rebuilt from the edited document. */
+    private void closeAdvanced() {
+        try {
+            form.load(client.projectCard(advancedVcard), null, null);
+        } catch (Exception error) {
+            showError(error, R.string.contact_open_failed);
+        }
+        showBack(PANEL_CONTACT);
+    }
+
+    /** Rebuilds the property rows and the closing source block. */
+    private void renderAdvanced() {
+        LinearLayout container = findViewById(R.id.advanced_container);
+        container.removeAllViews();
+
+        org.json.JSONArray props = client.cardProps(advancedVcard);
+        for (int index = 0; props != null && index < props.length(); index++) {
+            int at = index;
+            String line = props.optString(index);
+            container.addView(
+                    propertyRow(
+                            propertyName(line),
+                            line,
+                            () -> advancedDialog(at, line)));
+        }
+
+        TextView add = new TextView(this);
+        add.setText(R.string.advanced_add);
+        add.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        add.setTextSize(14);
+        LinearLayout addRow = new LinearLayout(this);
+        addRow.setPadding(dp(16), dp(12), dp(16), dp(12));
+        addRow.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        addRow.setOnClickListener(view -> advancedDialog(-1, ""));
+        addRow.addView(add);
+        container.addView(addRow);
+
+        TextView header = new TextView(this);
+        header.setText(R.string.advanced_source);
+        header.setTextColor(resolveColor(android.R.attr.colorAccent));
+        header.setTextSize(15);
+        header.setPadding(dp(16), dp(24), dp(16), dp(4));
+        container.addView(header);
+
+        TextView source = new TextView(this);
+        source.setText(advancedVcard);
+        source.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+        source.setTypeface(android.graphics.Typeface.MONOSPACE);
+        source.setTextSize(12);
+        source.setPadding(dp(16), 0, dp(16), 0);
+        container.addView(source);
+    }
+
+    /** A tappable property row: the name over the whole raw line. */
+    private View propertyRow(String title, String line, Runnable onClick) {
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        titleView.setTextSize(16);
+
+        TextView lineView = new TextView(this);
+        lineView.setText(line);
+        lineView.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+        lineView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        lineView.setTextSize(12);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        row.setOnClickListener(view -> onClick.run());
+        row.addView(titleView);
+        row.addView(lineView);
+        return row;
+    }
+
+    /** Edits one raw line: OK rewrites, Remove drops, blank OK drops. */
+    private void advancedDialog(int index, String line) {
+        EditText input = new EditText(this);
+        input.setText(line);
+        input.setHint(R.string.advanced_hint);
+        input.setTypeface(android.graphics.Typeface.MONOSPACE);
+        input.setInputType(
+                android.text.InputType.TYPE_CLASS_TEXT
+                        | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(16), dp(8), dp(16), 0);
+        content.addView(input);
+
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(this)
+                        .setTitle(
+                                index < 0
+                                        ? getString(R.string.advanced_add)
+                                        : propertyName(line))
+                        .setView(content)
+                        .setPositiveButton(
+                                android.R.string.ok,
+                                (dialog, which) ->
+                                        applyAdvanced(index, input.getText().toString()))
+                        .setNegativeButton(android.R.string.cancel, null);
+        if (index >= 0) {
+            builder.setNeutralButton(
+                    R.string.remove_row, (dialog, which) -> applyAdvanced(index, ""));
+        }
+        builder.show();
+    }
+
+    private void applyAdvanced(int index, String line) {
+        try {
+            advancedVcard = client.cardSetProp(advancedVcard, index, line);
+            advancedDirty = true;
+            renderAdvanced();
+        } catch (Exception error) {
+            showError(error, R.string.advanced_invalid);
+        }
+    }
+
+    /** The line's property name: everything before the parameters. */
+    private static String propertyName(String line) {
+        int cut = line.length();
+        int colon = line.indexOf(':');
+        if (colon >= 0) {
+            cut = colon;
+        }
+        int semi = line.indexOf(';');
+        if (semi >= 0 && semi < cut) {
+            cut = semi;
+        }
+        return line.substring(0, cut);
     }
 
     /**
@@ -3090,6 +3385,11 @@ public class MainActivity extends Activity {
             toast(getString(R.string.invalid_birthday));
             return;
         }
+        String anniversary = form.anniversary();
+        if (!anniversary.isEmpty() && !anniversary.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            toast(getString(R.string.invalid_anniversary));
+            return;
+        }
 
         try {
             JSONObject model = form.collect();
@@ -3101,7 +3401,8 @@ public class MainActivity extends Activity {
                     toast(getString(R.string.save_failed));
                     return;
                 }
-                String vcard = client.applyCard(editingVcard, model);
+                String source = advancedVcard != null ? advancedVcard : editingVcard;
+                String vcard = client.applyCard(source, model);
                 String uid = cardIndex(vcard).optString("uid");
                 String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
                 base.saveLocal(
@@ -3146,8 +3447,12 @@ public class MainActivity extends Activity {
                 continue;
             }
 
-            String vcard = client.applyCard(entry.card.vcard, model);
-            if (cardIndex(vcard).optString("hash").equals(entry.hash)) {
+            // The advanced editor only opens on single-card contacts,
+            // so its document stands in for the card's; a raw edit must
+            // stage even when the managed-content hash is unchanged.
+            String source = advancedVcard != null ? advancedVcard : entry.card.vcard;
+            String vcard = client.applyCard(source, model);
+            if (!advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
                 continue;
             }
             base.saveLocal(

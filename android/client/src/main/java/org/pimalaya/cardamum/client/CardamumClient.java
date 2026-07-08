@@ -487,6 +487,11 @@ public class CardamumClient {
         return object(Native.projectCard(card.vcard));
     }
 
+    /** Projects a raw vCard document onto the neutral field model. */
+    public JSONObject projectCard(String vcard) {
+        return object(Native.projectCard(vcard));
+    }
+
     /**
      * Indexes a vCard for the store: the display fields the contacts
      * list renders (name, first email and phone, UID) and a normalized
@@ -534,6 +539,23 @@ public class CardamumClient {
      */
     public String setCardUid(String vcard, String uid) {
         return string(object(Native.setCardUid(vcard, uid)), "vcard");
+    }
+
+    /**
+     * Lists the card's raw property lines for the advanced editor, in
+     * source order, unfolded. Pure computation, no transport.
+     */
+    public JSONArray cardProps(String vcard) {
+        return object(Native.cardProps(vcard)).optJSONArray("props");
+    }
+
+    /**
+     * Rewrites one raw property line for the advanced editor: the line
+     * replaces the property at the index (a blank line removes it),
+     * index -1 appends. Pure computation, no transport.
+     */
+    public String cardSetProp(String vcard, int index, String line) {
+        return string(object(Native.cardSetProp(vcard, index, line)), "vcard");
     }
 
     /** Deletes the card from the addressbook collection. */

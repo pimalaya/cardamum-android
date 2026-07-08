@@ -61,7 +61,7 @@
         android:baselineAligned="false"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="24dp"
+        android:paddingStart="16dp"
         android:paddingTop="8dp"
         android:paddingEnd="16dp"
         android:paddingBottom="16dp">
@@ -81,19 +81,21 @@
 
             <ImageButton
                 android:id="@+id/email_submit"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
+                android:layout_width="@dimen/fab"
+                android:layout_height="@dimen/fab"
                 android:background="@drawable/fab_background"
                 android:contentDescription="@string/email_submit"
-                android:elevation="6dp"
+                android:elevation="@dimen/fab_elevation"
                 android:src="@drawable/ic_arrow_forward" />
 
             <ProgressBar
                 android:id="@+id/email_progress"
                 style="?android:attr/progressBarStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
                 android:layout_gravity="center"
+                android:elevation="@dimen/fab_elevation"
+                android:indeterminateTint="?android:attr/colorPrimary"
                 android:visibility="gone" />
 
         </FrameLayout>

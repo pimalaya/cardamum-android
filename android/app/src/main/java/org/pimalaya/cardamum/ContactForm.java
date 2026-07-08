@@ -14,6 +14,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -34,11 +35,10 @@ import org.json.JSONObject;
  * The contact edit form, settings-style like the system apps: one
  * scrolling page of sections (accent sentence-case headers) holding
  * tappable items, each opening a dialog mini-form. The vCard fields
- * group by theme: Identity (FN, N, BDAY), Work (ORG, TITLE, ROLE),
- * then one section per list (NICKNAME, TEL, EMAIL, ADR, URL, NOTE);
- * future vCard 4.0 properties slot into the same themes (GENDER and
- * ANNIVERSARY under Identity, IMPP and LANG next to the phones,
- * RELATED under Work).
+ * group by theme: Identity (FN, N, BDAY, ANNIVERSARY, GENDER), Work
+ * (ORG, TITLE, ROLE), then one section per list (NICKNAME, RELATED,
+ * TEL, EMAIL, IMPP, ADR, URL, LANG, NOTE); everything the form does
+ * not cover is reachable through the advanced raw-property editor.
  *
  * <p>The page renders from a working field model that the dialogs
  * edit in place, so {@link #collect()} just hands the model back;
@@ -56,6 +56,15 @@ final class ContactForm {
 
     /** Spinner position to vCard TYPE set, aligned with R.array.email_types. */
     private static final String[][] HOME_WORK_OTHER = {{"home"}, {"work"}, {}};
+
+    /** Spinner position to vCard TYPE set, aligned with R.array.relation_types. */
+    private static final String[][] RELATION_TYPES = {
+        {"spouse"}, {"child"}, {"parent"}, {"sibling"},
+        {"friend"}, {"colleague"}, {"emergency"}, {},
+    };
+
+    /** Spinner position to GENDER sex code, aligned with R.array.gender_types. */
+    private static final String[] GENDER_SEXES = {"", "M", "F", "O", "N", "U"};
 
     private static final int TEXT_NAME =
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
@@ -116,6 +125,11 @@ final class ContactForm {
         return model.optString("birthday").trim();
     }
 
+    /** The anniversary as picked, empty when unset. */
+    String anniversary() {
+        return model.optString("anniversary").trim();
+    }
+
     // ---- Page rendering ---------------------------------------------------
 
     private boolean conflict() {
@@ -144,7 +158,18 @@ final class ContactForm {
                     entryItem(
                             getS(R.string.hint_birthday),
                             value(model.optString("birthday")),
-                            this::pickBirthday));
+                            () -> pickDate("birthday")));
+        }
+        if (!conflict() || conflicted("anniversary")) {
+            identity.add(
+                    entryItem(
+                            getS(R.string.item_anniversary),
+                            value(model.optString("anniversary")),
+                            () -> pickDate("anniversary")));
+        }
+        if (!conflict() || conflicted("gender.sex", "gender.identity")) {
+            identity.add(
+                    entryItem(getS(R.string.item_gender), genderSummary(), this::genderDialog));
         }
         section(R.string.section_identity, identity);
 
@@ -176,6 +201,24 @@ final class ContactForm {
         }
         section(R.string.tab_work, work);
 
+        if (!conflict() || changedLists.contains("relations")) {
+            List<View> items = new ArrayList<>();
+            JSONArray relations = array("relations");
+            for (int index = 0; index < relations.length(); index++) {
+                int at = index;
+                JSONObject entry = relations.optJSONObject(index);
+                items.add(
+                        entryItem(
+                                entry.optString("value"),
+                                typeLabel(
+                                        R.array.relation_types,
+                                        typeIndex(entry, RELATION_TYPES)),
+                                () -> relationDialog(at)));
+            }
+            listSection(R.string.section_relations, R.string.add_relation, items,
+                    () -> relationDialog(-1));
+        }
+
         if (!conflict() || changedLists.contains("phones")) {
             List<View> items = new ArrayList<>();
             JSONArray phones = array("phones");
@@ -206,6 +249,25 @@ final class ContactForm {
             }
             listSection(R.string.section_emails, R.string.add_email, items,
                     () -> emailDialog(-1));
+        }
+
+        if (!conflict() || changedLists.contains("impps")) {
+            List<View> items = new ArrayList<>();
+            JSONArray impps = array("impps");
+            for (int index = 0; index < impps.length(); index++) {
+                int at = index;
+                items.add(
+                        entryItem(
+                                impps.optString(index),
+                                null,
+                                () -> stringDialog("impps", at, R.string.item_impp,
+                                        R.string.hint_impp,
+                                        InputType.TYPE_CLASS_TEXT
+                                                | InputType.TYPE_TEXT_VARIATION_URI)));
+            }
+            listSection(R.string.section_impps, R.string.add_impp, items,
+                    () -> stringDialog("impps", -1, R.string.item_impp, R.string.hint_impp,
+                            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
         }
 
         if (!conflict() || changedLists.contains("addresses")) {
@@ -246,6 +308,23 @@ final class ContactForm {
                             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
         }
 
+        if (!conflict() || changedLists.contains("languages")) {
+            List<View> items = new ArrayList<>();
+            JSONArray languages = array("languages");
+            for (int index = 0; index < languages.length(); index++) {
+                int at = index;
+                items.add(
+                        entryItem(
+                                languages.optString(index),
+                                null,
+                                () -> stringDialog("languages", at, R.string.item_language,
+                                        R.string.hint_language, InputType.TYPE_CLASS_TEXT)));
+            }
+            listSection(R.string.section_languages, R.string.add_language, items,
+                    () -> stringDialog("languages", -1, R.string.item_language,
+                            R.string.hint_language, InputType.TYPE_CLASS_TEXT));
+        }
+
         if (!conflict() || changedLists.contains("notes")) {
             List<View> items = new ArrayList<>();
             JSONArray notes = array("notes");
@@ -273,7 +352,7 @@ final class ContactForm {
             line.setBackgroundColor(primaryColor);
             LinearLayout.LayoutParams params =
                     new LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(4));
             params.topMargin = dp(12);
             container.addView(line, params);
         }
@@ -281,7 +360,7 @@ final class ContactForm {
         TextView header = new TextView(activity);
         header.setText(title);
         header.setTextColor(accentColor);
-        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(12), dp(16), dp(4));
         container.addView(header);
 
@@ -303,17 +382,30 @@ final class ContactForm {
 
     /** The add action closing a repeatable section. */
     private View addItem(int label, Runnable onClick) {
+        int textColor = resolveColor(android.R.attr.textColorPrimary);
+
+        ImageView icon = new ImageView(activity);
+        icon.setImageResource(R.drawable.ic_add);
+        icon.setImageTintList(ColorStateList.valueOf(textColor));
+
         TextView titleView = new TextView(activity);
         titleView.setText(label);
-        titleView.setTextColor(accentColor);
+        titleView.setTextColor(textColor);
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        LinearLayout.LayoutParams titleParams =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        titleParams.setMarginStart(dp(8));
 
         LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.VERTICAL);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(16), dp(12), dp(16), dp(12));
         row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
         row.setOnClickListener(view -> onClick.run());
-        row.addView(titleView);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        row.addView(titleView, titleParams);
         return row;
     }
 
@@ -322,7 +414,7 @@ final class ContactForm {
         TextView titleView = new TextView(activity);
         titleView.setText(title);
         titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
 
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.VERTICAL);
@@ -335,7 +427,7 @@ final class ContactForm {
             TextView subtitleView = new TextView(activity);
             subtitleView.setText(subtitle);
             subtitleView.setTextColor(labelColor);
-            subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
             row.addView(subtitleView);
         }
 
@@ -395,6 +487,34 @@ final class ContactForm {
     /** The empty-value placeholder. */
     private String value(String text) {
         return text.trim().isEmpty() ? getS(R.string.value_not_set) : text.trim();
+    }
+
+    private String genderSummary() {
+        JSONObject gender = model.optJSONObject("gender");
+        if (gender == null) {
+            return getS(R.string.value_not_set);
+        }
+
+        List<String> parts = new ArrayList<>();
+        int sex = genderSexIndex(gender.optString("sex"));
+        if (sex > 0) {
+            parts.add(typeLabel(R.array.gender_types, sex));
+        }
+        if (!gender.optString("identity").trim().isEmpty()) {
+            parts.add(gender.optString("identity").trim());
+        }
+        return parts.isEmpty()
+                ? getS(R.string.value_not_set)
+                : String.join(" · ", parts);
+    }
+
+    private static int genderSexIndex(String sex) {
+        for (int index = 1; index < GENDER_SEXES.length; index++) {
+            if (GENDER_SEXES[index].equalsIgnoreCase(sex.trim())) {
+                return index;
+            }
+        }
+        return 0;
     }
 
     private String typeLabel(int arrayId, int index) {
@@ -667,10 +787,70 @@ final class ContactForm {
                 index >= 0 ? () -> notes.remove(index) : null);
     }
 
-    /** The birthday goes straight to the system date picker. */
-    private void pickBirthday() {
+    private void relationDialog(int index) {
+        JSONArray relations = array("relations");
+        JSONObject entry = index >= 0 ? relations.optJSONObject(index) : null;
+
+        LinearLayout content = dialogContent();
+        Spinner type = typeSpinner(R.array.relation_types);
+        type.setSelection(entry == null ? 0 : typeIndex(entry, RELATION_TYPES));
+        EditText value =
+                typedValueLine(content, type, R.string.hint_relation,
+                        entry == null ? "" : entry.optString("value"), TEXT_NAME);
+
+        showDialog(
+                getS(R.string.item_relation),
+                content,
+                () ->
+                        putEntry(
+                                relations,
+                                index,
+                                text(value),
+                                entryOf(
+                                        "value",
+                                        text(value),
+                                        RELATION_TYPES[type.getSelectedItemPosition()],
+                                        entry)),
+                index >= 0 ? () -> relations.remove(index) : null);
+    }
+
+    /** The GENDER dialog: the sex code as a spinner, the identity free. */
+    private void genderDialog() {
+        JSONObject gender = model.optJSONObject("gender");
+        JSONObject safe = gender == null ? new JSONObject() : gender;
+
+        LinearLayout content = dialogContent();
+        Spinner type = typeSpinner(R.array.gender_types);
+        type.setSelection(genderSexIndex(safe.optString("sex")));
+        EditText identity =
+                typedValueLine(content, type, R.string.hint_gender_identity,
+                        safe.optString("identity"), TEXT_NAME);
+
+        showDialog(
+                getS(R.string.item_gender),
+                content,
+                () -> {
+                    String sex = GENDER_SEXES[type.getSelectedItemPosition()];
+                    String fresh = text(identity);
+                    try {
+                        if (sex.isEmpty() && fresh.isEmpty()) {
+                            model.remove("gender");
+                        } else {
+                            model.put(
+                                    "gender",
+                                    new JSONObject().put("sex", sex).put("identity", fresh));
+                        }
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                null);
+    }
+
+    /** A date field goes straight to the system date picker. */
+    private void pickDate(String field) {
         Calendar calendar = Calendar.getInstance();
-        String[] parts = model.optString("birthday").split("-");
+        String[] parts = model.optString(field).split("-");
         if (parts.length == 3) {
             try {
                 calendar.set(
@@ -688,7 +868,7 @@ final class ContactForm {
                         (view, year, month, day) -> {
                             try {
                                 model.put(
-                                        "birthday",
+                                        field,
                                         String.format(
                                                 Locale.ROOT,
                                                 "%04d-%02d-%02d",
@@ -707,7 +887,7 @@ final class ContactForm {
                 DatePickerDialog.BUTTON_NEUTRAL,
                 activity.getString(R.string.clear),
                 (d, which) -> {
-                    model.remove("birthday");
+                    model.remove(field);
                     render();
                 });
         dialog.show();
@@ -811,7 +991,9 @@ final class ContactForm {
             for (int index = 0; index < values.length(); index++) {
                 String candidate = values.optString(index);
                 Button chip = new Button(activity, null, android.R.attr.buttonStyleSmall);
-                chip.setText(candidate);
+                // The empty alternative (one card lacks the field) is a
+                // pickable choice too: it reads "Not set" and clears.
+                chip.setText(candidate.isEmpty() ? getS(R.string.value_not_set) : candidate);
                 chip.setAllCaps(false);
                 chip.setOnClickListener(view -> input.setText(candidate));
                 chips.addView(chip);

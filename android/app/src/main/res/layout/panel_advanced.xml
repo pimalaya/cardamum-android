@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The auth flow shell: one persistent app bar over an inner flipper
-     holding the steps (email, config, books), so navigating the flow
-     only slides the step content. With no account stored the flow has
-     no way out: no cross, and no back arrow on the welcome step. -->
+<!-- The advanced raw-property editor: every line of the open contact's
+     vCard as a tappable row (rows built in code), closed by the source
+     block. Edits apply to the working document; SAVE on the edit form
+     persists them. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
 
     <LinearLayout
-        android:id="@+id/auth_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="?android:attr/colorPrimary"
@@ -20,7 +19,7 @@
         android:paddingEnd="@dimen/app_bar_padding">
 
         <ImageButton
-            android:id="@+id/auth_back"
+            android:id="@+id/advanced_back"
             android:layout_width="@dimen/app_bar_button"
             android:layout_height="@dimen/app_bar_button"
             android:background="@drawable/ripple_circle"
@@ -28,42 +27,29 @@
             android:src="@drawable/ic_arrow_back"
             android:tint="?android:attr/textColorPrimary" />
 
-        <!-- Retitled per step in showAuth. -->
         <TextView
-            android:id="@+id/auth_title"
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
             android:paddingStart="@dimen/app_bar_title_padding"
             android:paddingEnd="@dimen/app_bar_title_padding"
-            android:text="@string/auth_step_email"
+            android:text="@string/advanced_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
 
-        <ImageButton
-            android:id="@+id/auth_cancel"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/cancel_auth"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
     </LinearLayout>
 
-    <ViewFlipper
-        android:id="@+id/auth_flipper"
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <include layout="@layout/panel_email" />
+        <LinearLayout
+            android:id="@+id/advanced_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="24dp" />
 
-        <include layout="@layout/panel_config" />
-
-        <include layout="@layout/panel_books" />
-
-    </ViewFlipper>
+    </ScrollView>
 
 </LinearLayout>

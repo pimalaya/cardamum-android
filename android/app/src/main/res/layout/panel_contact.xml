@@ -9,16 +9,16 @@
         android:layout_height="wrap_content"
         android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
-        android:minHeight="56dp"
+        android:minHeight="@dimen/app_bar_height"
         android:orientation="horizontal"
         android:paddingStart="@dimen/app_bar_padding"
         android:paddingEnd="@dimen/app_bar_padding">
 
         <ImageButton
             android:id="@+id/contact_back"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/back"
             android:src="@drawable/ic_arrow_back"
             android:tint="?android:attr/textColorPrimary" />
@@ -28,6 +28,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:paddingStart="@dimen/app_bar_title_padding"
+            android:paddingEnd="@dimen/app_bar_title_padding"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
 
@@ -41,11 +42,21 @@
              gesture (docs/merged-view.md). -->
         <ImageButton
             android:id="@+id/contact_books"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/manage_books_title"
             android:src="@drawable/ic_link"
+            android:tint="?android:attr/textColorPrimary" />
+
+        <!-- The advanced raw-property editor, for power users. -->
+        <ImageButton
+            android:id="@+id/contact_advanced"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/advanced_open"
+            android:src="@drawable/ic_advanced"
             android:tint="?android:attr/textColorPrimary" />
 
     </LinearLayout>
@@ -75,13 +86,13 @@
 
         <ImageButton
             android:id="@+id/contact_save"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
+            android:layout_width="@dimen/fab"
+            android:layout_height="@dimen/fab"
             android:layout_gravity="bottom|end"
-            android:layout_margin="16dp"
+            android:layout_margin="@dimen/fab_margin"
             android:background="@drawable/fab_background"
             android:contentDescription="@string/contact_save"
-            android:elevation="6dp"
+            android:elevation="@dimen/fab_elevation"
             android:src="@drawable/ic_check" />
 
     </FrameLayout>

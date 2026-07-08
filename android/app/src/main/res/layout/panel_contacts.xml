@@ -9,65 +9,102 @@
         android:layout_height="wrap_content"
         android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
-        android:minHeight="56dp"
+        android:minHeight="@dimen/app_bar_height"
         android:orientation="horizontal"
         android:paddingStart="@dimen/app_bar_padding"
         android:paddingEnd="@dimen/app_bar_padding">
 
-        <!-- Normal mode: back to the home addressbook listing. -->
         <ImageButton
-            android:id="@+id/contacts_back"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/back"
-            android:src="@drawable/ic_arrow_back"
+            android:id="@+id/contacts_menu"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/subscriptions_title"
+            android:src="@drawable/ic_menu"
             android:tint="?android:attr/textColorPrimary" />
-
-        <!-- Selection mode: cancel the selection. -->
         <ImageButton
             android:id="@+id/contacts_close"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/cancel_selection"
             android:src="@drawable/ic_close"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
-        <!-- Opens the addressbooks management screen. -->
-        <ImageButton
-            android:id="@+id/contacts_books"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/subscriptions_title"
-            android:src="@drawable/ic_account_add"
-            android:tint="?android:attr/textColorPrimary" />
-
-        <!-- The list title, or the selected-count while selecting. Its
-             12dp start padding lands the text at 64dp from the edge
-             (4dp bar padding + 48dp icon), the avatars' left side. -->
         <TextView
             android:id="@+id/contacts_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingStart="6dp"
+            android:paddingStart="@dimen/app_bar_title_padding"
+            android:paddingEnd="@dimen/app_bar_title_padding"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
             android:textColor="?android:attr/textColorPrimary" />
 
+        <FrameLayout
+            android:id="@+id/contacts_search_pill"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginEnd="-48dp"
+            android:layout_marginBottom="4dp"
+            android:background="@drawable/search_background"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/contacts_search_input"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@null"
+                android:hint="@string/contacts_search"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingStart="24dp"
+                android:paddingEnd="48dp"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textColorHint="?android:attr/textColorSecondary"
+                android:textSize="16sp" />
+
+        </FrameLayout>
+
+        <!-- Search mode: clears the query and restores the title; the
+             pill above extends underneath it, hence the bounded ripple
+             (a borderless one is projected into the bar's background,
+             below the pill). -->
+        <ImageButton
+            android:id="@+id/contacts_search_close"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/clear"
+            android:src="@drawable/ic_close"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
         <!-- Pushes the action icons to the right edge. -->
         <View
+            android:id="@+id/contacts_bar_spacer"
             android:layout_width="0dp"
-            android:layout_height="1dp"
+            android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <!-- Selection mode: merge the selected cards into one. -->
+        <ImageButton
+            android:id="@+id/contacts_search"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/contacts_search"
+            android:src="@drawable/ic_search"
+            android:tint="?android:attr/textColorPrimary" />
+
         <ImageButton
             android:id="@+id/contacts_merge"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/merge_selected"
             android:src="@drawable/ic_merge"
             android:tint="?android:attr/textColorPrimary"
@@ -75,34 +112,28 @@
 
         <ImageButton
             android:id="@+id/contacts_delete"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
             android:contentDescription="@string/delete_selected"
             android:src="@drawable/ic_delete_bar"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
-        <!-- The sync icon gives way to a spinner while a sync runs.
-             Selection mode hides this whole slot, not just the inner
-             button, so the selection icons stay flush to the edge. -->
         <FrameLayout
             android:id="@+id/contacts_sync_slot"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon">
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button">
 
             <ImageButton
                 android:id="@+id/contacts_sync"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:background="@drawable/ripple_circle"
                 android:contentDescription="@string/contacts_sync"
                 android:src="@drawable/ic_sync"
                 android:tint="?android:attr/textColorPrimary" />
 
-            <!-- The small style's own size: the M3 sync glyph carries
-                 built-in margins, so a full 24dp spinner reads bigger
-                 than the icon it replaces. -->
             <ProgressBar
                 android:id="@+id/contacts_sync_progress"
                 style="?android:attr/progressBarStyleSmall"
@@ -116,53 +147,11 @@
 
     </LinearLayout>
 
-    <!-- Always-visible search, riding the app bar's colour so it reads
-         as its continuation; the field's text starts at 64dp, aligned
-         with the title and the avatars. The cross only clears it. -->
-    <LinearLayout
-        android:id="@+id/contacts_search_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="64dp"
-        android:paddingEnd="@dimen/app_bar_padding"
-        android:paddingBottom="4dp">
-
-        <EditText
-            android:id="@+id/contacts_search_input"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="@null"
-            android:hint="@string/contacts_search"
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:maxLines="1"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textColorHint="?android:attr/textColorSecondary" />
-
-        <ImageButton
-            android:id="@+id/contacts_search_close"
-            android:layout_width="@dimen/app_bar_icon"
-            android:layout_height="@dimen/app_bar_icon"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/clear"
-            android:src="@drawable/ic_close"
-            android:tint="?android:attr/textColorSecondary" />
-
-    </LinearLayout>
-
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <!-- Rows are full-bleed so their press/selection highlight spans
-             the whole line; the letter gutter clearance and the app-bar
-             title alignment come from the row's own start padding. The
-             bottom padding keeps the last row clear of the FAB. -->
         <ListView
             android:id="@+id/contacts_list"
             android:layout_width="match_parent"
@@ -173,9 +162,6 @@
             android:paddingBottom="88dp"
             android:scrollbars="none" />
 
-        <!-- Centred placeholder shown when the list is empty: a search
-             miss, or a genuinely empty addressbook (icon/subtitle set
-             in renderContacts). -->
         <LinearLayout
             android:id="@+id/contacts_empty"
             android:layout_width="match_parent"
@@ -188,45 +174,40 @@
             android:visibility="gone">
 
             <ImageView
-                android:id="@+id/contacts_empty_icon"
                 android:layout_width="96dp"
                 android:layout_height="96dp"
                 android:contentDescription="@null"
+                android:src="@drawable/ic_folder_open"
                 android:tint="?android:attr/textColorSecondary" />
-
             <TextView
-                android:id="@+id/contacts_empty_title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="8dp"
                 android:gravity="center"
-                android:textColor="?android:attr/textColorSecondary"
-                android:textSize="16sp" />
+                android:text="@string/empty_title"
+                android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
+                android:textColor="?android:attr/textColorSecondary" />
 
         </LinearLayout>
 
-        <!-- Sticky section letter: pinned to the top-left gutter,
-             centred on the app-bar icon column (4dp bar padding + half
-             the 48dp slot = 28dp); its height follows the row height
-             at runtime so the letters' centres align. -->
         <TextView
             android:id="@+id/contacts_sticky_letter"
             android:layout_width="56dp"
             android:layout_height="66dp"
             android:gravity="center"
+	    android:textSize="16sp"
             android:textColor="?android:attr/colorAccent"
             android:textStyle="bold" />
 
-        <!-- New contact. -->
         <ImageButton
             android:id="@+id/contacts_add"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
+            android:layout_width="@dimen/fab"
+            android:layout_height="@dimen/fab"
             android:layout_gravity="bottom|end"
-            android:layout_margin="16dp"
+            android:layout_margin="@dimen/fab_margin"
             android:background="@drawable/fab_background"
             android:contentDescription="@string/contacts_add"
-            android:elevation="6dp"
+            android:elevation="@dimen/fab_elevation"
             android:src="@drawable/ic_add" />
 
     </FrameLayout>
