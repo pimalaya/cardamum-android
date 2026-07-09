@@ -31,12 +31,11 @@ One raw contact per vCard, owned by the addressbook's Android account.
 
 | RawContacts column | Maps to | Notes |
 |---|---|---|
-| SOURCE_ID | card resource id | last path segment without .vcf |
-| SYNC1 | ETag | informational; the ETag is the remote spoke's revision marker, not the phone's |
-| SYNC2 | vCard UID | UID and resource id can differ |
-| SYNC4 | vCard content hash | the phone spoke's revision token: projection skips a contact only when this hash is unchanged, so staged local edits project before they are pushed |
-| DIRTY | local-edit marker | set by the platform on user edits; our own writes go through CALLER_IS_SYNCADAPTER and never set it |
-| DELETED | local-delete marker | tombstone until the sync pushes the DELETE |
+| SOURCE_ID | card id | the engine handle of the phone spoke; stamped onto phone-created contacts at enumerate time |
+| SYNC2 | vCard UID | UID and card id can differ |
+| VERSION | phone content revision | bumped by the provider on any change to the row or its data; the engine's remote-changed signal, and the If-Match guard of phone pushes |
+| DIRTY | local-edit marker | set by the platform on user edits; our own writes go through CALLER_IS_SYNCADAPTER and never set it (VERSION, not DIRTY, is what the engine compares) |
+| DELETED | local-delete marker | purged at enumerate time; the absence from the complete round is the vanished signal |
 | STARRED | not mapped | no vCard equivalent; stays local |
 
 ## Data kinds
@@ -91,8 +90,8 @@ The nightmare scenario is A-B-A churn: remote edit projected to the phone, phone
 
 ## Sync data flow
 
-Per addressbook, per Sync pass (hub and spoke, see design.md; io-offline pairwise, full enumeration):
+Per addressbook, per Sync pass (hub and spoke, see design.md; io-offline pairwise, the phone as a second engine collection per docs/phone-sync-plan.md):
 
-1. Store to phone, ingest: read the phone's raw contacts, convert them to field models, diff against the projection of each card's base, and apply the diffs onto the working vCards through the CST patch.
-2. Store to remote: three-way merge per UID between working, base and fetched vCards (vcard-rs merge); local wins push (PUT If-Match), remote wins pull, divergences keep both per the Pimalaya conflict rule. The merged state becomes the new base.
-3. Store to phone, project: write the pulled and merged changes back to the mapped rows (minimal ContentProviderOperations, CALLER_IS_SYNCADAPTER).
+1. Phone pass: the engine reconciles the hub with the raw contacts (complete enumerate on VERSION revisions); a phone-won change is read back as `applyCard(phone_base, Mapping.merge(project(phone_base), Mapping.model(rows)))`, so only the fields the phone actually edited overwrite the base model and every unmapped property survives.
+2. Server pass: three-way merge per placement between working, base and fetched vCards (vcard-rs merge); local wins push (PUT If-Match), remote wins pull, divergences merge both sides against the staged base.
+3. Phone pass again: the engine pushes the hub changes the server round brought back onto the raw contact rows (wholesale data-row rewrite, CALLER_IS_SYNCADAPTER, VERSION-guarded).

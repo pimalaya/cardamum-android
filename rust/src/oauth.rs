@@ -1,12 +1,13 @@
 //! OAuth 2.0 helpers on top of io-oauth.
 //!
-//! Authorization URL building and redirect validation are pure
-//! computations (no transport); the token exchanges live on
-//! [`crate::client::Client`] since they drive HTTP coroutines. The
-//! CSRF state and PKCE verifier strings are generated on the Java
-//! side (SecureRandom) and validated here on every use.
+//! Authorization URL building, redirect validation, session-string
+//! generation and scope negotiation are pure computations (no
+//! transport); the token exchanges live on [`crate::client::Client`]
+//! since they run HTTP coroutines.
 
 use std::{borrow::Cow, collections::BTreeMap, str::FromStr};
+
+use rand::seq::IndexedRandom;
 
 use io_oauth::v2_0::authorization_code_grant::{
     authorization_request::Oauth20AuthorizationRequestParams,
@@ -81,16 +82,159 @@ pub fn validate_redirect(redirect_url: &str, state: &str) -> Result<String, Stri
         .map_err(|err| err.to_string())
 }
 
-/// Parses the Java-generated PKCE verifier, rejecting bytes outside
-/// the RFC 7636 unreserved set.
+/// Generates one authorization session's CSRF state (32 chars) and
+/// PKCE verifier (64 chars), both alphanumeric.
+pub fn session_params() -> (String, String) {
+    (random_string(32), random_string(64))
+}
+
+/// The scope a contacts client requests of an authorization server:
+/// the standard contacts scope (draft-ietf-mailmaint-oauth-public)
+/// plus `offline_access` for the refresh token, each kept only when
+/// the space-separated advertised set contains it. Requesting the
+/// whole advertised set instead is what an "invalid scope"
+/// authorization error comes from: that set is what the server
+/// supports, not what a contacts client needs. A server advertising
+/// no scopes at all gets the standard pair as-is.
+pub fn contacts_scope(scopes_supported: &str) -> String {
+    const WANTED: [&str; 2] = ["urn:ietf:params:oauth:scope:contacts", "offline_access"];
+
+    let advertised: Vec<&str> = scopes_supported.split_whitespace().collect();
+    if advertised.is_empty() {
+        return WANTED.join(" ");
+    }
+
+    WANTED
+        .into_iter()
+        .filter(|wanted| advertised.contains(wanted))
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+/// Parses the session PKCE verifier, rejecting bytes outside the
+/// RFC 7636 unreserved set.
 pub fn parse_pkce_verifier(verifier: &str) -> Result<Oauth20PkceCodeVerifier, String> {
     Oauth20PkceCodeVerifier::from_str(verifier)
         .map_err(|byte| format!("Invalid PKCE verifier byte 0x{byte:x}"))
 }
 
-/// Parses the Java-generated CSRF state, rejecting bytes outside the
-/// RFC 6749 VSCHAR set.
+/// Letters and digits only, a strict subset of the RFC 7636 unreserved
+/// set, valid for both the PKCE verifier and the RFC 6749 VSCHAR
+/// state. The full set also allows `-._~`, which no server can be
+/// trusted to accept everywhere; 62 symbols keep ample entropy.
+const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/// One cryptographically random alphanumeric string of the given size.
+fn random_string(size: usize) -> String {
+    let mut rng = rand::rng();
+
+    (0..size)
+        .map(|_| *ALPHANUMERIC.choose(&mut rng).expect("non-empty charset") as char)
+        .collect()
+}
+
+/// Parses the session CSRF state, rejecting bytes outside the RFC 6749
+/// VSCHAR set.
 fn parse_state(state: &str) -> Result<Oauth20State, String> {
     let deserializer = StrDeserializer::<DeserializeError>::new(state);
     Oauth20State::deserialize(deserializer).map_err(|err| format!("Invalid OAuth state: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The issuer-flow authorization URL, byte for byte, for
+    /// fastmail-shaped inputs; guards the exact wire format the
+    /// authorize endpoint validates (parameter order, percent
+    /// encoding, space-as-plus in the scope).
+    #[test]
+    fn authorize_url_matches_the_verified_fastmail_shape() {
+        let url = authorize_url(
+            "https://api.fastmail.com/oauth/authorize",
+            "07ee41ae",
+            "org.pimalaya.cardamum:/oauth2redirect",
+            "urn:ietf:params:oauth:scope:contacts offline_access",
+            "stateABCDEF0123456789abcdef012345",
+            "verifierABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef01",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://api.fastmail.com/oauth/authorize\
+             ?client_id=07ee41ae\
+             &code_challenge=3UabJaVjZLMdt78g6JRyEM8pdmTSqJNYLL3y6RSjDr8\
+             &code_challenge_method=S256\
+             &redirect_uri=org.pimalaya.cardamum%3A%2Foauth2redirect\
+             &response_type=code\
+             &scope=offline_access+urn%3Aietf%3Aparams%3Aoauth%3Ascope%3Acontacts\
+             &state=stateABCDEF0123456789abcdef012345",
+        );
+    }
+
+    /// The fastmail-shaped success redirect on the RFC 8252
+    /// single-slash private-use scheme (no authority), with the
+    /// RFC 9207 iss parameter riding along, yields the code.
+    #[test]
+    fn validate_redirect_accepts_the_single_slash_scheme() {
+        let code = validate_redirect(
+            "org.pimalaya.cardamum:/oauth2redirect\
+             ?code=abc123\
+             &state=stateABCDEF0123456789abcdef012345\
+             &iss=https%3A%2F%2Fapi.fastmail.com",
+            "stateABCDEF0123456789abcdef012345",
+        );
+
+        assert_eq!(code.unwrap(), "abc123");
+    }
+
+    /// The generated session strings have the documented sizes, stay
+    /// alphanumeric, and validate as state and verifier.
+    #[test]
+    fn session_params_generate_valid_strings() {
+        let (state, verifier) = session_params();
+
+        assert_eq!(state.len(), 32);
+        assert_eq!(verifier.len(), 64);
+        assert!(state.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        assert!(verifier.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        assert!(parse_state(&state).is_ok());
+        assert!(parse_pkce_verifier(&verifier).is_ok());
+    }
+
+    /// The requested scope is the intersection of the standard pair
+    /// with the advertised set; no advertised set requests the pair
+    /// as-is.
+    #[test]
+    fn contacts_scope_negotiates_against_the_advertised_set() {
+        assert_eq!(
+            contacts_scope(""),
+            "urn:ietf:params:oauth:scope:contacts offline_access",
+        );
+        assert_eq!(
+            contacts_scope("mail urn:ietf:params:oauth:scope:contacts calendars"),
+            "urn:ietf:params:oauth:scope:contacts",
+        );
+        assert_eq!(
+            contacts_scope("urn:ietf:params:oauth:scope:contacts offline_access extras"),
+            "urn:ietf:params:oauth:scope:contacts offline_access",
+        );
+        assert_eq!(contacts_scope("mail calendars"), "");
+    }
+
+    /// An error redirect surfaces the server's error code.
+    #[test]
+    fn validate_redirect_surfaces_the_server_error() {
+        let err = validate_redirect(
+            "org.pimalaya.cardamum:/oauth2redirect\
+             ?error=invalid_request\
+             &state=stateABCDEF0123456789abcdef012345",
+            "stateABCDEF0123456789abcdef012345",
+        )
+        .unwrap_err();
+
+        assert_eq!(err, "Authorization error: InvalidRequest");
+    }
 }

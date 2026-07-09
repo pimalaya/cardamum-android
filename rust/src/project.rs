@@ -300,6 +300,7 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
             region: single_component(adr.get("region")),
             postal_code: single_component(adr.get("postcode")),
             country: single_component(adr.get("country")),
+            ..Default::default()
         };
 
         let empty = value.po_box.is_empty()

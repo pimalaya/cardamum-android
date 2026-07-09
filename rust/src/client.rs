@@ -109,11 +109,14 @@ use jni::{
     objects::{JByteArray, JObject},
 };
 use pimconf::{
+    autoconfig::mx::DiscoveryDnsMx,
     coroutine::{DiscoveryCoroutine, DiscoveryCoroutineState, DiscoveryYield},
+    pacc::discover::DiscoveryPacc,
     rfc6764::{resolve::ResolveDav, types::DavService, well_known::WellKnown},
+    rfc8620::resolve::ResolveJmap,
+    rfc9110::ProbeAuth,
     search::{
-        all::{SearchAll, SearchError},
-        first::SearchFirst,
+        providers::Provider,
         types::{Service, ServiceConfig},
     },
 };
@@ -121,6 +124,7 @@ use secrecy::SecretString;
 use url::Url;
 
 use crate::{
+    account::{self, Backend},
     google, jmap, msgraph,
     oauth::parse_pkce_verifier,
     types::{Addressbook, Card, CardDelta, Credentials},
@@ -186,33 +190,122 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
-    /// Searches every pimconf mechanism for CardDAV and JMAP service
-    /// configs: fixed provider rules (Google/Microsoft, matched by
-    /// domain then by MX records), PACC, the RFC 6764 CardDAV resolve
-    /// and the RFC 8620 JMAP resolve. Each config carries its endpoint
-    /// and authentication methods (password, OAuth 2.0 grants). With
-    /// `first`, stops at the first mechanism yielding a config.
-    pub fn search(
+    /// Matches the email's (or domain's) MX records against the fixed
+    /// provider rules, catching every domain whose mail lives at
+    /// Google or Microsoft (gmail.com and outlook.com included: their
+    /// own exchanges match too, so no separate domain list is
+    /// needed). Returns the provider's fixed configs, empty when no
+    /// rule matched.
+    pub fn search_provider(
         &mut self,
         email: &str,
         resolver: Option<&str>,
-        first: bool,
     ) -> Result<Vec<ServiceConfig>, String> {
-        let resolver = resolver.unwrap_or(DNS_RESOLVER);
-        let resolver = Url::parse(resolver)
-            .map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))?;
+        let (email, domain) = search_domain(email)?;
 
-        let services = BTreeSet::from([Service::Carddav, Service::Jmap]);
+        let mx = DiscoveryDnsMx::new(&domain, self.search_resolver(resolver)?);
+        let records = self.run_mechanism(mx)?;
 
-        if first {
-            let coroutine =
-                SearchFirst::new(email, services, resolver).map_err(|err| err.to_string())?;
-            self.run_search(coroutine)
-        } else {
-            let coroutine =
-                SearchAll::new(email, services, resolver).map_err(|err| err.to_string())?;
-            self.run_search(coroutine)
+        for record in records {
+            let exchange = record.data().exchange().to_string();
+
+            if let Some(provider) = Provider::from_mx(&exchange) {
+                let mut configs = provider.configs(&email);
+
+                // A bare-domain search carries no email; the username
+                // hint is dropped rather than minted from the domain.
+                if email.is_empty() {
+                    for config in &mut configs {
+                        config.username = None;
+                    }
+                }
+
+                return Ok(configs);
+            }
         }
+
+        Ok(Vec::new())
+    }
+
+    /// Discovers the email domain's PACC document and flattens it
+    /// into service configs.
+    pub fn search_pacc(
+        &mut self,
+        email: &str,
+        resolver: Option<&str>,
+    ) -> Result<Vec<ServiceConfig>, String> {
+        let (_, domain) = search_domain(email)?;
+
+        let pacc = DiscoveryPacc::new(&domain, self.search_resolver(resolver)?)
+            .map_err(|err| err.to_string())?;
+        let config = self.run_mechanism(pacc)?;
+
+        Ok(ServiceConfig::from_pacc(&config))
+    }
+
+    /// Resolves the email domain's CardDAV context root (RFC 6764)
+    /// into a service config.
+    pub fn search_carddav(
+        &mut self,
+        email: &str,
+        resolver: Option<&str>,
+    ) -> Result<Vec<ServiceConfig>, String> {
+        let (_, domain) = search_domain(email)?;
+
+        let resolve = ResolveDav::new(
+            &domain,
+            DavService::Carddav,
+            self.search_resolver(resolver)?,
+        );
+        let url = self.run_mechanism(resolve)?;
+
+        Ok(vec![ServiceConfig::from_dav(Service::Carddav, url)])
+    }
+
+    /// Resolves the email domain's JMAP session URL (RFC 8620) into a
+    /// service config.
+    pub fn search_jmap(
+        &mut self,
+        email: &str,
+        resolver: Option<&str>,
+    ) -> Result<Vec<ServiceConfig>, String> {
+        let (_, domain) = search_domain(email)?;
+
+        let resolve = ResolveJmap::new(&domain, self.search_resolver(resolver)?);
+        let session = self.run_mechanism(resolve)?;
+
+        Ok(vec![ServiceConfig::from_jmap(
+            session.url,
+            &session.auth_schemes,
+        )])
+    }
+
+    /// Probes one config's endpoints for the authentication schemes
+    /// they advertise on their unauthenticated 401 (PACC §5.4.2) and
+    /// refines the config's password and bearer methods accordingly.
+    /// The URLs are tried in order until one advertises any scheme; a
+    /// probe that fails or learns nothing leaves the config as
+    /// discovered.
+    pub fn search_probe(&mut self, mut config: ServiceConfig) -> Result<ServiceConfig, String> {
+        for url in config.probe_urls() {
+            match self.run_mechanism(ProbeAuth::new(url)) {
+                Ok(schemes) if !schemes.is_empty() => {
+                    config.refine_auth(&schemes);
+                    break;
+                }
+                // NOTE: a probe that fails or learns nothing is
+                // best-effort; the config's next URL gets its turn.
+                Ok(_) | Err(_) => {}
+            }
+        }
+
+        Ok(config)
+    }
+
+    /// The DNS resolver URL for the search mechanisms, DoH by default.
+    fn search_resolver(&self, resolver: Option<&str>) -> Result<Url, String> {
+        let resolver = resolver.unwrap_or(DNS_RESOLVER);
+        Url::parse(resolver).map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))
     }
 
     /// Fetches an authorization server's RFC 8414 metadata from its
@@ -364,11 +457,292 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
+    // ---- Backend dispatch ---------------------------------------------------
+
+    /// Lists the account's addressbooks, each carrying the absolute
+    /// collection URL every card operation targets: the CardDAV
+    /// discovery walk, the Graph contact folders, the JMAP
+    /// AddressBooks or the Google contact groups. Doubles as the
+    /// connection check during onboarding.
+    pub fn list_addressbooks(
+        &mut self,
+        base_url: &str,
+        credentials: &Credentials,
+    ) -> Result<Vec<Addressbook>, String> {
+        match Backend::of(base_url) {
+            Backend::Carddav => self.list_carddav_addressbooks(&parse_url(base_url)?, credentials),
+            Backend::Graph => {
+                let mut books = self.list_graph_addressbooks(credentials.password)?;
+                for book in &mut books {
+                    let segment = match book.id.is_empty() {
+                        true => account::MSGRAPH_DEFAULT_FOLDER,
+                        false => &book.id,
+                    };
+                    book.url = format!("{base_url}/{segment}");
+                }
+                Ok(books)
+            }
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                let mut books = self.list_jmap_addressbooks(&session_url, credentials)?;
+                for book in &mut books {
+                    book.url = format!("{base_url}/{}", book.id);
+                }
+                Ok(books)
+            }
+            Backend::Google => {
+                let mut books = self.list_google_addressbooks(credentials.password)?;
+                for book in &mut books {
+                    let segment = match book.id.is_empty() {
+                        true => account::GOOGLE_DEFAULT_BOOK,
+                        false => &book.id,
+                    };
+                    book.url = format!("{base_url}/{segment}");
+                }
+                Ok(books)
+            }
+        }
+    }
+
+    /// Lists every card of an account-level backend (JMAP, Google) in
+    /// one pass, each carrying its addressbook memberships as book ids.
+    pub fn list_account_cards(
+        &mut self,
+        base_url: &str,
+        credentials: &Credentials,
+    ) -> Result<Vec<Card>, String> {
+        match Backend::of(base_url) {
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.list_jmap_cards(&session_url, credentials)
+            }
+            Backend::Google => self.list_google_cards(credentials.password),
+            backend => Err(format!(
+                "Cards of a {} account are listed per collection",
+                backend.name(),
+            )),
+        }
+    }
+
+    /// Lists the cards of the addressbook collection at
+    /// `addressbook_url` (CardDAV, Graph); the account-level backends
+    /// list once per account through [`Self::list_account_cards`].
+    pub fn list_cards(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+    ) -> Result<Vec<Card>, String> {
+        match Backend::of(base_url) {
+            Backend::Carddav => self.list_carddav_cards(&parse_url(addressbook_url)?, credentials),
+            Backend::Graph => self.list_graph_cards(
+                credentials.password,
+                account::graph_folder(base_url, addressbook_url),
+            ),
+            backend => Err(format!(
+                "Cards of a {} account are listed account-wide",
+                backend.name(),
+            )),
+        }
+    }
+
+    /// Lists the collection's changes since the given cursor, on every
+    /// backend: a CardDAV sync-collection REPORT (RFC 6578), a Graph
+    /// contacts delta round, a JMAP ContactCard/changes round or a
+    /// People connections sync. No cursor runs the initial round: the
+    /// complete member set plus the cursor to delta from next time.
+    /// Returns [`None`] when the server no longer accepts the cursor,
+    /// so the caller re-runs an initial round.
+    pub fn sync_cards(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        cursor: Option<&str>,
+    ) -> Result<Option<CardDelta>, String> {
+        match Backend::of(base_url) {
+            Backend::Carddav => {
+                let url = parse_url(addressbook_url)?;
+                let delta = self.sync_carddav_cards(&url, credentials, cursor)?;
+                Ok(delta.map(into_card_delta))
+            }
+            Backend::Graph => self.delta_graph_cards(
+                credentials.password,
+                account::graph_folder(base_url, addressbook_url),
+                cursor,
+            ),
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.changes_jmap_cards(&session_url, credentials, cursor)
+            }
+            Backend::Google => self.sync_google_cards(credentials.password, cursor),
+        }
+    }
+
+    /// Creates the card in the addressbook collection, returning it
+    /// with its ETag. CardDAV names the resource `<id>.vcf` itself;
+    /// the other backends name it server-side, so there the returned
+    /// card carries the server-assigned id.
+    pub fn create_card(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        id: &str,
+        vcard: &str,
+    ) -> Result<Card, String> {
+        match Backend::of(base_url) {
+            Backend::Carddav => {
+                let url = parse_url(addressbook_url)?;
+                let etag = self.create_carddav_card(&url, credentials, id, vcard)?;
+
+                Ok(Card {
+                    id: id.to_string(),
+                    uri: format!("{id}.vcf"),
+                    etag,
+                    vcard: vcard.to_string(),
+                    books: Vec::new(),
+                })
+            }
+            Backend::Graph => self.create_graph_card(
+                credentials.password,
+                account::graph_folder(base_url, addressbook_url),
+                vcard,
+            ),
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                let book_id = account::book_segment(base_url, addressbook_url);
+                self.create_jmap_card(&session_url, credentials, book_id, vcard)
+            }
+            Backend::Google => self.create_google_card(credentials.password, vcard),
+        }
+    }
+
+    /// Reads the card at the given resource name (as the server
+    /// returned it) from the addressbook collection.
+    pub fn read_card(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        uri: &str,
+    ) -> Result<Card, String> {
+        match Backend::of(base_url) {
+            Backend::Carddav => {
+                self.read_carddav_card(&parse_url(addressbook_url)?, credentials, uri)
+            }
+            Backend::Graph => self.read_graph_card(credentials.password, uri),
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.read_jmap_card(&session_url, credentials, uri)
+            }
+            Backend::Google => self.read_google_card(credentials.password, uri),
+        }
+    }
+
+    /// Updates the card in the addressbook collection, returning it
+    /// with its new ETag. The base vCard (the state last synced with
+    /// the server, [`None`] when unknown) trims the Graph, JMAP and
+    /// Google patches to the fields the edit changed; CardDAV PUTs the
+    /// full vCard and ignores it. The ETag guards the CardDAV and
+    /// Google updates; Graph and JMAP carry no guard (last-write-wins).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_card(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        id: &str,
+        uri: &str,
+        vcard: &str,
+        base_vcard: Option<&str>,
+        etag: Option<&str>,
+    ) -> Result<Card, String> {
+        let backend = Backend::of(base_url);
+        let key = addressing_key(backend, id, uri);
+
+        match backend {
+            Backend::Carddav => {
+                let url = parse_url(addressbook_url)?;
+                let etag = self.update_carddav_card(&url, credentials, &key, vcard, etag)?;
+
+                Ok(Card {
+                    id: id.to_string(),
+                    uri: key,
+                    etag,
+                    vcard: vcard.to_string(),
+                    books: Vec::new(),
+                })
+            }
+            Backend::Graph => self.update_graph_card(credentials.password, &key, vcard, base_vcard),
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.update_jmap_card(&session_url, credentials, &key, vcard, base_vcard)
+            }
+            Backend::Google => {
+                self.update_google_card(credentials.password, &key, vcard, base_vcard, etag)
+            }
+        }
+    }
+
+    /// Deletes the card from the addressbook collection; the ETag
+    /// guards the CardDAV deletion only.
+    pub fn delete_card(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        id: &str,
+        uri: &str,
+        etag: Option<&str>,
+    ) -> Result<(), String> {
+        let backend = Backend::of(base_url);
+        let key = addressing_key(backend, id, uri);
+
+        match backend {
+            Backend::Carddav => {
+                self.delete_carddav_card(&parse_url(addressbook_url)?, credentials, &key, etag)
+            }
+            Backend::Graph => self.delete_graph_card(credentials.password, &key),
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.delete_jmap_card(&session_url, credentials, &key)
+            }
+            Backend::Google => self.delete_google_card(credentials.password, &key),
+        }
+    }
+
+    /// Adds and removes the card's addressbook memberships on an
+    /// account-level backend, by book id: JMAP patches addressBookIds,
+    /// Google modifies group members.
+    pub fn update_card_books(
+        &mut self,
+        base_url: &str,
+        credentials: &Credentials,
+        id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), String> {
+        match Backend::of(base_url) {
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                self.update_jmap_card_books(&session_url, credentials, id, add, remove)
+            }
+            Backend::Google => self.update_google_card_books(credentials.password, id, add, remove),
+            backend => Err(format!(
+                "Memberships of a {} card are fixed to its collection",
+                backend.name(),
+            )),
+        }
+    }
+
+    // ---- CardDAV operations -------------------------------------------------
+
     /// Walks current-user-principal -> addressbook-home-set -> list,
     /// returning the account's addressbooks. Doubles as the connection
     /// check during onboarding: any failure (TLS, auth, discovery walk)
     /// surfaces here.
-    pub fn list_addressbooks(
+    pub fn list_carddav_addressbooks(
         &mut self,
         base_url: &Url,
         credentials: &Credentials,
@@ -413,7 +787,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Lists the cards of the addressbook collection at `url`.
-    pub fn list_cards(
+    pub fn list_carddav_cards(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -427,7 +801,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Creates the card `id` inside the addressbook collection at
     /// `url`, returning the new ETag when the server sent one.
-    pub fn create_card(
+    pub fn create_carddav_card(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -450,7 +824,7 @@ impl<'a, 'local> Client<'a, 'local> {
     /// Reads the card at resource name `uri` (as the server returned
     /// it) inside the addressbook collection at `url`, returning its
     /// body and ETag.
-    pub fn read_card(
+    pub fn read_carddav_card(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -473,7 +847,7 @@ impl<'a, 'local> Client<'a, 'local> {
     /// it) inside the addressbook collection at `url`, guarded by
     /// `if_match` when an ETag is known, returning the new ETag when
     /// the server sent one.
-    pub fn update_card(
+    pub fn update_carddav_card(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -498,7 +872,7 @@ impl<'a, 'local> Client<'a, 'local> {
     /// Deletes the card at resource name `uri` (as the server returned
     /// it) inside the addressbook collection at `url`, guarded by
     /// `if_match` when an ETag is known.
-    pub fn delete_card(
+    pub fn delete_carddav_card(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -530,7 +904,7 @@ impl<'a, 'local> Client<'a, 'local> {
     /// addressbook collection at `url`, draining truncated result sets.
     /// Returns [`None`] when the server rejected the sync token, so the
     /// caller falls back to a full enumeration.
-    pub fn sync_cards(
+    pub fn sync_carddav_cards(
         &mut self,
         url: &Url,
         credentials: &Credentials,
@@ -1547,22 +1921,21 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
-    /// Drives a search coroutine, converting transport failures on
-    /// one endpoint into an EOF signal (an empty resume slice) so the
-    /// failing mechanism errors out and the search moves on to the
-    /// next one, mirroring pimconf's own std search client.
-    fn run_search<C>(&mut self, mut coroutine: C) -> Result<Vec<ServiceConfig>, String>
+    /// Drives one discovery mechanism coroutine, converting transport
+    /// failures on one endpoint into an EOF signal (an empty resume
+    /// slice) so the coroutine can run its own fallbacks (the JMAP
+    /// resolve falls back to the domain when the resolver is
+    /// unreachable) and errors out on its own terms.
+    fn run_mechanism<C, T, E>(&mut self, mut coroutine: C) -> Result<T, String>
     where
-        C: DiscoveryCoroutine<
-                Yield = DiscoveryYield,
-                Return = Result<Vec<ServiceConfig>, SearchError>,
-            >,
+        C: DiscoveryCoroutine<Yield = DiscoveryYield, Return = Result<T, E>>,
+        E: Display,
     {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
-                DiscoveryCoroutineState::Complete(Ok(configs)) => return Ok(configs),
+                DiscoveryCoroutineState::Complete(Ok(output)) => return Ok(output),
                 DiscoveryCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
                 DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsRead { url }) => {
                     arg = Some(match self.read(url.as_str()) {
@@ -1865,6 +2238,69 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 }
 
+/// The card's addressing key, reconstructed for pre-uri local rows:
+/// CardDAV resources are named `<id>.vcf` (Graph rides the same
+/// fallback, though its rows always carry a uri), JMAP and Google
+/// address the bare server id.
+fn addressing_key(backend: Backend, id: &str, uri: &str) -> String {
+    if !uri.is_empty() {
+        return uri.to_string();
+    }
+
+    match backend {
+        Backend::Carddav | Backend::Graph => format!("{id}.vcf"),
+        Backend::Jmap | Backend::Google => id.to_string(),
+    }
+}
+
+/// A sync-collection delta as the unified card delta shape, each
+/// member href mapped to its resource name (the collection's own href,
+/// when a server lists it, yields an empty name and is skipped).
+fn into_card_delta(delta: SyncDelta) -> CardDelta {
+    let changed = delta
+        .changed
+        .into_iter()
+        .filter_map(|change| {
+            let uri = href_resource(&change.href)?;
+            Some(Card {
+                id: uri.trim_end_matches(".vcf").to_string(),
+                uri,
+                etag: change.etag,
+                vcard: String::new(),
+                books: Vec::new(),
+            })
+        })
+        .collect();
+    let vanished = delta
+        .vanished
+        .iter()
+        .filter_map(|href| href_resource(href))
+        .collect();
+
+    CardDelta {
+        changed,
+        vanished,
+        token: delta.sync_token,
+    }
+}
+
+/// The last non-empty path segment of a member href, i.e. its resource
+/// name; [`None`] for the collection itself (trailing slash).
+fn href_resource(href: &str) -> Option<String> {
+    let name = href.trim_end_matches('/');
+    let name = &name[name.rfind('/').map_or(0, |slash| slash + 1)..];
+
+    if name.is_empty() || href.ends_with('/') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Parses an absolute URL off the JNI wire.
+fn parse_url(raw: &str) -> Result<Url, String> {
+    Url::parse(raw).map_err(|err| format!("Invalid URL `{raw}`: {err}"))
+}
+
 /// Auth scheme from the credentials: an empty login means the
 /// password field carries an OAuth 2.0 access token (Bearer, RFC
 /// 6750); otherwise HTTP Basic, the only password scheme CardDAV
@@ -2011,6 +2447,27 @@ fn parse_graph_url(raw: &str) -> Result<Url, String> {
     Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}"))
 }
 
+/// Splits a trimmed search input into (email, domain), the domain
+/// lowercased. A bare domain (no `@`) yields an empty email and the
+/// whole input as domain: every mechanism the app drives is
+/// domain-driven, so a domain searches just as well as an address.
+fn search_domain(input: &str) -> Result<(String, String), String> {
+    let input = input.trim();
+
+    let (email, domain) = match input.split_once('@') {
+        Some((_, domain)) => (input, domain),
+        None => ("", input),
+    };
+
+    let domain = domain.trim_matches('.').to_ascii_lowercase();
+
+    if domain.is_empty() {
+        return Err(format!("Search input `{input}` has no domain"));
+    }
+
+    Ok((email.to_string(), domain))
+}
+
 /// The `$expand` clause fetching the bridge's stash extended property
 /// along with the contact (Graph omits extended properties otherwise).
 fn graph_expand() -> String {
@@ -2040,5 +2497,27 @@ pub(crate) fn clear_and_fail(env: &mut Env, op: &str, err: Error) -> String {
             format!("{op} failed: {name}: {msg}")
         }
         _ => format!("{op} failed: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An email address searches by its domain part; a bare domain
+    /// searches as itself with no email; an input without any domain
+    /// is rejected.
+    #[test]
+    fn search_domain_accepts_emails_and_bare_domains() {
+        let (email, domain) = search_domain("user@Example.COM.").unwrap();
+        assert_eq!(email, "user@Example.COM.");
+        assert_eq!(domain, "example.com");
+
+        let (email, domain) = search_domain(" example.com ").unwrap();
+        assert_eq!(email, "");
+        assert_eq!(domain, "example.com");
+
+        assert!(search_domain("").is_err());
+        assert!(search_domain("user@").is_err());
     }
 }

@@ -664,6 +664,7 @@ fn adr_prop(address: &PeopleAddress) -> Option<VcardProp<'static>> {
         region: option_component(&address.region),
         postal_code: option_component(&address.postal_code),
         country: option_component(&address.country),
+        ..Default::default()
     };
 
     let empty = value.po_box.is_empty()

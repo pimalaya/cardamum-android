@@ -46,33 +46,13 @@ public final class ServerMetadata {
     }
 
     /**
-     * The scope a contacts client should request here: the standard
-     * contacts scope (draft-ietf-mailmaint-oauth-public) plus
-     * {@code offline_access} for the refresh token, each kept only
-     * when the server advertised it. Requesting the server's whole
-     * {@link #scopesSupported} set instead is what an "invalid scope"
-     * authorization error comes from: that set is what the server
-     * supports (mail, calendars, provider extras), not what this app
-     * needs. When the server advertised no scopes at all, the standard
-     * pair is requested as-is.
+     * The scope a contacts client should request here, negotiated by
+     * the bridge against {@link #scopesSupported} (the standard
+     * contacts scope plus {@code offline_access}, each kept only when
+     * advertised).
      */
     public String contactsScope() {
-        String contacts = "urn:ietf:params:oauth:scope:contacts";
-        String offline = "offline_access";
-
-        if (scopesSupported.isEmpty()) {
-            return contacts + " " + offline;
-        }
-
-        StringBuilder scope = new StringBuilder();
-        for (String wanted : new String[] {contacts, offline}) {
-            if ((" " + scopesSupported + " ").contains(" " + wanted + " ")) {
-                if (scope.length() > 0) {
-                    scope.append(' ');
-                }
-                scope.append(wanted);
-            }
-        }
-        return scope.toString();
+        return CardamumClient.string(
+                CardamumClient.object(Native.oauthContactsScope(scopesSupported)), "scope");
     }
 }

@@ -76,9 +76,14 @@ final class Accounts {
 
     /** The account backing the addressbook, or null before reconcile. */
     static Account find(Context context, Addressbook book) {
+        return findByUrl(context, book.url);
+    }
+
+    /** The account backing the addressbook URL, or null before reconcile. */
+    static Account findByUrl(Context context, String url) {
         AccountManager manager = AccountManager.get(context);
         for (Account account : manager.getAccountsByType(TYPE)) {
-            if (book.url.equals(manager.getUserData(account, DATA_URL))) {
+            if (url.equals(manager.getUserData(account, DATA_URL))) {
                 return account;
             }
         }

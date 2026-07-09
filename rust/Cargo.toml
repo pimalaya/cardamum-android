@@ -21,6 +21,7 @@ io-offline = { version = "0.1", default-features = false }
 io-webdav = { version = "0.0.1", default-features = false }
 jni = "0.22"
 pimconf = { version = "0.1", default-features = false, features = ["search"] }
+rand = "0.10"
 secrecy = { version = "0.10", default-features = false }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

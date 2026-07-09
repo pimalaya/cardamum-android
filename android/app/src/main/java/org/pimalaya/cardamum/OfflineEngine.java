@@ -1,5 +1,6 @@
 package org.pimalaya.cardamum;
 
+import android.content.Context;
 import android.util.Log;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -18,20 +19,27 @@ import org.pimalaya.cardamum.client.OfflineDriver;
 /**
  * One account's io-offline driver: the Rust bridge runs the engine's
  * coroutines and this class services their yields, storage against the
- * {@link CardStore} and remote against the backend clients. Every
- * backend enumerates incrementally from its stored cursor (CardDAV
- * sync-collection, Graph delta, JMAP /changes, People sync tokens),
- * falling back to a complete round when the cursor expired; the
- * account-wide deltas of JMAP and Google are projected onto each
- * book's enumerate. {@link #syncBook} is the orchestration: reconcile,
- * hydrate the missing bodies, auto-resolve conflicts by three-way
- * merge, and push the resolutions. Everything blocks; callers run it
- * off the main thread.
+ * {@link CardStore} and remote against the backend clients or, for a
+ * book's phone collection, against its raw contacts through the
+ * {@link PhoneRemote} adapter. Every server backend enumerates
+ * incrementally from its stored cursor (CardDAV sync-collection, Graph
+ * delta, JMAP /changes, People sync tokens), falling back to a
+ * complete round when the cursor expired; the account-wide deltas of
+ * JMAP and Google are projected onto each book's enumerate.
+ * {@link #syncBook} is the orchestration: a phone pass pulling the
+ * contacts app's edits into the hub, the server exchange, then a
+ * second phone pass projecting what the server round brought; each
+ * pass reconciles, hydrates the missing bodies, auto-resolves
+ * conflicts by three-way merge and pushes the resolutions. Everything
+ * blocks; callers run it off the main thread.
  */
 final class OfflineEngine implements OfflineDriver {
     private final CardStore base;
     private final CardamumClient client;
     private final Account account;
+
+    /** The phone spoke's adapter; null on context-less (mutate) drivers. */
+    private final PhoneRemote phone;
 
     /** Book ids by collection URL (account-level membership mapping). */
     private Map<String, String> idByUrl;
@@ -63,23 +71,37 @@ final class OfflineEngine implements OfflineDriver {
 
     /**
      * Builds a driver for one account; a null account services storage
-     * yields only (local mutations never touch the remote).
+     * yields only (local mutations never touch the remote), a null
+     * context disables the phone spoke.
      */
-    OfflineEngine(CardStore base, CardamumClient client, Account account) {
+    OfflineEngine(CardStore base, CardamumClient client, Account account, Context context) {
         this.base = base;
         this.client = client;
         this.account = account;
+        this.phone = context == null ? null : new PhoneRemote(context, base, client);
     }
 
     /**
-     * One collection's engine pass: reconcile with the remote, fetch
-     * the bodies the spine still misses, then resolve any conflict by
-     * three-way merge (local wins same-field collisions) and push the
-     * resolutions with a second reconcile.
+     * One book's full hub sync, three engine passes: phone (pull the
+     * contacts app's edits into the hub), server (exchange with the
+     * remote; the phone-won hub divergences push along), phone again
+     * (project what the server round brought; local-only, cheap).
      */
     Report syncBook(String url) throws JSONException {
         Report report = new Report();
+        syncPhone(url, report);
+        syncServer(url, report);
+        syncPhone(url, report);
+        return report;
+    }
 
+    /**
+     * The server collection's engine pass: reconcile with the remote,
+     * fetch the bodies the spine still misses, then resolve any
+     * conflict by three-way merge (local wins same-field collisions)
+     * and push the resolutions with a second reconcile.
+     */
+    private void syncServer(String url, Report report) throws JSONException {
         JSONObject sync = client.offlineSync(this, url, false);
         report.pulled += sync.optInt("pulled");
         report.pushed += sync.optInt("pushed");
@@ -96,8 +118,38 @@ final class OfflineEngine implements OfflineDriver {
             report.pushed += retry.optInt("pushed");
             hydrate(url);
         }
+    }
 
-        return report;
+    /**
+     * The phone collection's engine pass, same shape as the server
+     * one: reconcile the hub with the book's raw contacts, hydrate the
+     * bodies the phone round brought, resolve divergences by the same
+     * three-way merge. Skipped silently when the spoke is unavailable
+     * (no contacts permission, or no Android account yet: "Sync local"
+     * creates them).
+     */
+    void syncPhone(String url, Report report) throws JSONException {
+        if (phone == null || !phone.available(url)) {
+            return;
+        }
+        String collection = CardStore.phoneCollection(url);
+
+        JSONObject sync = client.offlineSync(this, collection, false);
+        report.pulled += sync.optInt("pulled");
+        report.pushed += sync.optInt("pushed");
+        hydrate(collection);
+
+        List<JSONObject> conflicts = base.loadConflicts(collection);
+        if (!conflicts.isEmpty()) {
+            for (JSONObject conflict : conflicts) {
+                resolvePhoneConflict(collection, conflict);
+            }
+            report.merged += conflicts.size();
+
+            JSONObject retry = client.offlineSync(this, collection, false);
+            report.pushed += retry.optInt("pushed");
+            hydrate(collection);
+        }
     }
 
     /** Raises every bodiless or stale placement to its full body. */
@@ -126,6 +178,30 @@ final class OfflineEngine implements OfflineDriver {
             base.setConflictRevision(url, handle, remote.etag);
         }
         mutateEdit(url, handle, merged);
+    }
+
+    /**
+     * Resolves one phone-conflicted row the same way, the remote side
+     * being the raw contact read back through the fetch boundary.
+     */
+    private void resolvePhoneConflict(String collection, JSONObject conflict)
+            throws JSONException {
+        String handle = conflict.getString("handle");
+        JSONObject remote = phone.read(collection, handle);
+        if (remote == null) {
+            // The raw contact vanished mid-conflict; the next sync
+            // reconciles the removal.
+            return;
+        }
+
+        String local = conflict.getString("vcard");
+        String mergeBase = conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
+        String merged = client.mergeCardChanges(mergeBase, local, remote.getString("body"));
+
+        if (!remote.isNull("revision")) {
+            base.setConflictRevision(collection, handle, remote.getString("revision"));
+        }
+        mutateEdit(collection, handle, merged);
     }
 
     /**
@@ -184,6 +260,9 @@ final class OfflineEngine implements OfflineDriver {
      */
     private JSONObject enumerate(JSONObject yielded) throws JSONException {
         String url = yielded.getString("collection");
+        if (CardStore.isPhoneCollection(url)) {
+            return phone.enumerate(url);
+        }
         String cursor = yielded.isNull("cursor") ? null : yielded.getString("cursor");
 
         CardDelta delta;
@@ -294,6 +373,9 @@ final class OfflineEngine implements OfflineDriver {
     private JSONObject fetch(JSONObject yielded) throws JSONException {
         String url = yielded.getString("collection");
         JSONArray handles = yielded.getJSONArray("handles");
+        if (CardStore.isPhoneCollection(url)) {
+            return phone.fetch(url, handles);
+        }
 
         JSONArray items = new JSONArray();
         if (CardamumClient.isAccountLevel(account)) {
@@ -365,6 +447,9 @@ final class OfflineEngine implements OfflineDriver {
     private JSONObject push(JSONObject yielded) throws JSONException {
         String url = yielded.getString("collection");
         JSONArray changes = yielded.getJSONArray("changes");
+        if (CardStore.isPhoneCollection(url)) {
+            return phone.push(url, changes);
+        }
 
         JSONArray results = new JSONArray();
         for (int index = 0; index < changes.length(); index++) {
@@ -573,15 +658,11 @@ final class OfflineEngine implements OfflineDriver {
     }
 
     private boolean isGraph() {
-        return account != null
-                && account.baseUrl != null
-                && account.baseUrl.startsWith(CardamumClient.MSGRAPH_PREFIX);
+        return account != null && CardamumClient.isGraph(account);
     }
 
     private boolean isGoogle() {
-        return account != null
-                && account.baseUrl != null
-                && account.baseUrl.startsWith(CardamumClient.GOOGLE_PREFIX);
+        return account != null && CardamumClient.isGoogle(account);
     }
 
     private static String error(String message) {

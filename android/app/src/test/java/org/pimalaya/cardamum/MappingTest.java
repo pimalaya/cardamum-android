@@ -5,7 +5,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -195,6 +197,179 @@ public class MappingTest {
         for (Map<String, Object> row : Mapping.rows(model)) {
             assertFalse("vnd.android.cursor.item/contact_event".equals(row.get("mimetype")));
         }
+    }
+
+    // ---- Inverse direction (rows to model) -------------------------------------
+
+    @Test
+    public void richModelRoundTripsThroughRows() throws Exception {
+        JSONObject model =
+                new JSONObject()
+                        .put("displayName", "Jane Q. Doe Jr.")
+                        .put(
+                                "name",
+                                new JSONObject()
+                                        .put("prefix", "")
+                                        .put("given", "Jane")
+                                        .put("middle", "Q.")
+                                        .put("family", "Doe")
+                                        .put("suffix", "Jr."))
+                        .put("nicknames", new JSONArray().put("JD"))
+                        .put(
+                                "phones",
+                                new JSONArray()
+                                        .put(
+                                                new JSONObject()
+                                                        .put("number", "+331111")
+                                                        .put(
+                                                                "types",
+                                                                new JSONArray().put("cell"))
+                                                        .put("pref", true)))
+                        .put(
+                                "emails",
+                                new JSONArray()
+                                        .put(
+                                                new JSONObject()
+                                                        .put("address", "a@b.c")
+                                                        .put(
+                                                                "types",
+                                                                new JSONArray().put("home"))
+                                                        .put("pref", false)))
+                        .put(
+                                "addresses",
+                                new JSONArray()
+                                        .put(
+                                                new JSONObject()
+                                                        .put("street", "12 Main St")
+                                                        .put("pobox", "")
+                                                        .put("ext", "")
+                                                        .put("city", "Paris")
+                                                        .put("region", "")
+                                                        .put("postcode", "75000")
+                                                        .put("country", "France")
+                                                        .put(
+                                                                "types",
+                                                                new JSONArray().put("home"))
+                                                        .put("pref", false)))
+                        .put(
+                                "organization",
+                                new JSONObject().put("company", "ACME").put("department", "R&D"))
+                        .put("title", "Boss")
+                        .put("role", "CTO")
+                        .put("websites", new JSONArray().put("https://doe.org"))
+                        .put("birthday", "1985-04-12")
+                        .put("notes", new JSONArray().put("a note"));
+
+        JSONObject round = Mapping.model(Mapping.rows(model));
+        for (String field : Mapping.FIELDS) {
+            assertEquals(
+                    field,
+                    String.valueOf(model.opt(field)),
+                    String.valueOf(round.opt(field)));
+        }
+    }
+
+    @Test
+    public void phoneTypesInvertsThePhoneTypeTable() {
+        int[] table = {1, 2, 3, 4, 5, 13, 6, 18, 17, 9, 11};
+        for (int type : table) {
+            Set<String> set = new HashSet<>();
+            JSONArray types = Mapping.phoneTypes(type);
+            for (int index = 0; index < types.length(); index++) {
+                set.add(types.optString(index));
+            }
+            assertEquals(type, Mapping.phoneType(set));
+        }
+        assertEquals(0, Mapping.phoneTypes(7).length());
+        assertEquals(0, Mapping.phoneTypes(0).length());
+    }
+
+    @Test
+    public void displayNameOnlyRowReadsAsBareDisplayName() throws Exception {
+        // The shape phone apps author when only a full name is typed.
+        Map<String, Object> row = new HashMap<>();
+        row.put("mimetype", "vnd.android.cursor.item/name");
+        row.put("data1", "Jane Doe");
+
+        JSONObject model = Mapping.model(List.of(row));
+        assertEquals("Jane Doe", model.getString("displayName"));
+        assertEquals("", model.getJSONObject("name").getString("given"));
+        assertEquals("", model.getJSONObject("name").getString("family"));
+    }
+
+    @Test
+    public void customLabelledNumberReadsAsBareTel() throws Exception {
+        Map<String, Object> row = new HashMap<>();
+        row.put("mimetype", "vnd.android.cursor.item/phone_v2");
+        row.put("data1", "0611");
+        row.put("data2", 0);
+        row.put("data3", "Batphone");
+
+        JSONObject phone = Mapping.model(List.of(row)).getJSONArray("phones").getJSONObject(0);
+        assertEquals("0611", phone.getString("number"));
+        assertEquals(0, phone.getJSONArray("types").length());
+    }
+
+    @Test
+    public void formattedOnlyAddressReadsIntoStreet() throws Exception {
+        Map<String, Object> row = new HashMap<>();
+        row.put("mimetype", "vnd.android.cursor.item/postal-address_v2");
+        row.put("data1", "12 Main St, Paris");
+        row.put("data2", 1);
+
+        JSONObject adr = Mapping.model(List.of(row)).getJSONArray("addresses").getJSONObject(0);
+        assertEquals("12 Main St, Paris", adr.getString("street"));
+        assertEquals("home", adr.getJSONArray("types").getString(0));
+    }
+
+    // ---- Field-space merge ------------------------------------------------------
+
+    @Test
+    public void mergeTakesOnlyThePhoneEditedFields() throws Exception {
+        JSONObject base = divergentBase();
+        JSONObject phone = Mapping.model(Mapping.rows(base));
+        phone.getJSONArray("phones").getJSONObject(0).put("number", "+332222");
+
+        JSONObject merged = Mapping.merge(base, phone);
+        assertEquals(
+                "+332222",
+                merged.getJSONArray("phones").getJSONObject(0).getString("number"));
+        // The divergent-FN name never reached the phone rows, so an
+        // untouched phone must not read as a name clear.
+        assertEquals("Doe", merged.getJSONObject("name").getString("family"));
+        // Fields outside the phone mapping ride along from the base.
+        assertEquals("friends", merged.getJSONArray("categories").getString(0));
+    }
+
+    @Test
+    public void mergeOfAnUntouchedPhoneIsTheBase() throws Exception {
+        JSONObject base = divergentBase();
+        JSONObject phone = Mapping.model(Mapping.rows(base));
+
+        JSONObject merged = Mapping.merge(base, phone);
+        for (Iterator<String> keys = base.keys(); keys.hasNext(); ) {
+            String key = keys.next();
+            assertEquals(
+                    key,
+                    String.valueOf(base.opt(key)),
+                    String.valueOf(merged.opt(key)));
+        }
+    }
+
+    /** A base model whose FN diverges from N (lossy on the phone). */
+    private static JSONObject divergentBase() throws Exception {
+        return new JSONObject()
+                .put("displayName", "Jane Doe Yo")
+                .put("name", new JSONObject().put("given", "Jane").put("family", "Doe"))
+                .put(
+                        "phones",
+                        new JSONArray()
+                                .put(
+                                        new JSONObject()
+                                                .put("number", "+331111")
+                                                .put("types", new JSONArray().put("cell"))
+                                                .put("pref", false)))
+                .put("categories", new JSONArray().put("friends"));
     }
 
     // ---- Helpers --------------------------------------------------------------

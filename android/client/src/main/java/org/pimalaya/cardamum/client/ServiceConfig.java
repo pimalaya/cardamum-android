@@ -9,7 +9,7 @@ import org.json.JSONObject;
 /**
  * One discovered way to use one service: where to connect, how to
  * authenticate, and which mechanism found it. Produced by
- * {@link CardamumClient#searchAll} and {@link CardamumClient#searchFirst}.
+ * {@link CardamumClient#searchAll}.
  */
 public final class ServiceConfig {
     /** Service kind, e.g. {@code carddav}. */

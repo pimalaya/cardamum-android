@@ -4,5 +4,5 @@
     android:allowParallelSyncs="false"
     android:contentAuthority="com.android.contacts"
     android:isAlwaysSyncable="true"
-    android:supportsUploading="false"
+    android:supportsUploading="true"
     android:userVisible="true" />

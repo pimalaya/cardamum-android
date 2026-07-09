@@ -3,14 +3,12 @@ package org.pimalaya.cardamum;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.ContactsContract;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -43,7 +41,6 @@ import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardamumClient;
 import org.pimalaya.cardamum.client.OauthSession;
 import org.pimalaya.cardamum.client.OauthTokens;
-import org.pimalaya.cardamum.client.Provider;
 import org.pimalaya.cardamum.client.ServerMetadata;
 import org.pimalaya.cardamum.client.ServiceConfig;
 
@@ -517,38 +514,67 @@ public class MainActivity extends Activity {
                     hideKeyboard();
 
                     // One field covers every case, the CLI way: an
-                    // email goes through discovery, anything else (a
-                    // host[:port] or a connection URI) is a server to
-                    // configure by hand.
+                    // email or a bare domain goes through discovery
+                    // (every mechanism is domain-driven, and the
+                    // provider rules ride inside it as one mechanism
+                    // among the others), a connection URI is a server
+                    // to configure by hand.
                     String address = email.getText().toString().trim();
                     pendingEmail = address;
-                    if (address.contains("://") || !address.contains("@")) {
+                    if (address.contains("://")) {
                         showManualConfigs(address);
-                    } else if (Provider.detect(address) == Provider.OTHER) {
-                        search();
                     } else {
-                        showConfigs(Provider.detect(address));
+                        search();
                     }
                 });
     }
 
     /**
-     * Searches every pimconf mechanism for the email's CardDAV and
-     * JMAP service configs, then proposes them. Only protocols the
-     * server actually speaks end up on the config screen; a failing
-     * search surfaces as an error dialog and stays on the email panel.
+     * Searches the email's (or bare domain's) CardDAV and JMAP
+     * service configs, then proposes them. The MX provider probe runs
+     * first and is decisive: a domain whose mail exchanges live at
+     * Google or Microsoft is hosted there, suite and contacts
+     * included, so the dedicated provider variants show right away
+     * and the protocol sweep (PACC, CardDAV and JMAP resolves), which
+     * would only produce origin-fallback noise there, is skipped. No
+     * match runs the sweep in parallel. A failing search surfaces as
+     * an error dialog and stays on the email panel, and a domain
+     * nothing was discovered for falls back to the manual server
+     * rows.
      */
     private void search() {
         setAuthLoading(R.id.email_submit, R.id.email_progress, true);
 
         io.execute(
                 () -> {
+                    // A null resolver falls back to the bridge's
+                    // DNS-over-HTTPS default, which works on mobile
+                    // networks that block outbound DNS over TCP. A
+                    // failing probe just goes on to the sweep.
+                    if (!emailLogin().isEmpty()) {
+                        String provider = null;
+                        try {
+                            List<ServiceConfig> hits = client.searchProvider(pendingEmail, null);
+                            provider = hits.isEmpty() ? null : hits.get(0).source;
+                        } catch (Exception error) {
+                            Log.w("cardamum", "provider probe failed", error);
+                        }
+
+                        if (provider != null) {
+                            String matched = provider;
+                            main.post(
+                                    () -> {
+                                        setAuthLoading(
+                                                R.id.email_submit, R.id.email_progress, false);
+                                        showProviderConfigs(matched);
+                                    });
+                            return;
+                        }
+                    }
+
                     List<ServiceConfig> configs = new ArrayList<>();
                     Exception failure = null;
                     try {
-                        // A null resolver falls back to the bridge's
-                        // DNS-over-HTTPS default, which works on mobile
-                        // networks that block outbound DNS over TCP.
                         configs = client.searchAll(pendingEmail, null);
                     } catch (Exception error) {
                         // Failing mechanisms are already skipped inside
@@ -566,8 +592,15 @@ public class MainActivity extends Activity {
                                     showError(searchFailure, R.string.discover_failed);
                                     return;
                                 }
+                                if (found.isEmpty() && !pendingEmail.contains("@")) {
+                                    // A domain nothing was discovered
+                                    // for still names a server to try
+                                    // by hand.
+                                    showManualConfigs(pendingEmail);
+                                    return;
+                                }
                                 searchedConfigs = found;
-                                showConfigs(Provider.OTHER);
+                                showConfigs();
                             });
                 });
     }
@@ -617,7 +650,7 @@ public class MainActivity extends Activity {
      * runs it: OAuth starts the browser grant, password pops the
      * credentials dialog.
      */
-    private void showConfigs(Provider provider) {
+    private void showConfigs() {
         TextView email = findViewById(R.id.config_email);
         email.setText(pendingEmail);
 
@@ -627,82 +660,115 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.config_container);
         container.removeAllViews();
 
-        switch (provider) {
-            case GOOGLE:
-                container.addView(
-                        configItem(
-                                getString(R.string.config_carddav),
-                                null,
-                                getString(R.string.config_oauth2_cardamum),
-                                () ->
-                                        startGoogleOauth(
-                                                Oauth.GOOGLE_SCOPE,
-                                                Oauth.googleCardDavBase(pendingEmail))));
-                container.addView(
-                        configItem(
-                                getString(R.string.config_carddav),
-                                null,
-                                getString(R.string.config_oauth2_custom),
-                                () ->
-                                        promptCustomOauth(
-                                                Oauth.googleCardDavBase(pendingEmail),
-                                                Oauth.GOOGLE_AUTH_ENDPOINT,
-                                                Oauth.GOOGLE_TOKEN_ENDPOINT,
-                                                Oauth.GOOGLE_SCOPE)));
-                container.addView(
-                        configItem(
-                                getString(R.string.config_google_api),
-                                null,
-                                getString(R.string.config_oauth2_cardamum),
-                                () ->
-                                        startGoogleOauth(
-                                                Oauth.GOOGLE_PEOPLE_SCOPE,
-                                                Oauth.googlePeopleBase(pendingEmail))));
-                container.addView(
-                        configItem(
-                                getString(R.string.config_google_api),
-                                null,
-                                getString(R.string.config_oauth2_custom),
-                                () ->
-                                        promptCustomOauth(
-                                                Oauth.googlePeopleBase(pendingEmail),
-                                                Oauth.GOOGLE_AUTH_ENDPOINT,
-                                                Oauth.GOOGLE_TOKEN_ENDPOINT,
-                                                Oauth.GOOGLE_PEOPLE_SCOPE)));
-                break;
-            case MICROSOFT:
-                container.addView(
-                        configItem(
-                                getString(R.string.config_msgraph),
-                                null,
-                                getString(R.string.config_oauth2_cardamum),
-                                this::startMicrosoftOauth));
-                container.addView(
-                        configItem(
-                                getString(R.string.config_msgraph),
-                                null,
-                                getString(R.string.config_oauth2_custom),
-                                () ->
-                                        promptCustomOauth(
-                                                Oauth.msgraphBase(pendingEmail),
-                                                Oauth.MICROSOFT_AUTH_ENDPOINT,
-                                                Oauth.MICROSOFT_TOKEN_ENDPOINT,
-                                                Oauth.MICROSOFT_SCOPE)));
-                break;
-            case OTHER:
-                for (ServiceConfig config : searchedConfigs) {
-                    addConfigItems(container, config);
-                }
-                // Nothing discovered, or nothing the app can drive:
-                // one disabled explanatory row instead of a blank list.
-                if (container.getChildCount() == 0) {
-                    container.addView(
-                            configItem(getString(R.string.discover_failed), null, null, null));
-                }
-                break;
+        for (ServiceConfig config : searchedConfigs) {
+            addConfigItems(container, config);
+        }
+
+        // Nothing discovered, or nothing the app can drive: say so,
+        // and offer the big-provider sign-ins as a fallback chooser
+        // when an email was entered. No protocol signal can tell
+        // where someone's contacts live (Google publishes no CardDAV
+        // SRV, no well-known, nothing); only the user knows, and the
+        // sign-in itself is the real test.
+        if (container.getChildCount() == 0) {
+            container.addView(configItem(getString(R.string.discover_failed), null, null, null));
+            if (!emailLogin().isEmpty()) {
+                addGoogleItems(container);
+                addMicrosoftItems(container);
+            }
         }
 
         showAuth(STEP_CONFIG);
+    }
+
+    /**
+     * The config options of a provider-probe hit: the dedicated
+     * variants of the matched provider, driven by the shipped OAuth
+     * clients.
+     */
+    private void showProviderConfigs(String provider) {
+        TextView email = findViewById(R.id.config_email);
+        email.setText(pendingEmail);
+
+        selectedConfig = null;
+        resetConfigContinue();
+
+        LinearLayout container = findViewById(R.id.config_container);
+        container.removeAllViews();
+
+        if (provider.equals("provider:google")) {
+            addGoogleItems(container);
+        } else {
+            addMicrosoftItems(container);
+        }
+
+        showAuth(STEP_CONFIG);
+    }
+
+    /**
+     * The dedicated Google variants, one OAuth row per service
+     * (CardDAV, People API); each opens the client prompt prefilled
+     * with the shipped client, whose unchanged submission runs the
+     * dedicated flow. Base URLs embed the entered email.
+     */
+    private void addGoogleItems(LinearLayout container) {
+        container.addView(
+                configItem(
+                        getString(R.string.config_carddav),
+                        null,
+                        getString(R.string.config_oauth2),
+                        () ->
+                                promptOauthClient(
+                                        CardamumClient.googleCarddavBase(pendingEmail),
+                                        Oauth.GOOGLE_AUTH_ENDPOINT,
+                                        Oauth.GOOGLE_TOKEN_ENDPOINT,
+                                        Oauth.GOOGLE_SCOPE,
+                                        Oauth.GOOGLE_CLIENT_ID,
+                                        Oauth.GOOGLE_REDIRECT_URI,
+                                        () ->
+                                                startGoogleOauth(
+                                                        Oauth.GOOGLE_SCOPE,
+                                                        CardamumClient.googleCarddavBase(pendingEmail)))));
+        container.addView(
+                configItem(
+                        getString(R.string.config_google_api),
+                        null,
+                        getString(R.string.config_oauth2),
+                        () ->
+                                promptOauthClient(
+                                        CardamumClient.googlePeopleBase(pendingEmail),
+                                        Oauth.GOOGLE_AUTH_ENDPOINT,
+                                        Oauth.GOOGLE_TOKEN_ENDPOINT,
+                                        Oauth.GOOGLE_PEOPLE_SCOPE,
+                                        Oauth.GOOGLE_CLIENT_ID,
+                                        Oauth.GOOGLE_REDIRECT_URI,
+                                        () ->
+                                                startGoogleOauth(
+                                                        Oauth.GOOGLE_PEOPLE_SCOPE,
+                                                        CardamumClient.googlePeopleBase(pendingEmail)))));
+    }
+
+    /**
+     * The dedicated Microsoft Graph variant, one OAuth row opening the
+     * client prompt prefilled with the shipped client, whose unchanged
+     * submission runs the dedicated flow. The base URL embeds the
+     * entered email.
+     */
+    private void addMicrosoftItems(LinearLayout container) {
+        container.addView(
+                configItem(
+                        getString(R.string.config_msgraph),
+                        null,
+                        getString(R.string.config_oauth2),
+                        () ->
+                                promptOauthClient(
+                                        CardamumClient.msgraphBase(pendingEmail),
+                                        Oauth.MICROSOFT_AUTH_ENDPOINT,
+                                        Oauth.MICROSOFT_TOKEN_ENDPOINT,
+                                        Oauth.MICROSOFT_SCOPE,
+                                        Oauth.MICROSOFT_CLIENT_ID,
+                                        Oauth.MICROSOFT_REDIRECT_URI,
+                                        this::startMicrosoftOauth)));
     }
 
     /**
@@ -714,7 +780,7 @@ public class MainActivity extends Activity {
     private void showManualConfigs(String address) {
         String url = address.contains("://") ? address : "https://" + address;
         String host = hostOf(url);
-        String jmapUrl = CardamumClient.JMAP_PREFIX + url.replaceFirst("^https?://", "");
+        String jmapUrl = CardamumClient.jmapBase(url);
 
         ((TextView) findViewById(R.id.config_email)).setText(pendingEmail);
         selectedConfig = null;
@@ -727,24 +793,34 @@ public class MainActivity extends Activity {
                         getString(R.string.config_carddav),
                         host,
                         getString(R.string.config_password),
-                        () -> promptCredentials(url, host)));
+                        () -> promptCredentials(url, host, emailLogin())));
         container.addView(
                 configItem(
                         getString(R.string.config_jmap),
                         host,
                         getString(R.string.config_password),
-                        () -> promptCredentials(jmapUrl, host)));
+                        () -> promptCredentials(jmapUrl, host, emailLogin())));
 
         showAuth(STEP_CONFIG);
     }
 
     /**
-     * Prompts for the login and secret of a manually-entered server
-     * (nothing discovered to prefill the login; leaving it empty sends
-     * the secret as a Bearer token), then verifies the account.
+     * The entered email as a login prefill; empty when the connection
+     * field carried a bare domain or a URL instead.
      */
-    private void promptCredentials(String baseUrl, String host) {
-        EditText login = customOauthField(R.string.custom_login, "");
+    private String emailLogin() {
+        return pendingEmail != null && pendingEmail.contains("@") ? pendingEmail : "";
+    }
+
+    /**
+     * Prompts for the login and secret of a server. The login is only
+     * prefilled (from the discovered username or the entered email):
+     * a provider's login is not necessarily the address, so the user
+     * confirms it; leaving it empty sends the secret as a Bearer
+     * token. Verifies the account on submit.
+     */
+    private void promptCredentials(String baseUrl, String host, String prefilledLogin) {
+        EditText login = customOauthField(R.string.custom_login, prefilledLogin);
         EditText secret = new EditText(this);
         secret.setInputType(
                 android.text.InputType.TYPE_CLASS_TEXT
@@ -796,61 +872,65 @@ public class MainActivity extends Activity {
         String host = hostOf(config.url);
         String baseUrl =
                 "jmap".equals(config.service)
-                        ? CardamumClient.JMAP_PREFIX + config.url.replaceFirst("^https?://", "")
+                        ? CardamumClient.jmapBase(config.url)
                         : config.url;
 
         for (AuthMethod method : config.auth) {
             switch (method.type) {
                 case PASSWORD:
-                    String login = config.username != null ? config.username : pendingEmail;
+                    // The discovered username (or the entered email)
+                    // is only a default: a provider's login is not
+                    // always the address, and a bare-domain search
+                    // carries none at all, so the prompt asks the
+                    // user to confirm it.
+                    String login = config.username != null ? config.username : emailLogin();
                     container.addView(
                             configItem(
                                     protocol,
                                     host,
                                     getString(R.string.config_password),
-                                    () ->
-                                            promptPassword(
-                                                    baseUrl,
-                                                    host,
-                                                    login,
-                                                    R.string.password_hint)));
+                                    () -> promptCredentials(baseUrl, host, login)));
                     break;
                 case BEARER:
-                    // Empty login: the secret is sent as a Bearer token
-                    // instead of Basic credentials.
+                    // No login asked: an API token carries its own
+                    // identity, and the empty login makes the
+                    // backends send it as Bearer instead of Basic.
                     container.addView(
                             configItem(
                                     protocol,
                                     host,
                                     getString(R.string.config_token),
-                                    () ->
-                                            promptPassword(
-                                                    baseUrl, host, "", R.string.config_token)));
+                                    () -> promptToken(baseUrl, host)));
                     break;
                 case OAUTH_AUTHORIZATION_CODE_GRANT:
                     container.addView(
                             configItem(
                                     protocol,
                                     host,
-                                    getString(R.string.config_oauth2_custom),
+                                    getString(R.string.config_oauth2),
                                     () ->
-                                            promptCustomOauth(
+                                            promptOauthClient(
                                                     baseUrl,
                                                     method.authorizationEndpoint,
                                                     method.tokenEndpoint,
-                                                    method.scope)));
+                                                    method.scope,
+                                                    null,
+                                                    null,
+                                                    null)));
                     break;
                 case OAUTH_ISSUER:
                     // The server advertised only an issuer: discover
                     // its metadata and, when it allows dynamic client
                     // registration (RFC 7591), run the grant with no
-                    // pre-registered client at all.
+                    // pre-registered client at all. The config's plain
+                    // endpoint URL rides along as the RFC 8707
+                    // resource of the grant.
                     container.addView(
                             configItem(
                                     protocol,
                                     host,
                                     getString(R.string.config_oauth2),
-                                    () -> startIssuerOauth(baseUrl, method.issuer)));
+                                    () -> startIssuerOauth(baseUrl, method.issuer, config.url)));
                     break;
                 default:
                     // Nothing the app can drive; not offered.
@@ -918,17 +998,17 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Prompts for the secret in a dialog (a password, or an API token
-     * when the login is empty: the empty login makes the backends send
-     * it as Bearer instead of Basic), then verifies and persists the
-     * account.
+     * Prompts for an API token in a dialog. No login is asked: a
+     * token carries its own identity, and the empty login makes the
+     * backends send it as Bearer instead of Basic. Verifies and
+     * persists the account on submit.
      */
-    private void promptPassword(String baseUrl, String host, String login, int hint) {
+    private void promptToken(String baseUrl, String host) {
         EditText input = new EditText(this);
         input.setInputType(
                 android.text.InputType.TYPE_CLASS_TEXT
                         | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        input.setHint(hint);
+        input.setHint(R.string.config_token);
 
         // Inset the field from the dialog edges (setView is flush).
         LinearLayout wrapper = new LinearLayout(this);
@@ -941,22 +1021,18 @@ public class MainActivity extends Activity {
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.password_title)
-                .setMessage(
-                        getString(
-                                R.string.password_server,
-                                login.isEmpty() ? pendingEmail : login,
-                                host))
+                .setMessage(getString(R.string.password_server, pendingEmail, host))
                 .setView(wrapper)
                 .setPositiveButton(
                         R.string.password_submit,
                         (dialog, which) -> {
-                            String password = input.getText().toString();
-                            if (password.isEmpty()) {
+                            String token = input.getText().toString();
+                            if (token.isEmpty()) {
                                 toast(getString(R.string.password_empty));
                                 return;
                             }
                             connect(
-                                    new Account(baseUrl, login, password),
+                                    new Account(baseUrl, "", token),
                                     pendingEmail,
                                     null,
                                     null,
@@ -1118,7 +1194,10 @@ public class MainActivity extends Activity {
         try {
             extras.put("access_type", "offline");
             extras.put("prompt", "consent");
-            extras.put("login_hint", pendingEmail);
+            if (pendingEmail.contains("@")) {
+                // A bare-domain input would preselect garbage.
+                extras.put("login_hint", pendingEmail);
+            }
         } catch (JSONException ignored) {
             // A malformed extras object just omits the hints.
         }
@@ -1202,7 +1281,7 @@ public class MainActivity extends Activity {
                         Oauth.MICROSOFT_REDIRECT_URI,
                         Oauth.MICROSOFT_SCOPE);
         pendingTokenEndpoint = Oauth.MICROSOFT_TOKEN_ENDPOINT;
-        pendingBaseUrl = Oauth.msgraphBase(pendingEmail);
+        pendingBaseUrl = CardamumClient.msgraphBase(pendingEmail);
         pendingAccountEmail = pendingEmail;
         pendingClientId = Oauth.MICROSOFT_CLIENT_ID;
         pendingClientSecret = null;
@@ -1212,7 +1291,10 @@ public class MainActivity extends Activity {
         // scope, no extra parameter needed.
         JSONObject extras = new JSONObject();
         try {
-            extras.put("login_hint", pendingEmail);
+            if (pendingEmail.contains("@")) {
+                // A bare-domain input would preselect garbage.
+                extras.put("login_hint", pendingEmail);
+            }
         } catch (JSONException ignored) {
             // A malformed extras object just omits the hint.
         }
@@ -1259,6 +1341,12 @@ public class MainActivity extends Activity {
         pendingOauth = null;
         clearPendingOauth();
 
+        // NOTE: the one-time code is redacted; everything else in the
+        // redirect is needed verbatim to debug rejections.
+        Log.d(
+                "cardamum",
+                "oauth redirect: " + redirectUrl.replaceAll("code=[^&]*", "code=<redacted>"));
+
         io.execute(
                 () -> {
                     try {
@@ -1273,6 +1361,7 @@ public class MainActivity extends Activity {
                                                 clientId,
                                                 clientSecret));
                     } catch (Exception error) {
+                        Log.w("cardamum", "oauth redeem failed", error);
                         main.post(
                                 () -> {
                                     resetConfigContinue();
@@ -1282,30 +1371,45 @@ public class MainActivity extends Activity {
                 });
     }
 
-    // ---- Custom OAuth 2.0 client (loopback redirect) ---------------------------
+    // ---- Custom OAuth 2.0 client ------------------------------------------------
 
     /**
-     * Prompts for a custom OAuth client (the fields prefilled from what
-     * discovery knows) and, on confirm, runs the authorization code
-     * grant against a loopback redirect. Unlike the built-in clients,
-     * a custom app's redirect is not one the OS routes back to us, so
-     * the grant lands on a local HTTP listener instead of an intent.
+     * Prompts for the OAuth 2.0 client of a grant, every field
+     * prefilled with the best-known values; a hint paragraph tells
+     * users to leave them alone unless they bring their own client.
+     * Submitting a shipped client id unchanged runs its dedicated
+     * flow. Any other client runs the custom grant against the given
+     * redirect URI: an http loopback URL serves the redirect on a
+     * local listener, and the app's own
+     * org.pimalaya.cardamum:/oauth2redirect scheme rides the OS
+     * intent route instead (for servers that reject loopback
+     * redirects).
      */
-    private void promptCustomOauth(
-            String baseUrl, String authEndpoint, String tokenEndpoint, String scope) {
-        EditText clientId = customOauthField(R.string.oauth_client_id, "");
+    private void promptOauthClient(
+            String baseUrl,
+            String authEndpoint,
+            String tokenEndpoint,
+            String scope,
+            String defaultClientId,
+            String defaultRedirect,
+            Runnable defaultFlow) {
+        String prefilledRedirect =
+                defaultRedirect != null ? defaultRedirect : "http://127.0.0.1:" + freePort();
+
+        EditText clientId =
+                customOauthField(
+                        R.string.oauth_client_id, defaultClientId == null ? "" : defaultClientId);
         EditText clientSecret = customOauthField(R.string.oauth_client_secret, "");
         EditText authField = customOauthField(R.string.oauth_authorization_endpoint, authEndpoint);
         EditText tokenField = customOauthField(R.string.oauth_token_endpoint, tokenEndpoint);
         EditText scopeField = customOauthField(R.string.oauth_scope, scope == null ? "" : scope);
-        EditText portField = customOauthField(R.string.oauth_port, Integer.toString(freePort()));
-        portField.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        EditText redirectField = customOauthField(R.string.oauth_redirect, prefilledRedirect);
 
         LinearLayout fields = new LinearLayout(this);
         fields.setOrientation(LinearLayout.VERTICAL);
         fields.setPadding(dp(24), dp(8), dp(24), 0);
         for (EditText field : new EditText[] {
-            clientId, clientSecret, authField, tokenField, scopeField, portField
+            clientId, clientSecret, authField, tokenField, scopeField, redirectField
         }) {
             fields.addView(field);
         }
@@ -1313,9 +1417,13 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(fields);
 
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.oauth_custom_title)
-                .setView(scroll)
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(this).setTitle(R.string.oauth_custom_title);
+        if (defaultFlow != null) {
+            builder.setMessage(R.string.oauth_defaults_hint);
+        }
+
+        builder.setView(scroll)
                 .setPositiveButton(
                         R.string.email_submit,
                         (dialog, which) -> {
@@ -1324,21 +1432,32 @@ public class MainActivity extends Activity {
                                 toast(getString(R.string.oauth_client_id_empty));
                                 return;
                             }
-                            int port;
-                            try {
-                                port = Integer.parseInt(portField.getText().toString().trim());
-                            } catch (NumberFormatException error) {
-                                toast(getString(R.string.oauth_port_invalid));
+                            if (defaultFlow != null && id.equals(defaultClientId)) {
+                                defaultFlow.run();
                                 return;
                             }
-                            startLoopbackOauth(
-                                    id,
-                                    clientSecret.getText().toString().trim(),
-                                    authField.getText().toString().trim(),
-                                    tokenField.getText().toString().trim(),
-                                    scopeField.getText().toString().trim(),
-                                    baseUrl,
-                                    port);
+
+                            String secret = clientSecret.getText().toString().trim();
+                            String auth = authField.getText().toString().trim();
+                            String token = tokenField.getText().toString().trim();
+                            String scopes = scopeField.getText().toString().trim();
+                            String redirect = redirectField.getText().toString().trim();
+
+                            if (redirect.startsWith("http://")) {
+                                startLoopbackOauth(
+                                        id, secret, auth, token, scopes, baseUrl, redirect);
+                            } else if (redirect.startsWith("org.pimalaya.cardamum:")) {
+                                launchSchemeGrant(
+                                        baseUrl,
+                                        id,
+                                        secret.isEmpty() ? null : secret,
+                                        auth,
+                                        token,
+                                        scopes,
+                                        null);
+                            } else {
+                                toast(getString(R.string.oauth_redirect_invalid));
+                            }
                         })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
@@ -1356,7 +1475,7 @@ public class MainActivity extends Activity {
      * custom-client prompt with the endpoints prefilled, so the user
      * can paste a self-registered client id instead.
      */
-    private void startIssuerOauth(String baseUrl, String issuer) {
+    private void startIssuerOauth(String baseUrl, String issuer, String resource) {
         setAuthLoading(R.id.config_continue, R.id.config_progress, true);
 
         io.execute(
@@ -1376,11 +1495,14 @@ public class MainActivity extends Activity {
                             main.post(
                                     () -> {
                                         resetConfigContinue();
-                                        promptCustomOauth(
+                                        promptOauthClient(
                                                 baseUrl,
                                                 metadata.authorizationEndpoint,
                                                 metadata.tokenEndpoint,
-                                                metadata.scopesSupported);
+                                                metadata.scopesSupported,
+                                                null,
+                                                null,
+                                                null);
                                     });
                             return;
                         }
@@ -1397,15 +1519,27 @@ public class MainActivity extends Activity {
                                         Oauth.REDIRECT_URI,
                                         getString(R.string.app_name),
                                         scope);
+                        Log.d(
+                                "cardamum",
+                                "issuer grant: client "
+                                        + clientId
+                                        + ", scope \""
+                                        + scope
+                                        + "\", authorize "
+                                        + metadata.authorizationEndpoint
+                                        + ", token "
+                                        + metadata.tokenEndpoint);
 
                         main.post(
                                 () ->
-                                        launchIssuerGrant(
+                                        launchSchemeGrant(
                                                 baseUrl,
                                                 clientId,
+                                                null,
                                                 metadata.authorizationEndpoint,
                                                 metadata.tokenEndpoint,
-                                                scope));
+                                                scope,
+                                                resource));
                     } catch (Exception error) {
                         Log.w("cardamum", "issuer oauth failed", error);
                         main.post(
@@ -1418,38 +1552,52 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Opens the browser for a dynamically-registered public client,
-     * mirroring the Google and Microsoft grants: PKCE session over the
-     * OS-routed custom scheme, persisted so the redirect survives the
-     * process, redeemed in {@link #handleOauthRedirect}.
+     * Opens the browser for a grant riding the app's own
+     * org.pimalaya.cardamum:/oauth2redirect scheme: PKCE session over
+     * the OS-routed redirect, persisted so it survives the process,
+     * redeemed in {@link #handleOauthRedirect}. Used by the
+     * zero-registration issuer flow (no secret) and by custom clients
+     * whose redirect is the app scheme (for servers that reject a
+     * loopback redirect).
      */
-    private void launchIssuerGrant(
+    private void launchSchemeGrant(
             String baseUrl,
             String clientId,
+            String clientSecret,
             String authEndpoint,
             String tokenEndpoint,
-            String scope) {
-        pendingOauth = new OauthSession(clientId, null, Oauth.REDIRECT_URI, scope);
+            String scope,
+            String resource) {
+        pendingOauth = new OauthSession(clientId, clientSecret, Oauth.REDIRECT_URI, scope);
         pendingTokenEndpoint = tokenEndpoint;
         pendingBaseUrl = baseUrl;
         pendingAccountEmail = pendingEmail;
         pendingClientId = clientId;
-        pendingClientSecret = null;
+        pendingClientSecret = clientSecret;
 
-        // access_type=offline + prompt=consent make Google-style
-        // servers issue a refresh token; login_hint preselects the
-        // account. Servers that do not use them ignore them.
+        // The RFC 6749 §4.1.1 shape plus PKCE plus the RFC 8707
+        // resource (the endpoint the token is for; fastmail bounces a
+        // request without one back as invalid_target) plus the
+        // login_hint browser prefill when an actual email was
+        // entered. Google's access_type/prompt hints stay off this
+        // flow: the refresh token already comes from the
+        // offline_access scope, and unknown parameters risk an
+        // invalid_request bounce from strict servers.
         JSONObject extras = new JSONObject();
         try {
-            extras.put("access_type", "offline");
-            extras.put("prompt", "consent");
-            extras.put("login_hint", pendingEmail);
+            if (resource != null && !resource.isEmpty()) {
+                extras.put("resource", resource);
+            }
+            if (pendingEmail.contains("@")) {
+                extras.put("login_hint", pendingEmail);
+            }
         } catch (JSONException ignored) {
             // A malformed extras object just omits the hints.
         }
 
         try {
             String url = pendingOauth.authorizeUrl(authEndpoint, extras);
+            Log.d("cardamum", "scheme grant authorize url: " + url);
             persistPendingOauth(clientId, Oauth.REDIRECT_URI);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
@@ -1484,12 +1632,13 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Runs a custom-client grant: binds the loopback port, opens the
-     * browser, and serves the single redirect the browser lands on,
-     * reconstructing its URL to redeem for tokens. The listener lives
-     * on its own thread until the redirect arrives or the wait times
-     * out; it dies with the process (a custom grant is not persisted,
-     * having no OS-routed redirect to resume through).
+     * Runs a custom-client grant against an http loopback redirect
+     * URI: binds its port, opens the browser, and serves the single
+     * redirect the browser lands on, reconstructing its URL to redeem
+     * for tokens. The listener lives on its own thread until the
+     * redirect arrives or the wait times out; it dies with the
+     * process (a custom grant is not persisted, having no OS-routed
+     * redirect to resume through).
      */
     private void startLoopbackOauth(
             String clientId,
@@ -1498,9 +1647,20 @@ public class MainActivity extends Activity {
             String tokenEndpoint,
             String scope,
             String baseUrl,
-            int port) {
+            String redirectUri) {
         String secret = clientSecret.isEmpty() ? null : clientSecret;
-        String redirectUri = "http://127.0.0.1:" + port;
+
+        Uri redirect = Uri.parse(redirectUri);
+        String host = redirect.getHost();
+        if (host == null || !(host.equals("127.0.0.1") || host.equals("localhost"))) {
+            toast(getString(R.string.oauth_redirect_invalid));
+            return;
+        }
+        int port = redirect.getPort() == -1 ? 80 : redirect.getPort();
+
+        // The origin the browser's request target is appended to when
+        // the redirect URL is rebuilt; the typed URI may carry a path.
+        String origin = "http://" + host + (redirect.getPort() == -1 ? "" : ":" + port);
 
         java.net.ServerSocket server;
         try {
@@ -1521,7 +1681,10 @@ public class MainActivity extends Activity {
         try {
             extras.put("access_type", "offline");
             extras.put("prompt", "consent");
-            extras.put("login_hint", pendingEmail);
+            if (pendingEmail.contains("@")) {
+                // A bare-domain input would preselect garbage.
+                extras.put("login_hint", pendingEmail);
+            }
         } catch (JSONException ignored) {
             // A malformed extras object just omits the hints.
         }
@@ -1539,7 +1702,7 @@ public class MainActivity extends Activity {
                                             new Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)));
                                 });
 
-                        String redirectUrl = awaitLoopbackRedirect(server, redirectUri);
+                        String redirectUrl = awaitLoopbackRedirect(server, origin);
                         OauthTokens tokens = session.redeem(tokenEndpoint, redirectUrl);
                         main.post(
                                 () ->
@@ -1566,9 +1729,10 @@ public class MainActivity extends Activity {
     /**
      * Accepts the one browser redirect on the loopback socket, answers
      * a close-this-tab page, and rebuilds the redirect URL from the
-     * request target so it can be validated and redeemed.
+     * given origin and the request target so it can be validated and
+     * redeemed.
      */
-    private String awaitLoopbackRedirect(java.net.ServerSocket server, String redirectUri)
+    private String awaitLoopbackRedirect(java.net.ServerSocket server, String origin)
             throws java.io.IOException {
         try (java.net.Socket socket = server.accept()) {
             java.io.BufferedReader reader =
@@ -1603,7 +1767,7 @@ public class MainActivity extends Activity {
                     target = parts[1];
                 }
             }
-            return redirectUri + target;
+            return origin + target;
         }
     }
 
@@ -1990,7 +2154,7 @@ public class MainActivity extends Activity {
      * backends (JMAP, Google) list their cards once per pass.
      */
     private void syncAccount(Account acc, List<BookEntry> books, SyncOutcome outcome) {
-        OfflineEngine engine = new OfflineEngine(base, client, acc);
+        OfflineEngine engine = new OfflineEngine(base, client, acc, this);
 
         for (BookEntry entry : books) {
             OfflineEngine.Report report;
@@ -2062,15 +2226,13 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Store-to-phone spoke: reconciles the per-addressbook Android
-     * accounts and hands the projection to Android's sync scheduler
-     * (one manual expedited request per account; the work itself runs
-     * in SyncService.onPerformSync, same path as the system's per
-     * account "sync now"). Automatic sync stays off. Needs the contacts
-     * permission, requested on first use.
-     *
-     * <p>NOTE: one-way for now; ingesting phone-side edits lands with
-     * the io-offline engine, see docs/design.md.
+     * The phone spoke alone, in-process: reconciles the per-addressbook
+     * Android accounts, then runs the two-way phone engine pass per
+     * subscribed book right here, behind the same spinner as the remote
+     * sync (SyncService keeps serving the syncs the OS schedules on its
+     * own). Automatic periodic sync stays off. Needs the contacts
+     * permission, requested on first use; the full sync's own phone
+     * passes stay silently off until this ran once.
      */
     private void syncLocal() {
         if (!ensureContactsPermission(this::syncLocal)) {
@@ -2080,50 +2242,45 @@ public class MainActivity extends Activity {
         setSyncing(true);
         io.execute(
                 () -> {
-                    Exception failure = runLocalSync();
+                    OfflineEngine.Report report = new OfflineEngine.Report();
+                    Exception failure = runLocalSync(report);
                     main.post(
                             () -> {
                                 setSyncing(false);
                                 if (failure != null) {
                                     showError(failure, R.string.accounts_failed);
                                 } else {
-                                    toast(getString(R.string.sync_local_done));
+                                    toast(
+                                            getString(
+                                                    R.string.sync_done,
+                                                    report.pulled,
+                                                    report.pushed,
+                                                    report.merged));
+                                    reloadContacts();
                                 }
                             });
                 });
     }
 
-
     /**
-     * The phone spoke: reconciles the per-addressbook Android accounts
-     * and hands the projection to Android's sync scheduler (one manual
-     * expedited request per account; the work itself runs in
-     * SyncService.onPerformSync, same path as the system's per-account
-     * "sync now"). Automatic sync stays off. Returns a reconcile
-     * failure, or null.
-     *
-     * <p>NOTE: one-way for now; ingesting phone-side edits lands with
-     * the io-offline engine, see docs/design.md.
+     * Reconciles the per-addressbook Android accounts and runs one
+     * phone engine pass per subscribed book, tallying into `report`.
+     * Returns a failure, or null.
      */
-    private Exception runLocalSync() {
+    private Exception runLocalSync(OfflineEngine.Report report) {
         List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
 
         try {
             // The full subscribed set at once: reconcile purges accounts
             // no longer in it, across all accounts.
             Accounts.reconcile(this, subscribed);
+
+            OfflineEngine engine = new OfflineEngine(base, client, null, this);
+            for (BookEntry entry : subscribed) {
+                engine.syncPhone(entry.book.url, report);
+            }
         } catch (Exception error) {
             return error;
-        }
-
-        for (BookEntry entry : subscribed) {
-            android.accounts.Account target = Accounts.find(this, entry.book);
-            if (target != null) {
-                Bundle extras = new Bundle();
-                extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
-                extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
-                ContentResolver.requestSync(target, ContactsContract.AUTHORITY, extras);
-            }
         }
 
         return null;
@@ -2747,8 +2904,7 @@ public class MainActivity extends Activity {
         // Google creates land in myContacts; the group membership
         // pushes right after the create (the key rename of confirmPush
         // carries it over).
-        if (account.account.baseUrl.startsWith(CardamumClient.GOOGLE_PREFIX)
-                && !"myContacts".equals(target.book.id)) {
+        if (CardamumClient.isGoogle(account.account) && !"myContacts".equals(target.book.id)) {
             base.stageMembership(target.accountEmail, key, target.book.url, true);
         }
         base.saveLocal(target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
@@ -3845,7 +4001,7 @@ public class MainActivity extends Activity {
      * replica resolves it).
      */
     private void saveFanOut(JSONObject model) throws JSONException {
-        OfflineEngine engine = new OfflineEngine(base, client, null);
+        OfflineEngine engine = new OfflineEngine(base, client, null, null);
         java.util.Set<String> staged = new java.util.HashSet<>();
 
         for (Entry entry : editingReplicas) {
@@ -3879,7 +4035,7 @@ public class MainActivity extends Activity {
 
         String vcard = client.applyCard(survivor.card.vcard, model);
         if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
-            new OfflineEngine(base, client, null)
+            new OfflineEngine(base, client, null, null)
                     .mutateEdit(
                             survivor.book.url,
                             CardStore.rowHandle(

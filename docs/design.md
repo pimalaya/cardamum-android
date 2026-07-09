@@ -1,6 +1,6 @@
 # Cardamum for Android: design
 
-The core idea and the target structure of the app. The current code implements the connection flow and the direct-CRUD contacts screen; the sync engine and the phone projection are specified here and land incrementally.
+The core idea and the target structure of the app. The current code implements the connection flow, the contacts screen and the hub-and-spoke sync engine on io-offline, both spokes included (docs/io-offline-migration.md for the server spoke, docs/phone-sync-plan.md for the phone one).
 
 ## Screens
 
@@ -17,7 +17,9 @@ One activity, one ViewFlipper, one panel per screen:
 
 2. **Sync**. Two manual actions behind the Sync menu of the contacts screen, matching the two spokes (running both from one action comes later):
    - *Sync remote* (store to server, the only moment the app touches the network): per addressbook, the io-offline engine reconciles the store with the remote (docs/io-offline-migration.md): it enumerates the member spine incrementally from the stored checkpoint (RFC 6578 sync-collection, Graph delta, JMAP /changes, People sync tokens; a complete round when the cursor is missing or expired), three-way merges each placement against its base, pushes the local-won changes (creates, If-Match-guarded updates and deletes, membership patches), batch-fetches the bodies the spine misses, and resolves conflicts by merging both sides against the staged base (the local side wins same-field collisions, an update beats a removal) before a second reconcile pushes the resolutions. When the remote is unreachable the screens fall back to the store of the last sync.
-   - *Sync local* (store to phone, no network): reconciles the per-addressbook Android accounts and requests one manual expedited sync per account from Android's sync scheduler; the projection itself runs in the registered sync adapter (unchanged content hashes skipped, contacts of other accounts never touched), which is the same path as the system's per-account "sync now". Automatic sync stays off. Asks for the contacts permission on first use, and phone-side edits are not ingested yet; the real engine is below.
+   - *Sync local* (store to phone, no network): reconciles the per-addressbook Android accounts and runs the two-way phone engine pass per subscribed book in-process, behind the same spinner as the remote sync. The registered sync adapter runs the identical pass for the syncs the OS schedules on its own (the system's per-account "sync now", and the upload syncs Android requests after a contacts-app edit). Automatic periodic sync stays off. Asks for the contacts permission on first use; until it ran once (no Android accounts yet), the remote sync's own phone passes stay silently off.
+
+   *Sync remote* also runs the phone spoke: each book syncs phone, then server, then phone again, so a contacts-app edit reaches the server in one pass and the server round projects back in the same one.
 
    Launch is offline first: the contacts screen renders instantly from the store; the app never syncs by itself.
 
@@ -28,13 +30,13 @@ One activity, one ViewFlipper, one panel per screen:
 Hub and spoke. The vCard store is the hub replica: the document set the app actually edits, full vCard fidelity, offline by construction (SQLite today, a vdir or io-m2dir-style backend tomorrow; the spokes do not care). The phone contacts and the remote are two spokes, and a Sync pass reconciles the hub with each spoke pairwise, reusing io-offline twice with two backends:
 
 - **store to remote**: full fidelity, merged in vCard space with the vcard-rs three-way merge; per-card identity is the ETag plus the base vCard. This is io-offline with the CardDAV backend (or a provider API later). DONE: this spoke runs on the engine today, see docs/io-offline-migration.md.
-- **store to phone**: lossy, merged in field-model space; the phone is just another io-offline remote whose items are raw-contact rows, whose content token is the field-model hash, and whose reads and writes go through the Java converter. Cardamum owns one raw-contact account per selected addressbook (the DAVx5 pattern) and keeps the vCard UID and ETag in the raw contact's sync columns.
+- **store to phone**: lossy at the boundary, lossless in the hub; the phone is just another io-offline remote whose items are raw-contact rows, whose content revision is the raw contact VERSION, and whose reads and writes go through the Java converter (Mapping both ways, the read-back applied onto the last converged vCard as a field-space patch). Cardamum owns one raw-contact account per selected addressbook (the DAVx5 pattern) and keeps the card id in SOURCE_ID and the vCard UID in SYNC2. DONE: this spoke runs on the engine too, see docs/phone-sync-plan.md.
 
 Two pairwise syncs beat one tri-directional merge: each merge stays in a single representation space (whole vCards on one spoke, lossy field models on the other), and the spokes fail independently (no network still syncs the phone exactly; no contacts permission still syncs the remote).
 
 Within one Sync pass the phone spoke is local-only and cheap, so it runs twice: ingest phone edits into the store, reconcile the store with the remote, then project the pulled changes back to the phone. One user action, and a phone edit reaches the server in the same pass.
 
-Inside the store, what the user edits is the working copy; each card also keeps the base of the last reconciliation (base vCard plus ETag), which user edits never overwrite: the working-vs-base diff is the app's own change, the phone-vs-projected-base diff is the phone's, the fetched-vs-base diff is the remote's. One base per card serves both spokes as long as a pass always runs both. This split is in place: the vcard column is the working copy, base_vcard plus etag the base, and the engine's placements are mapped over them.
+Inside the store, what the user edits is the working copy; each card also keeps one base per spoke, which user edits never overwrite: the working-vs-base diff is the hub's own change on that spoke, the fetched-vs-base diff is the spoke's. The vcard column is the working copy; base_vcard plus etag is the server base on the card row, phone_base plus phone_revision the phone base on the membership row (per book, since each book projects its own raw contact), and the engine's placements are mapped over both axes.
 
 The field-by-field mapping between ContactsContract data kinds and vCard properties, the split of the converters between Java and Rust, and the rules that prevent infinite edit loops (CALLER_IS_SYNCADAPTER, patch-never-regenerate through the vcard-rs CST, field-space diffing) live in [docs/contacts-mapping.md](./contacts-mapping.md).
 
@@ -54,6 +56,5 @@ Divergent edits on the same contact keep both sides (no silent loss), following 
 ## Out of scope for now
 
 - Multiple accounts (logins); multiple addressbooks per account are in.
-- Phone-side edit detection and pushing (the io-offline three-way merge); projection is one-way, remote wins.
-- Push or periodic background sync; every sync is user-triggered (the registered sync adapter is a stub the engine hooks into later).
+- Push or periodic background sync; every sync is user-triggered (plus the upload syncs Android schedules after contacts-app edits).
 - The JMAP backend; the config screen already reserves its slot. OAuth accounts persist their refresh token and refresh expired access tokens transparently on sync (a 401 triggers one refresh-and-retry per addressbook).

@@ -7,24 +7,30 @@
 //! null string rather than throwing. Every reply is JSON; failures are
 //! `{"error": ".."}`.
 
-use io_webdav::rfc6578::sync_collection::SyncDelta;
+use std::collections::BTreeSet;
+
 use jni::{
     Env, EnvUnowned,
     errors::{Error, LogErrorAndDefault},
     objects::{JClass, JObject, JString},
     sys::{jboolean, jint},
 };
+use pimconf::search::{
+    collect::ConfigCollector,
+    types::{Service, ServiceConfig},
+};
 use url::Url;
 
 use crate::{
+    account::{self, Backend},
     client::Client,
-    oauth::{authorize_url, validate_redirect},
+    oauth::{authorize_url, contacts_scope, session_params, validate_redirect},
     offline,
     project::{
         apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
         find_duplicates, index, merge_cards, merge_conflict, project, set_uid,
     },
-    types::{Card, CardDelta, Credentials},
+    types::{CardDelta, Credentials},
 };
 
 /// `Native.discover`: resolves the email's domain to a CardDAV context
@@ -54,12 +60,11 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_discover<'local>
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.searchAll`: collects CardDAV service configs (endpoint,
-/// username, authentication methods, source mechanism) from every
-/// pimconf mechanism: fixed provider rules, PACC, RFC 6764 resolve.
-/// Returns a JSON array of service configs.
+/// `Native.searchProvider`: matches the email's MX records against
+/// the fixed provider rules. Returns a JSON array of service configs,
+/// empty when no rule matched.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchAll<'local>(
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchProvider<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
@@ -67,17 +72,22 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchAll<'local
     resolver: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let json = search_json(env, &transport, &email, &resolver, false);
+        let json = search_mechanism_json(
+            env,
+            &transport,
+            &email,
+            &resolver,
+            SearchMechanism::Provider,
+        );
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.searchFirst`: same mechanism chain as `searchAll`, stopping
-/// at the first mechanism yielding a config. Returns a JSON array of
-/// service configs (empty when nothing was found).
+/// `Native.searchPacc`: discovers the email domain's PACC document.
+/// Returns a JSON array of service configs.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchFirst<'local>(
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchPacc<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
@@ -85,7 +95,90 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchFirst<'loc
     resolver: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let json = search_json(env, &transport, &email, &resolver, true);
+        let json = search_mechanism_json(env, &transport, &email, &resolver, SearchMechanism::Pacc);
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchCarddav`: resolves the email domain's CardDAV context
+/// root (RFC 6764). Returns a JSON array of service configs.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchCarddav<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    email: JString<'local>,
+    resolver: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json =
+            search_mechanism_json(env, &transport, &email, &resolver, SearchMechanism::Carddav);
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchJmap`: resolves the email domain's JMAP session URL
+/// (RFC 8620). Returns a JSON array of service configs.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchJmap<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    email: JString<'local>,
+    resolver: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = search_mechanism_json(env, &transport, &email, &resolver, SearchMechanism::Jmap);
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchMerge`: pure reduction of per-mechanism config lists
+/// (a JSON array of arrays, in mechanism-priority order) into one
+/// deduplicated list, restricted to the services the app drives
+/// (CardDAV, JMAP). Returns a JSON array of service configs.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchMerge<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    lists: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match search_merge(&read_string(env, &lists)) {
+            Ok(json) => json,
+            Err(err) => error_json(&err),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.searchProbe`: probes one config's endpoints for their
+/// advertised authentication schemes (unauthenticated 401) and
+/// refines its password and bearer methods. Returns the (possibly
+/// refined) config as JSON.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchProbe<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    config: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let raw = read_string(env, &config);
+
+        let json = match serde_json::from_str(&raw) {
+            Err(err) => error_json(&format!("Invalid service config: {err}")),
+            Ok(config) => match Client::new(env, &transport).search_probe(config) {
+                Ok(config) => serde_json::to_string(&config)
+                    .unwrap_or_else(|err| error_json(&err.to_string())),
+                Err(err) => error_json(&err),
+            },
+        };
+
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
@@ -153,6 +246,43 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthValidateRed
             Ok(code) => serde_json::json!({ "code": code }).to_string(),
             Err(err) => error_json(&err),
         };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthSessionParams`: generates one authorization session's
+/// CSRF state and PKCE verifier; pure computation, no transport.
+/// Returns `{"state": "..", "verifier": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthSessionParams<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let (state, verifier) = session_params();
+        let json = serde_json::json!({ "state": state, "verifier": verifier }).to_string();
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.oauthContactsScope`: the scope a contacts client requests
+/// of an authorization server, negotiated against its space-separated
+/// advertised scopes (empty for none); pure computation, no transport.
+/// Returns `{"scope": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthContactsScope<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    scopes_supported: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let scopes_supported = read_string(env, &scopes_supported);
+        let scope = contacts_scope(&scopes_supported);
+        let json = serde_json::json!({ "scope": scope }).to_string();
 
         Ok(env.new_string(json)?.into())
     })
@@ -315,9 +445,60 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRefreshAcce
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.listAddressbooks`: walks current-user-principal ->
-/// addressbook-home-set -> list from the discovered context root.
-/// Returns a JSON array of addressbooks.
+/// `Native.accountInfo`: the backend behind an account base URL
+/// (`carddav`, `graph`, `jmap` or `google`) and whether its cards are
+/// account-level resources with m:n addressbook memberships; pure
+/// computation, no transport. Returns
+/// `{"backend": "..", "accountLevel": bool}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountInfo<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    base_url: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
+        let backend = Backend::of(&base_url);
+
+        let json = serde_json::json!({
+            "backend": backend.name(),
+            "accountLevel": backend.account_level(),
+        })
+        .to_string();
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.accountBase`: builds an account base URL of the given kind
+/// (`googleCarddav`, `google`, `msgraph` from an email, `jmap` from an
+/// HTTPS session URL or bare host); pure computation, no transport.
+/// Returns `{"url": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountBase<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    kind: JString<'local>,
+    value: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let kind = read_string(env, &kind);
+        let value = read_string(env, &value);
+
+        let json = match account::base_url(&kind, &value) {
+            Ok(url) => serde_json::json!({ "url": url }).to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.listAddressbooks`: lists the account's addressbooks, the
+/// backend dispatched from the base URL. Returns a JSON array of
+/// addressbooks carrying absolute collection URLs.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAddressbooks<'local>(
     mut env: EnvUnowned<'local>,
@@ -336,15 +517,11 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAddressbooks
             password: &password,
         };
 
-        let json = match parse_url(&base_url) {
-            Err(err) => error_json(&err),
-            Ok(base_url) => {
-                match Client::new(env, &transport).list_addressbooks(&base_url, &credentials) {
-                    Ok(books) => serde_json::to_string(&books)
-                        .unwrap_or_else(|err| error_json(&err.to_string())),
-                    Err(err) => error_json(&err),
-                }
+        let json = match Client::new(env, &transport).list_addressbooks(&base_url, &credentials) {
+            Ok(books) => {
+                serde_json::to_string(&books).unwrap_or_else(|err| error_json(&err.to_string()))
             }
+            Err(err) => error_json(&err),
         };
 
         Ok(env.new_string(json)?.into())
@@ -352,18 +529,55 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAddressbooks
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.listCards`: lists the cards of the addressbook collection.
-/// Returns a JSON array of `{id, uri, etag, vcard}` objects.
+/// `Native.listAccountCards`: lists every card of an account-level
+/// backend (JMAP, Google) in one pass, each carrying its addressbook
+/// memberships as book ids. Returns a JSON array of
+/// `{id, uri, etag, vcard, books}` objects.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAccountCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    base_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match Client::new(env, &transport).list_account_cards(&base_url, &credentials) {
+            Ok(cards) => {
+                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.listCards`: lists the cards of the addressbook collection,
+/// the backend dispatched from the base URL (CardDAV, Graph). Returns
+/// a JSON array of `{id, uri, etag, vcard}` objects.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listCards<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
@@ -372,14 +586,15 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listCards<'local
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
+        let json = match Client::new(env, &transport).list_cards(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+        ) {
+            Ok(cards) => {
+                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
             Err(err) => error_json(&err),
-            Ok(url) => match Client::new(env, &transport).list_cards(&url, &credentials) {
-                Ok(cards) => {
-                    serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
-                }
-                Err(err) => error_json(&err),
-            },
         };
 
         Ok(env.new_string(json)?.into())
@@ -387,14 +602,16 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listCards<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.createCard`: creates a card in the addressbook collection;
-/// the server resource is named `<id>.vcf`. Returns
-/// `{"etag": ".." | null}`.
+/// `Native.createCard`: creates the card in the addressbook
+/// collection, the backend dispatched from the base URL. Returns the
+/// created `{id, uri, etag, vcard}` (the server-assigned id on the
+/// backends naming the resource themselves).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCard<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
@@ -402,6 +619,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCard<'loca
     vcard: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
@@ -412,14 +630,17 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCard<'loca
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).create_card(&url, &credentials, &id, &vcard) {
-                    Ok(etag) => etag_json(etag),
-                    Err(err) => error_json(&err),
-                }
+        let json = match Client::new(env, &transport).create_card(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+            &id,
+            &vcard,
+        ) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
             }
+            Err(err) => error_json(&err),
         };
 
         Ok(env.new_string(json)?.into())
@@ -427,19 +648,22 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCard<'loca
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.readCard`: reads the card at the given resource name (as the
-/// server returned it). Returns `{id, uri, etag, vcard}`.
+/// `Native.readCard`: reads the card at the given resource name (as
+/// the server returned it), the backend dispatched from the base URL.
+/// Returns `{id, uri, etag, vcard}`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readCard<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
     uri: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
@@ -449,14 +673,16 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readCard<'local>
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
+        let json = match Client::new(env, &transport).read_card(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+            &uri,
+        ) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
+            }
             Err(err) => error_json(&err),
-            Ok(url) => match Client::new(env, &transport).read_card(&url, &credentials, &uri) {
-                Ok(card) => {
-                    serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-                }
-                Err(err) => error_json(&err),
-            },
         };
 
         Ok(env.new_string(json)?.into())
@@ -464,27 +690,37 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readCard<'local>
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.updateCard`: updates the card at the given resource name (as
-/// the server returned it), guarded by the ETag when one is passed
-/// (empty means unknown). Returns `{"etag": ".." | null}`.
+/// `Native.updateCard`: updates the card at the given resource name
+/// (as the server returned it; empty falls back to the id), the
+/// backend dispatched from the base URL. The base vCard trims the
+/// patching backends' updates to the fields the edit changed and the
+/// ETag guards the guarding backends' writes (empty means unknown for
+/// both). Returns the updated `{id, uri, etag, vcard}`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateCard<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
+    id: JString<'local>,
     uri: JString<'local>,
     vcard: JString<'local>,
+    base_vcard: JString<'local>,
     etag: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
+        let id = read_string(env, &id);
         let uri = read_string(env, &uri);
         let vcard = read_string(env, &vcard);
+        let base_vcard = read_string(env, &base_vcard);
+        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
         let etag = read_string(env, &etag);
         let if_match = (!etag.is_empty()).then_some(etag.as_str());
         let credentials = Credentials {
@@ -492,15 +728,20 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateCard<'loca
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                let mut client = Client::new(env, &transport);
-                match client.update_card(&url, &credentials, &uri, &vcard, if_match) {
-                    Ok(etag) => etag_json(etag),
-                    Err(err) => error_json(&err),
-                }
+        let json = match Client::new(env, &transport).update_card(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+            &id,
+            &uri,
+            &vcard,
+            base,
+            if_match,
+        ) {
+            Ok(card) => {
+                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
             }
+            Err(err) => error_json(&err),
         };
 
         Ok(env.new_string(json)?.into())
@@ -509,23 +750,28 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateCard<'loca
 }
 
 /// `Native.deleteCard`: deletes the card at the given resource name
-/// (as the server returned it), guarded by the ETag when one is passed
-/// (empty means unknown). Returns `{}`.
+/// (as the server returned it; empty falls back to the id), the
+/// backend dispatched from the base URL and the ETag guarding the
+/// guarding backends' deletion (empty means unknown). Returns `{}`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCard<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
+    id: JString<'local>,
     uri: JString<'local>,
     etag: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
+        let id = read_string(env, &id);
         let uri = read_string(env, &uri);
         let etag = read_string(env, &etag);
         let if_match = (!etag.is_empty()).then_some(etag.as_str());
@@ -534,14 +780,16 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCard<'loca
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
+        let json = match Client::new(env, &transport).delete_card(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+            &id,
+            &uri,
+            if_match,
+        ) {
+            Ok(()) => "{}".to_string(),
             Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).delete_card(&url, &credentials, &uri, if_match) {
-                    Ok(()) => "{}".to_string(),
-                    Err(err) => error_json(&err),
-                }
-            }
         };
 
         Ok(env.new_string(json)?.into())
@@ -595,23 +843,26 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_enumCards<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.syncCards`: runs a `sync-collection` REPORT (RFC 6578)
-/// against the addressbook collection, delta from the given sync token
-/// (empty for an initial sync). Returns `{"changed": [{id, uri,
-/// etag}], "vanished": [uri], "token": ".."}`, or
-/// `{"invalidToken": true}` when the server rejected the token so the
-/// caller falls back to a full enumeration.
+/// `Native.syncCards`: lists the collection's changes since the given
+/// cursor (empty runs the initial round: the complete member set plus
+/// the cursor to delta from next time), the backend dispatched from
+/// the base URL. Returns `{"changed": [{id, uri, etag, vcard?,
+/// books?}], "vanished": [uri], "token": ".."}`, or
+/// `{"invalidToken": true}` when the server no longer accepts the
+/// cursor so the caller re-runs an initial round.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncCards<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
+    base_url: JString<'local>,
     addressbook_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
     sync_token: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
         let addressbook_url = read_string(env, &addressbook_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
@@ -622,15 +873,15 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncCards<'local
             password: &password,
         };
 
-        let json = match parse_url(&addressbook_url) {
+        let json = match Client::new(env, &transport).sync_cards(
+            &base_url,
+            &addressbook_url,
+            &credentials,
+            sync_token,
+        ) {
+            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
+            Ok(Some(delta)) => delta_json(delta),
             Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).sync_cards(&url, &credentials, sync_token) {
-                    Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
-                    Ok(Some(delta)) => sync_delta_json(delta),
-                    Err(err) => error_json(&err),
-                }
-            }
         };
 
         Ok(env.new_string(json)?.into())
@@ -679,103 +930,47 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_multigetCards<'l
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.changesJmapCards`: lists the ContactCard changes since the
-/// given state (empty runs the initial round: every card plus the
-/// state to delta from). Returns `{"changed": [{id, uri, etag, vcard,
-/// books}], "vanished": [id], "token": ".."}`, or
-/// `{"invalidToken": true}` when the server can no longer compute
-/// changes from the state.
+/// `Native.updateCardBooks`: adds and removes the card's addressbook
+/// memberships on an account-level backend (JSON string arrays of book
+/// ids), the backend dispatched from the base URL. Returns `{}`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_changesJmapCards<'local>(
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateCardBooks<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     transport: JObject<'local>,
-    session_url: JString<'local>,
+    base_url: JString<'local>,
     login: JString<'local>,
     password: JString<'local>,
-    state: JString<'local>,
+    id: JString<'local>,
+    add: JString<'local>,
+    remove: JString<'local>,
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
+        let base_url = read_string(env, &base_url);
         let login = read_string(env, &login);
         let password = read_string(env, &password);
-        let state = read_string(env, &state);
-        let state = (!state.is_empty()).then_some(state.as_str());
+        let id = read_string(env, &id);
+        let add = read_string(env, &add);
+        let remove = read_string(env, &remove);
         let credentials = Credentials {
             login: &login,
             password: &password,
         };
 
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).changes_jmap_cards(&url, &credentials, state) {
-                    Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
-                    Ok(Some(delta)) => delta_json(delta),
+        let json = match (parse_books(&add), parse_books(&remove)) {
+            (Err(err), _) | (_, Err(err)) => error_json(&err),
+            (Ok(add), Ok(remove)) => {
+                match Client::new(env, &transport).update_card_books(
+                    &base_url,
+                    &credentials,
+                    &id,
+                    &add,
+                    &remove,
+                ) {
+                    Ok(()) => "{}".to_string(),
                     Err(err) => error_json(&err),
                 }
             }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.deltaGraphCards`: lists the Graph contact changes since the
-/// given delta link (empty runs the initial round: every contact plus
-/// the link to delta from). Rows carry the id and changeKey only.
-/// Returns the same shape as `changesJmapCards`, `invalidToken` when
-/// the server expired the link.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deltaGraphCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    folder: JString<'local>,
-    delta_link: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let folder = read_string(env, &folder);
-        let delta_link = read_string(env, &delta_link);
-        let delta_link = (!delta_link.is_empty()).then_some(delta_link.as_str());
-
-        let json = match Client::new(env, &transport).delta_graph_cards(&token, &folder, delta_link)
-        {
-            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
-            Ok(Some(delta)) => delta_json(delta),
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.syncGoogleCards`: lists the People contact changes since
-/// the given sync token (empty runs the initial round: every contact
-/// plus the token to delta from). Returns the same shape as
-/// `changesJmapCards`, `invalidToken` when the server expired the
-/// token.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncGoogleCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    sync_token: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let sync_token = read_string(env, &sync_token);
-        let sync_token = (!sync_token.is_empty()).then_some(sync_token.as_str());
-
-        let json = match Client::new(env, &transport).sync_google_cards(&token, sync_token) {
-            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
-            Ok(Some(delta)) => delta_json(delta),
-            Err(err) => error_json(&err),
         };
 
         Ok(env.new_string(json)?.into())
@@ -857,673 +1052,6 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineMutate<'l
         let json = match offline::mutate(env, &driver, &collection, &mutation) {
             Ok(()) => "{}".to_string(),
             Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listGraphAddressbooks`: lists the Microsoft Graph contact
-/// folders (default Contacts folder first, empty id) as addressbooks.
-/// Returns a JSON array; collection URLs are empty, the caller
-/// composes them.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGraphAddressbooks<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-
-        let json = match Client::new(env, &transport).list_graph_addressbooks(&token) {
-            Ok(books) => {
-                serde_json::to_string(&books).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listGraphCards`: lists the contacts of the Graph folder
-/// (empty id means the default Contacts folder), each projected onto
-/// a vCard. Returns a JSON array of `{id, uri, etag, vcard}` objects.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGraphCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    folder: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let folder = read_string(env, &folder);
-
-        let json = match Client::new(env, &transport).list_graph_cards(&token, &folder) {
-            Ok(cards) => {
-                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.createGraphCard`: creates the vCard as a Graph contact in
-/// the folder (empty id means the default Contacts folder). Graph
-/// names the resource, so the returned `{id, uri, etag, vcard}` card
-/// carries the server-assigned id.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createGraphCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    folder: JString<'local>,
-    vcard: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let folder = read_string(env, &folder);
-        let vcard = read_string(env, &vcard);
-
-        let json = match Client::new(env, &transport).create_graph_card(&token, &folder, &vcard) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.readGraphCard`: reads the Graph contact at the given id,
-/// projected onto a vCard. Returns `{id, uri, etag, vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readGraphCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-
-        let json = match Client::new(env, &transport).read_graph_card(&token, &id) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.updateGraphCard`: updates the Graph contact at the given id
-/// from the vCard, PATCHing only the fields that differ from the base
-/// vCard when one is passed (empty means unknown; no If-Match guard,
-/// last-write-wins). Returns the updated `{id, uri, etag, vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGraphCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-    vcard: JString<'local>,
-    base_vcard: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-        let vcard = read_string(env, &vcard);
-        let base_vcard = read_string(env, &base_vcard);
-        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
-
-        let json = match Client::new(env, &transport).update_graph_card(&token, &id, &vcard, base) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.deleteGraphCard`: deletes the Graph contact at the given
-/// id. Returns `{}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteGraphCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-
-        let json = match Client::new(env, &transport).delete_graph_card(&token, &id) {
-            Ok(()) => "{}".to_string(),
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listJmapAddressbooks`: lists the JMAP AddressBooks
-/// (RFC 9610) of the account behind the session URL. Returns a JSON
-/// array; collection URLs are empty, the caller composes them.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapAddressbooks<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).list_jmap_addressbooks(&url, &credentials) {
-                    Ok(books) => serde_json::to_string(&books)
-                        .unwrap_or_else(|err| error_json(&err.to_string())),
-                    Err(err) => error_json(&err),
-                }
-            }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listJmapCards`: lists the account's ContactCards across
-/// every JMAP AddressBook, each converted to a vCard. Returns a JSON
-/// array of `{id, uri, etag, vcard, books}` objects (ContactCard id as
-/// id and uri, a JSON hash as etag, the addressBookIds as books).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listJmapCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => match Client::new(env, &transport).list_jmap_cards(&url, &credentials) {
-                Ok(cards) => {
-                    serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
-                }
-                Err(err) => error_json(&err),
-            },
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.createJmapCard`: creates the vCard as a ContactCard in the
-/// JMAP AddressBook. The server names the card, so the returned
-/// `{id, uri, etag, vcard}` carries the server-assigned id.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createJmapCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-    book: JString<'local>,
-    vcard: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let book = read_string(env, &book);
-        let vcard = read_string(env, &vcard);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).create_jmap_card(
-                    &url,
-                    &credentials,
-                    &book,
-                    &vcard,
-                ) {
-                    Ok(card) => serde_json::to_string(&card)
-                        .unwrap_or_else(|err| error_json(&err.to_string())),
-                    Err(err) => error_json(&err),
-                }
-            }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.readJmapCard`: reads the ContactCard at the given id,
-/// converted to a vCard. Returns `{id, uri, etag, vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readJmapCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let id = read_string(env, &id);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => match Client::new(env, &transport).read_jmap_card(&url, &credentials, &id) {
-                Ok(card) => {
-                    serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-                }
-                Err(err) => error_json(&err),
-            },
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.updateJmapCard`: updates the ContactCard at the given id
-/// from the vCard, patching only the properties that differ from the
-/// base vCard when one is passed (empty means unknown; no If-Match
-/// guard, last-write-wins). Returns the updated `{id, uri, etag,
-/// vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateJmapCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-    id: JString<'local>,
-    vcard: JString<'local>,
-    base_vcard: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let id = read_string(env, &id);
-        let vcard = read_string(env, &vcard);
-        let base_vcard = read_string(env, &base_vcard);
-        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).update_jmap_card(
-                    &url,
-                    &credentials,
-                    &id,
-                    &vcard,
-                    base,
-                ) {
-                    Ok(card) => serde_json::to_string(&card)
-                        .unwrap_or_else(|err| error_json(&err.to_string())),
-                    Err(err) => error_json(&err),
-                }
-            }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.deleteJmapCard`: destroys the ContactCard at the given id.
-/// Returns `{}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteJmapCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let id = read_string(env, &id);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&session_url) {
-            Err(err) => error_json(&err),
-            Ok(url) => {
-                match Client::new(env, &transport).delete_jmap_card(&url, &credentials, &id) {
-                    Ok(()) => "{}".to_string(),
-                    Err(err) => error_json(&err),
-                }
-            }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listGoogleAddressbooks`: lists the Google account's contacts
-/// as one Contacts addressbook (the People API has no folders), after a
-/// one-person listing validated the token. Returns a JSON array; the
-/// collection URL is empty, the caller composes it.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGoogleAddressbooks<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-
-        let json = match Client::new(env, &transport).list_google_addressbooks(&token) {
-            Ok(books) => {
-                serde_json::to_string(&books).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.listGoogleCards`: lists the account's People contacts, each
-/// projected onto a vCard. Returns a JSON array of `{id, uri, etag,
-/// vcard}` objects (person id as id and uri, person etag as etag).
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listGoogleCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-
-        let json = match Client::new(env, &transport).list_google_cards(&token) {
-            Ok(cards) => {
-                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.createGoogleCard`: creates the vCard as a People contact.
-/// The server names the resource, so the returned `{id, uri, etag,
-/// vcard}` card carries the server-assigned id.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createGoogleCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    vcard: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let vcard = read_string(env, &vcard);
-
-        let json = match Client::new(env, &transport).create_google_card(&token, &vcard) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.readGoogleCard`: reads the People contact at the given id,
-/// projected onto a vCard. Returns `{id, uri, etag, vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readGoogleCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-
-        let json = match Client::new(env, &transport).read_google_card(&token, &id) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.updateGoogleCard`: updates the People contact at the given
-/// id from the vCard, shrinking the update mask to the fields that
-/// differ from the base vCard when one is passed (empty means unknown).
-/// People guards updates with the person etag (empty fetches it first).
-/// Returns the updated `{id, uri, etag, vcard}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGoogleCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-    vcard: JString<'local>,
-    base_vcard: JString<'local>,
-    etag: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-        let vcard = read_string(env, &vcard);
-        let base_vcard = read_string(env, &base_vcard);
-        let base = (!base_vcard.is_empty()).then_some(base_vcard.as_str());
-        let etag = read_string(env, &etag);
-        let etag = (!etag.is_empty()).then_some(etag.as_str());
-
-        let json = match Client::new(env, &transport)
-            .update_google_card(&token, &id, &vcard, base, etag)
-        {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(&err.to_string()))
-            }
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.deleteGoogleCard`: deletes the People contact at the given
-/// id. Returns `{}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteGoogleCard<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-
-        let json = match Client::new(env, &transport).delete_google_card(&token, &id) {
-            Ok(()) => "{}".to_string(),
-            Err(err) => error_json(&err),
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.updateJmapCardBooks`: adds and removes AddressBook
-/// memberships of the ContactCard at the given id (JSON string arrays
-/// of book ids). Returns `{}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateJmapCardBooks<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    session_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-    id: JString<'local>,
-    add: JString<'local>,
-    remove: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let session_url = read_string(env, &session_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let id = read_string(env, &id);
-        let add = read_string(env, &add);
-        let remove = read_string(env, &remove);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match (
-            parse_url(&session_url),
-            parse_books(&add),
-            parse_books(&remove),
-        ) {
-            (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => error_json(&err),
-            (Ok(url), Ok(add), Ok(remove)) => {
-                match Client::new(env, &transport).update_jmap_card_books(
-                    &url,
-                    &credentials,
-                    &id,
-                    &add,
-                    &remove,
-                ) {
-                    Ok(()) => "{}".to_string(),
-                    Err(err) => error_json(&err),
-                }
-            }
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
-/// `Native.updateGoogleCardBooks`: adds and removes the People contact
-/// at the given id from contact groups (JSON string arrays of group
-/// ids). Returns `{}`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateGoogleCardBooks<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    token: JString<'local>,
-    id: JString<'local>,
-    add: JString<'local>,
-    remove: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let token = read_string(env, &token);
-        let id = read_string(env, &id);
-        let add = read_string(env, &add);
-        let remove = read_string(env, &remove);
-
-        let json = match (parse_books(&add), parse_books(&remove)) {
-            (Err(err), _) | (_, Err(err)) => error_json(&err),
-            (Ok(add), Ok(remove)) => {
-                match Client::new(env, &transport)
-                    .update_google_card_books(&token, &id, &add, &remove)
-                {
-                    Ok(()) => "{}".to_string(),
-                    Err(err) => error_json(&err),
-                }
-            }
         };
 
         Ok(env.new_string(json)?.into())
@@ -1824,25 +1352,57 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_applyCard<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// Runs one search (all or first mechanisms) and serializes the
-/// resulting service configs.
-fn search_json<'local>(
+/// One discovery mechanism the search verbs dispatch on.
+enum SearchMechanism {
+    Provider,
+    Pacc,
+    Carddav,
+    Jmap,
+}
+
+/// Runs one discovery mechanism and serializes its service configs.
+fn search_mechanism_json<'local>(
     env: &mut Env<'local>,
     transport: &JObject<'local>,
     email: &JString<'local>,
     resolver: &JString<'local>,
-    first: bool,
+    mechanism: SearchMechanism,
 ) -> String {
     let email = read_string(env, email);
     let resolver = read_string(env, resolver);
     let resolver = (!resolver.is_empty()).then_some(resolver.as_str());
 
-    match Client::new(env, transport).search(&email, resolver, first) {
+    let mut client = Client::new(env, transport);
+    let configs = match mechanism {
+        SearchMechanism::Provider => client.search_provider(&email, resolver),
+        SearchMechanism::Pacc => client.search_pacc(&email, resolver),
+        SearchMechanism::Carddav => client.search_carddav(&email, resolver),
+        SearchMechanism::Jmap => client.search_jmap(&email, resolver),
+    };
+
+    match configs {
         Ok(configs) => {
             serde_json::to_string(&configs).unwrap_or_else(|err| error_json(&err.to_string()))
         }
         Err(err) => error_json(&err),
     }
+}
+
+/// Merges per-mechanism config lists (in priority order) through
+/// pimconf's pure collector, restricted to the services the app
+/// drives (CardDAV, JMAP).
+fn search_merge(lists: &str) -> Result<String, String> {
+    let lists: Vec<Vec<ServiceConfig>> =
+        serde_json::from_str(lists).map_err(|err| format!("Invalid config lists: {err}"))?;
+
+    let services = BTreeSet::from([Service::Carddav, Service::Jmap]);
+    let mut collector = ConfigCollector::new(services);
+
+    for configs in lists {
+        collector.collect(configs);
+    }
+
+    serde_json::to_string(&collector.finish()).map_err(|err| err.to_string())
 }
 
 /// Reads a Java string, defaulting to empty on any conversion error.
@@ -1897,49 +1457,6 @@ fn delta_json(delta: CardDelta) -> String {
     serde_json::to_string(&delta).unwrap_or_else(|err| error_json(&err.to_string()))
 }
 
-/// Serializes a sync-collection delta, mapping each member href to its
-/// resource name (the collection's own href, when a server lists it,
-/// yields an empty name and is skipped).
-fn sync_delta_json(delta: SyncDelta) -> String {
-    let changed = delta
-        .changed
-        .into_iter()
-        .filter_map(|change| {
-            let uri = href_resource(&change.href)?;
-            Some(Card {
-                id: uri.trim_end_matches(".vcf").to_string(),
-                uri,
-                etag: change.etag,
-                vcard: String::new(),
-                books: Vec::new(),
-            })
-        })
-        .collect();
-    let vanished = delta
-        .vanished
-        .iter()
-        .filter_map(|href| href_resource(href))
-        .collect();
-
-    delta_json(CardDelta {
-        changed,
-        vanished,
-        token: delta.sync_token,
-    })
-}
-
-/// The last non-empty path segment of a member href, i.e. its resource
-/// name; [`None`] for the collection itself (trailing slash).
-fn href_resource(href: &str) -> Option<String> {
-    let name = href.trim_end_matches('/');
-    let name = &name[name.rfind('/').map_or(0, |slash| slash + 1)..];
-
-    if name.is_empty() || href.ends_with('/') {
-        return None;
-    }
-    Some(name.to_string())
-}
-
 /// Public-client registration params: a loopback redirect, no secret,
 /// the code and refresh grants the app drives.
 fn oauth_register_params(
@@ -1981,10 +1498,6 @@ fn client_information_json(
         "client_secret": secret,
     })
     .to_string()
-}
-
-fn etag_json(etag: Option<String>) -> String {
-    serde_json::json!({ "etag": etag }).to_string()
 }
 
 fn error_json(message: &str) -> String {

@@ -1,16 +1,18 @@
 package org.pimalaya.cardamum;
 
-import org.pimalaya.cardamum.client.CardamumClient;
-
 /**
- * OAuth 2.0 provider defaults for the connection flow.
+ * OAuth 2.0 provider defaults for the connection flow: the app's
+ * client registrations, their redirect URIs (mirrored by the manifest
+ * intent-filters) and the provider endpoints and scopes. The account
+ * base URLs derived from these choices come from the bridge (the
+ * {@code *Base} helpers on
+ * {@link org.pimalaya.cardamum.client.CardamumClient}).
  *
- * <p>These belong in pimconf eventually (so every Pimalaya app shares
- * one set of provider rules); they live here for now so the Google
- * CardDAV OAuth path can be tried end to end. The Google client is an
- * Android OAuth client: no secret (PKCE only), and a redirect on the
- * reversed-client-id custom scheme the OS routes back via the manifest
- * intent-filter.
+ * <p>The endpoints and scopes belong in pimconf eventually (so every
+ * Pimalaya app shares one set of provider rules). The Google client is
+ * an Android OAuth client: no secret (PKCE only), and a redirect on
+ * the reversed-client-id custom scheme the OS routes back via the
+ * manifest intent-filter.
  */
 final class Oauth {
     static final String GOOGLE_CLIENT_ID =
@@ -29,21 +31,6 @@ final class Oauth {
     /** People API scope, for the Google Contacts API backend. */
     static final String GOOGLE_PEOPLE_SCOPE = "https://www.googleapis.com/auth/contacts";
 
-    /** Google's CardDAV principal root; standard PROPFIND discovery runs from here. */
-    static String googleCardDavBase(String email) {
-        return "https://www.googleapis.com/carddav/v1/principals/" + email + "/";
-    }
-
-    /**
-     * A Google People account's base URL: the google sentinel plus the
-     * email, so the addressbook URL derived from it stays unique across
-     * accounts (the People API has no CardDAV context root to fill the
-     * slot).
-     */
-    static String googlePeopleBase(String email) {
-        return CardamumClient.GOOGLE_PREFIX + email;
-    }
-
     /**
      * The Pimalaya Entra app registration (a public client: no secret,
      * PKCE only, like the Google one).
@@ -58,9 +45,11 @@ final class Oauth {
      * reverse-DNS private-use scheme (RFC 8252 §7.1), mirrored by the
      * manifest intent-filter. Fastmail's registration rejects a
      * loopback http redirect and a bare (dot-less) scheme alike, and
-     * accepts this reverse-DNS form; Stalwart accepts it too.
+     * accepts this reverse-DNS form; Stalwart accepts it too. Single
+     * slash per RFC 8252 §7.1: a private-use scheme has no naming
+     * authority, so no {@code //} component.
      */
-    static final String REDIRECT_URI = "org.pimalaya.cardamum://oauth2redirect";
+    static final String REDIRECT_URI = "org.pimalaya.cardamum:/oauth2redirect";
 
     /** The `common` tenant serves both personal (MSA) and Entra accounts. */
     static final String MICROSOFT_AUTH_ENDPOINT =
@@ -72,15 +61,6 @@ final class Oauth {
     /** Graph contacts scope; offline_access makes Entra issue a refresh token. */
     static final String MICROSOFT_SCOPE =
             "https://graph.microsoft.com/Contacts.ReadWrite offline_access";
-
-    /**
-     * A Graph account's base URL: the msgraph sentinel plus the email,
-     * so the addressbook URLs derived from it stay unique across
-     * accounts (Graph has no CardDAV context root to fill the slot).
-     */
-    static String msgraphBase(String email) {
-        return CardamumClient.MSGRAPH_PREFIX + email;
-    }
 
     private Oauth() {}
 }

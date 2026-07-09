@@ -713,6 +713,7 @@ fn adr_prop(
         region: option_component(&address.state),
         postal_code: option_component(&address.postal_code),
         country: option_component(&address.country_or_region),
+        ..Default::default()
     };
 
     let empty = value.street.is_empty()
