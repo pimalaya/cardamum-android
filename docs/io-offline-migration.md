@@ -70,3 +70,14 @@ Deviations from the staged plan, and why:
 - Delta enumerates landed for all four backends (stage 6 complete): io-jmap (ContactCard/changes) and io-google-people (sync tokens) already had the wire primitives; io-msgraph gained a contacts delta coroutine (rows flagged @removed, deltaLink checkpoint, HTTP 410 as the expiry signal) and rides as a local path patch alongside io-offline until pushed.
 - The engine's cross-collection body dedup (WantsLookupObject) is answered empty on purpose: it assumes a link id names immutable bytes, but contact replicas sharing a UID diverge legitimately, so a sibling's body must never stand in for a fetch. Worth an upstream io-offline note alongside the m:n membership dedup flagged above.
 - A pending create with several memberships surfaces in its first membership's collection only (the m:n dedup risk flagged in the plan): the other books ride as created-with-origin placements once the row is synced, so one card never fans out into several server creates.
+
+## Engine API bump (2026-07-09)
+
+The engine was reshaped upstream; the bridge and store were migrated in one pass:
+
+- Change::Add now carries link_id (idempotency key for at-least-once retried adds), flags (create with the right flag set; empty on contacts backends) and an object hash (the append fallback for a copy whose origin is gone); the wire forwards all three, the Java pushAdd keeps resolving the staged body by handle and may adopt the extras later.
+- Base lost its present field (the base's existence is the membership base); WriteOp::SetBase and the count capability are gone from the engine, so the setBase wire op, applySetBase, applyPhoneSetBase and the count envelope were removed as dead code.
+- A remote content change now drops the placement level to Probed instead of Meta; the store never round-trips the level (staleness is derived from the object hash), so nothing changed here, and the stale display copy keeps working as before.
+- The sync report's pushed field now counts accepted pushes only (it previously counted attempts); rejected keeps its meaning.
+- The push contract is explicitly at-least-once upstream now; the app already conformed (delete of a gone card converges as accepted, the phone spoke rewrites a raw contact already carrying the handle instead of duplicating it).
+- The engine gained a rekey verb (rebuild after a handle-space change, carrying cache and pending state by link id); not wired into the app yet, a candidate for the CardDAV collection-URL-migration story.

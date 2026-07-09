@@ -28,8 +28,10 @@ use crate::{
     offline,
     project::{
         apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
-        find_duplicates, index, merge_cards, merge_conflict, project, set_uid,
+        duplicate_group, find_duplicates, form_date, form_entry, form_view, group_contacts, index,
+        merge_cards, merge_conflict, project, set_uid,
     },
+    store,
     types::{CardDelta, Credentials},
 };
 
@@ -846,10 +848,11 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_enumCards<'local
 /// `Native.syncCards`: lists the collection's changes since the given
 /// cursor (empty runs the initial round: the complete member set plus
 /// the cursor to delta from next time), the backend dispatched from
-/// the base URL. Returns `{"changed": [{id, uri, etag, vcard?,
-/// books?}], "vanished": [uri], "token": ".."}`, or
-/// `{"invalidToken": true}` when the server no longer accepts the
-/// cursor so the caller re-runs an initial round.
+/// the base URL. An expired cursor re-runs an initial round and an
+/// initial CardDAV sync a server rejects falls back to the plain
+/// enumeration, both internally. Returns `{"changed": [{id, uri,
+/// etag, vcard?, books?}], "vanished": [uri], "token": "..",
+/// "complete": bool}`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncCards<'local>(
     mut env: EnvUnowned<'local>,
@@ -879,8 +882,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_syncCards<'local
             &credentials,
             sync_token,
         ) {
-            Ok(None) => serde_json::json!({ "invalidToken": true }).to_string(),
-            Ok(Some(delta)) => delta_json(delta),
+            Ok(delta) => delta_json(delta),
             Err(err) => error_json(&err),
         };
 
@@ -1054,6 +1056,167 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineMutate<'l
             Err(err) => error_json(&err),
         };
 
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineRetryUnguarded`: whether a 412-rejected push may
+/// retry unguarded, the last enumerate proving the handle unchanged
+/// (the CardDAV If-Match quirk); pure computation, no transport. Takes
+/// `{"listed": {handle: etag}?, "complete", "handle", "ifMatch"?}`,
+/// returns `{"retry": bool}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineRetryUnguarded<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => serde_json::json!({ "retry": store::retry_unguarded(&facts) }).to_string(),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineAccountSnapshot`: projects an account-wide delta
+/// (JMAP, Google) onto one book's enumerate; pure computation, no
+/// transport. Takes `{"bookId"?, "complete", "changed": [{handle,
+/// books, known}], "vanished"}`, returns `{"members": [index],
+/// "vanished": [handle]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineAccountSnapshot<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => decision_json(store::account_snapshot(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlinePushPlan`: plans one push change (membership patch
+/// vs create or delete, plus the Google post-create membership); pure
+/// computation, no transport. Takes `{"op", "collection", "bookId"?,
+/// "origin", "deleted"}`, returns `{"action", "postCreateBooks"?}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlinePushPlan<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => decision_json(store::push_plan(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlinePlacement`: maps one card-plus-membership row to its
+/// engine placement on the server axis; pure computation, no
+/// transport. Takes the row facts (see the store module), returns
+/// `{"placement": {..} | null}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlinePlacement<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => placement_json(store::placement(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlinePhonePlacement`: maps one card-plus-membership row
+/// to its phone-axis placement; pure computation, no transport. Takes
+/// the row facts (see the store module), returns
+/// `{"placement": {..} | null}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlinePhonePlacement<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => placement_json(store::phone_placement(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlineUpsertPlan`: plans one engine upsert onto the card
+/// and membership rows; pure computation, no transport. Takes the
+/// placement and row facts (see the store module), returns
+/// `{"action", "row"?, "memberState"?}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineUpsertPlan<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => decision_json(store::upsert_plan(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlinePhoneUpsertPlan`: plans one phone-axis upsert; pure
+/// computation, no transport. Takes the placement and row facts (see
+/// the store module), returns `{"action", "row"?, "axis"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlinePhoneUpsertPlan<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => decision_json(store::phone_upsert_plan(&facts)),
+        };
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.offlinePhoneDropPlan`: plans a phone-collection drop
+/// (membership removal vs card deletion); pure computation, no
+/// transport. Takes `{"collection", "deleted", "otherMemberships"}`,
+/// returns `{"action"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlinePhoneDropPlan<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    facts: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let json = match parse_facts(env, &facts) {
+            Err(err) => err,
+            Ok(facts) => decision_json(store::phone_drop_plan(&facts)),
+        };
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
@@ -1352,6 +1515,130 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_applyCard<'local
     .resolve::<LogErrorAndDefault>()
 }
 
+/// `Native.formView`: the edit form's view support computed from the
+/// field model (summaries, type spinner positions, picker dates); pure
+/// computation, no transport. Returns `{"name", "organization",
+/// "gender"?, "birthday"?, "anniversary"?, "phones", "emails",
+/// "relations", "addresses"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_formView<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    model: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let model = read_string(env, &model);
+
+        let json = match serde_json::from_str(&model) {
+            Err(err) => error_json(&format!("Invalid field model: {err}")),
+            Ok(model) => form_view(&model).to_string(),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.formEntry`: one typed entry saved from an edit dialog, its
+/// TYPE set drawn from the spinner position (`phone`, `email`,
+/// `relation` return the full entry, `address` the TYPE set alone,
+/// `gender` the GENDER object, empty when unset); pure computation, no
+/// transport.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_formEntry<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    kind: JString<'local>,
+    index: jint,
+    value: JString<'local>,
+    pref: jboolean,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let kind = read_string(env, &kind);
+        let value = read_string(env, &value);
+
+        let json = match form_entry(&kind, index as i64, &value, pref) {
+            Ok(entry) => entry.to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.formDate`: one picked date on the model wire (the vCard
+/// `yyyy-mm-dd` form, 1-based month); pure computation, no transport.
+/// Returns `{"value": ".."}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_formDate<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    year: jint,
+    month: jint,
+    day: jint,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let value = form_date(year as i64, month as i64, day as i64);
+        let json = serde_json::json!({ "value": value }).to_string();
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.groupContacts`: groups the replica pool into merged
+/// contacts (docs/merged-view.md), the groups sorted by primary
+/// display name; pure computation, no transport. Takes `{"replicas":
+/// [{ref, uid, name, id}], "links": {member: cluster}, "detached":
+/// [ref]}`, returns `{"groups": [{key, replicas: [index]}]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_groupContacts<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    input: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let input = read_string(env, &input);
+
+        let json = match serde_json::from_str(&input) {
+            Err(err) => error_json(&format!("Invalid replica pool: {err}")),
+            Ok(input) => match group_contacts(&input) {
+                Ok(groups) => groups.to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.duplicateGroup`: the duplicate review's group facts, the
+/// dismissal key and the Link eligibility; pure computation, no
+/// transport. Takes `[{ref, book}]`, returns `{"key", "linkable"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_duplicateGroup<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    members: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let members = read_string(env, &members);
+
+        let json = match serde_json::from_str(&members) {
+            Err(err) => error_json(&format!("Invalid duplicate group: {err}")),
+            Ok(members) => match duplicate_group(&members) {
+                Ok(facts) => facts.to_string(),
+                Err(err) => error_json(&err),
+            },
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
 /// One discovery mechanism the search verbs dispatch on.
 enum SearchMechanism {
     Provider,
@@ -1408,6 +1695,33 @@ fn search_merge(lists: &str) -> Result<String, String> {
 /// Reads a Java string, defaulting to empty on any conversion error.
 fn read_string(env: &Env, value: &JString) -> String {
     value.try_to_string(env).unwrap_or_default()
+}
+
+/// Reads and parses a store verb's JSON facts; the error side is the
+/// ready-to-return error reply.
+fn parse_facts(env: &Env, facts: &JString) -> Result<serde_json::Value, String> {
+    let raw = read_string(env, facts);
+    serde_json::from_str(&raw).map_err(|err| error_json(&format!("Invalid store facts: {err}")))
+}
+
+/// Serializes a store decision, or its error.
+fn decision_json(decision: Result<serde_json::Value, String>) -> String {
+    match decision {
+        Ok(value) => value.to_string(),
+        Err(err) => error_json(&err),
+    }
+}
+
+/// Serializes a placement decision (`{"placement": {..} | null}`), or
+/// its error.
+fn placement_json(decision: Result<Option<serde_json::Value>, String>) -> String {
+    match decision {
+        Ok(placement) => {
+            serde_json::json!({ "placement": placement.unwrap_or(serde_json::Value::Null) })
+                .to_string()
+        }
+        Err(err) => error_json(&err),
+    }
 }
 
 fn parse_url(raw: &str) -> Result<Url, String> {

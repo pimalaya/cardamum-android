@@ -25,6 +25,7 @@ rand = "0.10"
 secrecy = { version = "0.10", default-features = false }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
+sha2 = { version = "0.11", default-features = false }
 url = { version = "2", default-features = false }
 vcard-rs = { version = "0.0.1", default-features = false, features = ["parser"] }
 

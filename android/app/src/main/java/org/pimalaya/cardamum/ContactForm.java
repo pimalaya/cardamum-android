@@ -25,11 +25,11 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.client.CardamumClient;
 
 /**
  * The contact edit form, settings-style like the system apps: one
@@ -43,33 +43,20 @@ import org.json.JSONObject;
  * <p>The page renders from a working field model that the dialogs
  * edit in place, so {@link #collect()} just hands the model back;
  * everything beyond the model is preserved by the vCard patch in the
- * Rust bridge. A diverged contact loads in conflict mode: only the
- * disagreeing items show, and the dialogs of conflicted single fields
- * carry one tappable chip per candidate value.
+ * Rust bridge, and the bridge also computes the page's view support
+ * (summaries, type spinner positions, picker dates): the type tables
+ * and their vCard semantics live there, this class only localizes the
+ * labels the positions address. A diverged contact loads in conflict
+ * mode: only the disagreeing items show, and the dialogs of
+ * conflicted single fields carry one tappable chip per candidate
+ * value.
  */
 final class ContactForm {
-    /** Spinner position to vCard TYPE set, aligned with R.array.phone_types. */
-    private static final String[][] PHONE_TYPES = {
-        {"cell"}, {"home"}, {"work"}, {"cell", "work"},
-        {"fax", "home"}, {"fax", "work"}, {"pager"}, {},
-    };
-
-    /** Spinner position to vCard TYPE set, aligned with R.array.email_types. */
-    private static final String[][] HOME_WORK_OTHER = {{"home"}, {"work"}, {}};
-
-    /** Spinner position to vCard TYPE set, aligned with R.array.relation_types. */
-    private static final String[][] RELATION_TYPES = {
-        {"spouse"}, {"child"}, {"parent"}, {"sibling"},
-        {"friend"}, {"colleague"}, {"emergency"}, {},
-    };
-
-    /** Spinner position to GENDER sex code, aligned with R.array.gender_types. */
-    private static final String[] GENDER_SEXES = {"", "M", "F", "O", "N", "U"};
-
     private static final int TEXT_NAME =
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
 
     private final Activity activity;
+    private final CardamumClient client;
     private final int accentColor;
     private final int labelColor;
     private final int primaryColor;
@@ -79,14 +66,18 @@ final class ContactForm {
     /** The working field model the dialogs edit in place. */
     private JSONObject model = new JSONObject();
 
+    /** The bridge-computed view support of the current model. */
+    private JSONObject view = new JSONObject();
+
     /** Conflict alternatives by single-field path; null outside conflicts. */
     private JSONObject alternatives;
 
     /** Changed list sections of a conflict; null outside conflict mode. */
     private Set<String> changedLists;
 
-    ContactForm(Activity activity) {
+    ContactForm(Activity activity, CardamumClient client) {
         this.activity = activity;
+        this.client = client;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
         this.primaryColor = resolveColor(android.R.attr.colorPrimary);
@@ -138,6 +129,7 @@ final class ContactForm {
 
     /** Rebuilds the whole page from the working model. */
     private void render() {
+        view = client.formView(model);
         container.removeAllViews();
 
         // Identity holds the solo fields: the display name (its own
@@ -218,9 +210,7 @@ final class ContactForm {
                 items.add(
                         entryItem(
                                 entry.optString("value"),
-                                typeLabel(
-                                        R.array.relation_types,
-                                        typeIndex(entry, RELATION_TYPES)),
+                                typeLabel(R.array.relation_types, typeAt("relations", index)),
                                 () -> relationDialog(at)));
             }
             listSection(R.string.section_relations, R.drawable.ic_section_group, R.string.add_relation, items,
@@ -236,7 +226,7 @@ final class ContactForm {
                 items.add(
                         entryItem(
                                 entry.optString("number"),
-                                typeLabel(R.array.phone_types, phoneTypeIndex(entry)),
+                                typeLabel(R.array.phone_types, typeAt("phones", index)),
                                 () -> phoneDialog(at)));
             }
             listSection(R.string.section_phones, R.drawable.ic_section_call, R.string.add_phone, items,
@@ -252,7 +242,7 @@ final class ContactForm {
                 items.add(
                         entryItem(
                                 entry.optString("address"),
-                                typeLabel(R.array.email_types, typeIndex(entry, HOME_WORK_OTHER)),
+                                typeLabel(R.array.email_types, typeAt("emails", index)),
                                 () -> emailDialog(at)));
             }
             listSection(R.string.section_emails, R.drawable.ic_section_mail, R.string.add_email, items,
@@ -283,13 +273,12 @@ final class ContactForm {
             JSONArray entries = array("addresses");
             for (int index = 0; index < entries.length(); index++) {
                 int at = index;
-                JSONObject entry = entries.optJSONObject(index);
                 items.add(
                         entryItem(
-                                addressSummary(entry),
+                                value(addressAt(index).optString("summary")),
                                 typeLabel(
                                         R.array.address_types,
-                                        typeIndex(entry, HOME_WORK_OTHER)),
+                                        addressAt(index).optInt("index")),
                                 () -> addressDialog(at)));
             }
             listSection(R.string.section_addresses, R.drawable.ic_section_location_on, R.string.add_address, items,
@@ -462,46 +451,11 @@ final class ContactForm {
 
     /** The name parts composed (the display name has its own row). */
     private String nameSummary() {
-        JSONObject name = model.optJSONObject("name");
-        StringBuilder composed = new StringBuilder();
-        if (name != null) {
-            for (String key : new String[] {"prefix", "given", "middle", "family", "suffix"}) {
-                String part = name.optString(key).trim();
-                if (!part.isEmpty()) {
-                    if (composed.length() > 0) {
-                        composed.append(' ');
-                    }
-                    composed.append(part);
-                }
-            }
-        }
-        return value(composed.toString());
+        return value(view.optString("name"));
     }
 
     private String organizationSummary() {
-        JSONObject organization = model.optJSONObject("organization");
-        List<String> parts = new ArrayList<>();
-        if (organization != null && !organization.optString("company").trim().isEmpty()) {
-            parts.add(organization.optString("company").trim());
-        }
-        if (!model.optString("title").trim().isEmpty()) {
-            parts.add(model.optString("title").trim());
-        }
-        return parts.isEmpty()
-                ? getS(R.string.value_not_set)
-                : String.join(" · ", parts);
-    }
-
-    private String addressSummary(JSONObject entry) {
-        for (String key : new String[] {"street", "city", "postcode", "country"}) {
-            String part = entry.optString(key).trim();
-            if (!part.isEmpty()) {
-                // The street's first line stands for the whole block.
-                int newline = part.indexOf('\n');
-                return newline < 0 ? part : part.substring(0, newline);
-            }
-        }
-        return getS(R.string.value_not_set);
+        return value(view.optString("organization"));
     }
 
     /** The empty-value placeholder. */
@@ -510,36 +464,42 @@ final class ContactForm {
     }
 
     private String genderSummary() {
-        JSONObject gender = model.optJSONObject("gender");
+        JSONObject gender = view.optJSONObject("gender");
         if (gender == null) {
             return getS(R.string.value_not_set);
         }
 
         List<String> parts = new ArrayList<>();
-        int sex = genderSexIndex(gender.optString("sex"));
+        int sex = gender.optInt("sexIndex");
         if (sex > 0) {
             parts.add(typeLabel(R.array.gender_types, sex));
         }
-        if (!gender.optString("identity").trim().isEmpty()) {
-            parts.add(gender.optString("identity").trim());
+        if (!gender.optString("identity").isEmpty()) {
+            parts.add(gender.optString("identity"));
         }
         return parts.isEmpty()
                 ? getS(R.string.value_not_set)
                 : String.join(" · ", parts);
     }
 
-    private static int genderSexIndex(String sex) {
-        for (int index = 1; index < GENDER_SEXES.length; index++) {
-            if (GENDER_SEXES[index].equalsIgnoreCase(sex.trim())) {
-                return index;
-            }
-        }
-        return 0;
-    }
-
     private String typeLabel(int arrayId, int index) {
         String[] labels = activity.getResources().getStringArray(arrayId);
         return labels[Math.min(index, labels.length - 1)];
+    }
+
+    // ---- View support -------------------------------------------------------
+
+    /** The type spinner position of a list entry, bridge-computed. */
+    private int typeAt(String list, int index) {
+        JSONArray positions = view.optJSONArray(list);
+        return positions == null ? 0 : positions.optInt(index);
+    }
+
+    /** An address entry's view support ({@code {index, summary}}). */
+    private JSONObject addressAt(int index) {
+        JSONArray entries = view.optJSONArray("addresses");
+        JSONObject entry = entries == null ? null : entries.optJSONObject(index);
+        return entry == null ? new JSONObject() : entry;
     }
 
     // ---- Dialogs ------------------------------------------------------------
@@ -649,7 +609,7 @@ final class ContactForm {
 
         LinearLayout content = dialogContent();
         Spinner type = typeSpinner(R.array.phone_types);
-        type.setSelection(entry == null ? 0 : phoneTypeIndex(entry));
+        type.setSelection(entry == null ? 0 : typeAt("phones", index));
         EditText number =
                 typedValueLine(content, type, R.string.hint_number,
                         entry == null ? "" : entry.optString("number"),
@@ -663,11 +623,11 @@ final class ContactForm {
                                 phones,
                                 index,
                                 text(number),
-                                entryOf(
-                                        "number",
+                                client.formEntry(
+                                        "phone",
+                                        type.getSelectedItemPosition(),
                                         text(number),
-                                        PHONE_TYPES[type.getSelectedItemPosition()],
-                                        entry)),
+                                        entry != null && entry.optBoolean("pref"))),
                 index >= 0 ? () -> phones.remove(index) : null);
     }
 
@@ -677,7 +637,7 @@ final class ContactForm {
 
         LinearLayout content = dialogContent();
         Spinner type = typeSpinner(R.array.email_types);
-        type.setSelection(entry == null ? 0 : typeIndex(entry, HOME_WORK_OTHER));
+        type.setSelection(entry == null ? 0 : typeAt("emails", index));
         EditText address =
                 typedValueLine(content, type, R.string.hint_email_address,
                         entry == null ? "" : entry.optString("address"),
@@ -692,11 +652,11 @@ final class ContactForm {
                                 emails,
                                 index,
                                 text(address),
-                                entryOf(
-                                        "address",
+                                client.formEntry(
+                                        "email",
+                                        type.getSelectedItemPosition(),
                                         text(address),
-                                        HOME_WORK_OTHER[type.getSelectedItemPosition()],
-                                        entry)),
+                                        entry != null && entry.optBoolean("pref"))),
                 index >= 0 ? () -> emails.remove(index) : null);
     }
 
@@ -710,7 +670,7 @@ final class ContactForm {
                 typeRadios(
                         content,
                         R.array.address_types,
-                        entry == null ? 0 : typeIndex(entry, HOME_WORK_OTHER));
+                        entry == null ? 0 : addressAt(index).optInt("index"));
         EditText street =
                 dialogField(content, null, R.string.hint_street, safe.optString("street"),
                         InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
@@ -748,10 +708,12 @@ final class ContactForm {
                                         .put("pref", safe.optBoolean("pref"))
                                         .put(
                                                 "types",
-                                                array(
-                                                        HOME_WORK_OTHER[
-                                                                type.getCheckedRadioButtonId()
-                                                                        - 1]));
+                                                client.formEntry(
+                                                                "address",
+                                                                type.getCheckedRadioButtonId() - 1,
+                                                                "",
+                                                                false)
+                                                        .optJSONArray("types"));
                         putEntry(addresses, index, filled, fresh);
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
@@ -830,7 +792,7 @@ final class ContactForm {
 
         LinearLayout content = dialogContent();
         Spinner type = typeSpinner(R.array.relation_types);
-        type.setSelection(entry == null ? 0 : typeIndex(entry, RELATION_TYPES));
+        type.setSelection(entry == null ? 0 : typeAt("relations", index));
         EditText value =
                 typedValueLine(content, type, R.string.hint_relation,
                         entry == null ? "" : entry.optString("value"), TEXT_NAME);
@@ -843,11 +805,11 @@ final class ContactForm {
                                 relations,
                                 index,
                                 text(value),
-                                entryOf(
-                                        "value",
+                                client.formEntry(
+                                        "relation",
+                                        type.getSelectedItemPosition(),
                                         text(value),
-                                        RELATION_TYPES[type.getSelectedItemPosition()],
-                                        entry)),
+                                        entry != null && entry.optBoolean("pref"))),
                 index >= 0 ? () -> relations.remove(index) : null);
     }
 
@@ -858,7 +820,8 @@ final class ContactForm {
 
         LinearLayout content = dialogContent();
         Spinner type = typeSpinner(R.array.gender_types);
-        type.setSelection(genderSexIndex(safe.optString("sex")));
+        JSONObject genderView = view.optJSONObject("gender");
+        type.setSelection(genderView == null ? 0 : genderView.optInt("sexIndex"));
         EditText identity =
                 typedValueLine(content, type, R.string.hint_gender_identity,
                         safe.optString("identity"), TEXT_NAME);
@@ -867,15 +830,17 @@ final class ContactForm {
                 getS(R.string.item_gender),
                 content,
                 () -> {
-                    String sex = GENDER_SEXES[type.getSelectedItemPosition()];
-                    String fresh = text(identity);
+                    JSONObject fresh =
+                            client.formEntry(
+                                    "gender",
+                                    type.getSelectedItemPosition(),
+                                    text(identity),
+                                    false);
                     try {
-                        if (sex.isEmpty() && fresh.isEmpty()) {
+                        if (fresh.length() == 0) {
                             model.remove("gender");
                         } else {
-                            model.put(
-                                    "gender",
-                                    new JSONObject().put("sex", sex).put("identity", fresh));
+                            model.put("gender", fresh);
                         }
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
@@ -887,31 +852,21 @@ final class ContactForm {
     /** A date field goes straight to the system date picker. */
     private void pickDate(String field) {
         Calendar calendar = Calendar.getInstance();
-        String[] parts = model.optString(field).split("-");
-        if (parts.length == 3) {
-            try {
-                calendar.set(
-                        Integer.parseInt(parts[0]),
-                        Integer.parseInt(parts[1]) - 1,
-                        Integer.parseInt(parts[2]));
-            } catch (NumberFormatException ignored) {
-                // Keep today when the stored value is not a date.
-            }
+        JSONObject stored = view.optJSONObject(field);
+        if (stored != null) {
+            // Today stands in when the stored value is not a date.
+            calendar.set(
+                    stored.optInt("year"),
+                    stored.optInt("month") - 1,
+                    stored.optInt("day"));
         }
 
         DatePickerDialog dialog =
                 new DatePickerDialog(
                         activity,
-                        (view, year, month, day) -> {
+                        (picker, year, month, day) -> {
                             try {
-                                model.put(
-                                        field,
-                                        String.format(
-                                                Locale.ROOT,
-                                                "%04d-%02d-%02d",
-                                                year,
-                                                month + 1,
-                                                day));
+                                model.put(field, client.formDate(year, month + 1, day));
                             } catch (JSONException error) {
                                 throw new IllegalStateException(error);
                             }
@@ -1121,19 +1076,6 @@ final class ContactForm {
         return values;
     }
 
-    /** A typed value entry, the pref flag riding along from the old one. */
-    private static JSONObject entryOf(
-            String field, String value, String[] types, JSONObject previous) {
-        try {
-            return new JSONObject()
-                    .put(field, value)
-                    .put("types", array(types))
-                    .put("pref", previous != null && previous.optBoolean("pref"));
-        } catch (JSONException error) {
-            throw new IllegalStateException(error);
-        }
-    }
-
     /**
      * Writes an entry back into its list: replaced in place, appended
      * when new, dropped when emptied.
@@ -1167,55 +1109,6 @@ final class ContactForm {
             }
         }
         return false;
-    }
-
-    // ---- Type mapping -------------------------------------------------------
-
-    private static int phoneTypeIndex(JSONObject entry) {
-        Set<String> types = typeSet(entry);
-        if (types.contains("fax")) {
-            return types.contains("home") ? 4 : 5;
-        }
-        if (types.contains("cell")) {
-            return types.contains("work") ? 3 : 0;
-        }
-        if (types.contains("pager")) {
-            return 6;
-        }
-        if (types.contains("work")) {
-            return 2;
-        }
-        if (types.contains("home")) {
-            return 1;
-        }
-        return 7;
-    }
-
-    private static int typeIndex(JSONObject entry, String[][] table) {
-        Set<String> types = typeSet(entry);
-        for (int index = 0; index < table.length; index++) {
-            if (table[index].length > 0 && types.contains(table[index][0])) {
-                return index;
-            }
-        }
-        return table.length - 1;
-    }
-
-    private static Set<String> typeSet(JSONObject entry) {
-        Set<String> types = new HashSet<>();
-        JSONArray array = entry.optJSONArray("types");
-        for (int index = 0; array != null && index < array.length(); index++) {
-            types.add(array.optString(index));
-        }
-        return types;
-    }
-
-    private static JSONArray array(String[] values) {
-        JSONArray array = new JSONArray();
-        for (String value : values) {
-            array.put(value);
-        }
-        return array;
     }
 
     // ---- Utils --------------------------------------------------------------

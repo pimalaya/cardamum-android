@@ -550,10 +550,69 @@ impl<'a, 'local> Client<'a, 'local> {
     /// backend: a CardDAV sync-collection REPORT (RFC 6578), a Graph
     /// contacts delta round, a JMAP ContactCard/changes round or a
     /// People connections sync. No cursor runs the initial round: the
-    /// complete member set plus the cursor to delta from next time.
-    /// Returns [`None`] when the server no longer accepts the cursor,
-    /// so the caller re-runs an initial round.
+    /// complete member set plus the cursor to delta from next time. A
+    /// cursor the server no longer accepts re-runs an initial round,
+    /// and an initial CardDAV sync a server rejects outright falls
+    /// back to the plain enumeration; the returned delta says whether
+    /// it was a complete round.
     pub fn sync_cards(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        cursor: Option<&str>,
+    ) -> Result<CardDelta, String> {
+        let round = self.sync_cards_round(base_url, addressbook_url, credentials, cursor);
+
+        let delta = match round {
+            Ok(delta) => delta,
+            Err(_) if cursor.is_none() && Backend::of(base_url) == Backend::Carddav => {
+                // No sync-collection support on an initial CardDAV
+                // sync: fall back to the plain enumeration (a genuine
+                // outage fails there too, the same offline fallback).
+                let url = parse_url(addressbook_url)?;
+                let refs = self.enum_cards(&url, credentials)?;
+
+                let changed = refs
+                    .into_iter()
+                    .map(|entry| Card {
+                        id: entry.id,
+                        uri: entry.uri,
+                        etag: entry.etag,
+                        vcard: String::new(),
+                        books: Vec::new(),
+                    })
+                    .collect();
+                return Ok(CardDelta {
+                    changed,
+                    vanished: Vec::new(),
+                    token: None,
+                    complete: true,
+                });
+            }
+            Err(err) => return Err(err),
+        };
+
+        if let Some(mut delta) = delta {
+            delta.complete = cursor.is_none();
+            return Ok(delta);
+        }
+
+        // The server no longer accepts the cursor: re-run an initial
+        // round. A still-rejected initial round must never read as an
+        // empty collection (that would look remote-deleted).
+        match self.sync_cards_round(base_url, addressbook_url, credentials, None)? {
+            Some(mut delta) => {
+                delta.complete = true;
+                Ok(delta)
+            }
+            None => Err(format!("Initial sync round rejected for {addressbook_url}")),
+        }
+    }
+
+    /// One sync round against the backend behind the base URL;
+    /// [`None`] when the server rejected the cursor.
+    fn sync_cards_round(
         &mut self,
         base_url: &str,
         addressbook_url: &str,
@@ -659,7 +718,7 @@ impl<'a, 'local> Client<'a, 'local> {
         etag: Option<&str>,
     ) -> Result<Card, String> {
         let backend = Backend::of(base_url);
-        let key = addressing_key(backend, id, uri);
+        let key = account::addressing_key(backend, id, uri);
 
         match backend {
             Backend::Carddav => {
@@ -697,7 +756,7 @@ impl<'a, 'local> Client<'a, 'local> {
         etag: Option<&str>,
     ) -> Result<(), String> {
         let backend = Backend::of(base_url);
-        let key = addressing_key(backend, id, uri);
+        let key = account::addressing_key(backend, id, uri);
 
         match backend {
             Backend::Carddav => {
@@ -1179,6 +1238,7 @@ impl<'a, 'local> Client<'a, 'local> {
             changed: Vec::new(),
             vanished: Vec::new(),
             token: None,
+            complete: false,
         };
 
         loop {
@@ -1372,6 +1432,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 changed,
                 vanished: Vec::new(),
                 token: Some(out.new_state),
+                complete: false,
             }));
         };
 
@@ -1422,6 +1483,7 @@ impl<'a, 'local> Client<'a, 'local> {
             changed,
             vanished: vanished.into_iter().collect(),
             token: Some(cursor),
+            complete: false,
         }))
     }
 
@@ -1668,6 +1730,7 @@ impl<'a, 'local> Client<'a, 'local> {
             changed: Vec::new(),
             vanished: Vec::new(),
             token: None,
+            complete: false,
         };
         let mut page_token: Option<String> = None;
 
@@ -1938,10 +2001,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 DiscoveryCoroutineState::Complete(Ok(output)) => return Ok(output),
                 DiscoveryCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
                 DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsRead { url }) => {
-                    arg = Some(match self.read(url.as_str()) {
-                        Ok(bytes) => bytes,
-                        Err(_) => Vec::new(),
-                    });
+                    arg = Some(self.read(url.as_str()).unwrap_or_default());
                 }
                 DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsWrite { url, bytes }) => {
                     arg = match self.write(url.as_str(), &bytes) {
@@ -2238,21 +2298,6 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 }
 
-/// The card's addressing key, reconstructed for pre-uri local rows:
-/// CardDAV resources are named `<id>.vcf` (Graph rides the same
-/// fallback, though its rows always carry a uri), JMAP and Google
-/// address the bare server id.
-fn addressing_key(backend: Backend, id: &str, uri: &str) -> String {
-    if !uri.is_empty() {
-        return uri.to_string();
-    }
-
-    match backend {
-        Backend::Carddav | Backend::Graph => format!("{id}.vcf"),
-        Backend::Jmap | Backend::Google => id.to_string(),
-    }
-}
-
 /// A sync-collection delta as the unified card delta shape, each
 /// member href mapped to its resource name (the collection's own href,
 /// when a server lists it, yields an empty name and is skipped).
@@ -2281,6 +2326,7 @@ fn into_card_delta(delta: SyncDelta) -> CardDelta {
         changed,
         vanished,
         token: delta.sync_token,
+        complete: false,
     }
 }
 

@@ -161,10 +161,6 @@ fn yield_json(yielded: &OfflineYield) -> String {
             "op": "write",
             "writes": ops.iter().map(WriteOpJson::from).collect::<Vec<_>>(),
         }),
-        OfflineYield::WantsCount(collection) => json!({
-            "op": "count",
-            "collection": collection.as_str(),
-        }),
         OfflineYield::WantsEnumerate { collection, cursor } => json!({
             "op": "enumerate",
             "collection": collection.as_str(),
@@ -227,10 +223,6 @@ fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, String> 
             OfflineArg::LookupObject(objects)
         }
         OfflineYield::WantsWrite(_) => OfflineArg::Write,
-        OfflineYield::WantsCount(_) => {
-            let count: CountJson = parse(reply)?;
-            OfflineArg::Count(count.count)
-        }
         OfflineYield::WantsEnumerate { .. } => {
             let snapshot: SnapshotJson = parse(reply)?;
             OfflineArg::Enumerate(RemoteSnapshot {
@@ -369,13 +361,14 @@ impl From<&Placement> for PlacementJson {
     }
 }
 
-/// A placement's sync base on the JSON wire, both directions.
+/// A placement's sync base on the JSON wire, both directions. The
+/// base's existence is the membership base, so it carries no separate
+/// present field.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BaseJson {
     #[serde(default)]
     flags: Vec<String>,
-    present: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -386,7 +379,6 @@ impl From<BaseJson> for Base {
     fn from(wire: BaseJson) -> Self {
         Self {
             flags: Flags::from_iter(wire.flags),
-            present: wire.present,
             revision: wire.revision,
             object: wire.object.map(Hash),
         }
@@ -397,7 +389,6 @@ impl From<&Base> for BaseJson {
     fn from(base: &Base) -> Self {
         Self {
             flags: base.flags.0.iter().cloned().collect(),
-            present: base.present,
             revision: base.revision.clone(),
             object: base.object.as_ref().map(|hash| hash.as_str().into()),
         }
@@ -495,6 +486,9 @@ impl From<Status> for StatusJson {
 }
 
 /// A storage write on the JSON wire (engine to Java only).
+// NOTE: upserts dominate every write batch, so boxing the placement to
+// shrink the enum would only add indirection on the hot variant.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum WriteOpJson {
@@ -509,11 +503,6 @@ enum WriteOpJson {
         hash: String,
         size: usize,
         body: String,
-    },
-    SetBase {
-        collection: String,
-        handle: String,
-        base: BaseJson,
     },
     SetCheckpoint {
         collection: String,
@@ -536,15 +525,6 @@ impl From<&WriteOp> for WriteOpJson {
                 size: object.size,
                 body: String::from_utf8_lossy(body).into_owned(),
             },
-            WriteOp::SetBase {
-                collection,
-                handle,
-                base,
-            } => Self::SetBase {
-                collection: collection.as_str().into(),
-                handle: handle.as_str().into(),
-                base: base.into(),
-            },
             WriteOp::SetCheckpoint {
                 collection,
                 checkpoint,
@@ -558,14 +538,22 @@ impl From<&WriteOp> for WriteOpJson {
 
 /// A remote change on the JSON wire (engine to Java only). The `add`
 /// variant carries no body: the Java side resolves the staged body
-/// from its own store by handle.
+/// from its own store by handle, or by the object hash when the
+/// handle is a provisional one it never staged (an engine-side
+/// resurrect). The link id is the idempotency key for a retried add.
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum ChangeJson {
     Add {
         handle: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        link_id: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        flags: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         origin: Option<OriginJson>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        object: Option<String>,
     },
     Remove {
         handle: String,
@@ -589,9 +577,18 @@ enum ChangeJson {
 impl From<&Change> for ChangeJson {
     fn from(change: &Change) -> Self {
         match change {
-            Change::Add { handle, origin, .. } => Self::Add {
+            Change::Add {
+                handle,
+                link_id,
+                flags,
+                origin,
+                object,
+            } => Self::Add {
                 handle: handle.as_str().into(),
+                link_id: link_id.as_ref().map(|link| link.as_str().into()),
+                flags: flags.0.iter().cloned().collect(),
                 origin: origin.as_ref().map(OriginJson::from),
+                object: object.as_ref().map(|hash| hash.as_str().into()),
             },
             Change::Remove {
                 handle,
@@ -671,12 +668,6 @@ struct LoadedJson {
 struct LookupJson {
     #[serde(default)]
     objects: BTreeMap<String, String>,
-}
-
-/// Reply to a `count` yield.
-#[derive(Deserialize)]
-struct CountJson {
-    count: usize,
 }
 
 /// Reply to an `enumerate` yield.

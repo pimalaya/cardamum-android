@@ -27,7 +27,8 @@ pub struct Addressbook {
 
 /// Incremental changes of one collection since a sync cursor: the
 /// changed cards (spine-only or full, per backend), the removed
-/// resource names, and the next cursor to checkpoint.
+/// resource names, the next cursor to checkpoint, and whether the
+/// round listed the complete member set.
 #[derive(Serialize)]
 pub struct CardDelta {
     /// Cards created or updated since the cursor.
@@ -36,6 +37,9 @@ pub struct CardDelta {
     pub vanished: Vec<String>,
     /// The next cursor, when the backend issued one.
     pub token: Option<String>,
+    /// True when the round listed the complete member set (an initial
+    /// round, or an expired cursor re-run as one).
+    pub complete: bool,
 }
 
 /// One vCard surfaced to the Java client.

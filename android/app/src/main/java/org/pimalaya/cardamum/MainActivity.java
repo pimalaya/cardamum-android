@@ -25,7 +25,6 @@ import android.widget.ViewFlipper;
 import java.net.InetAddress;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,11 +106,16 @@ public class MainActivity extends Activity {
 
     /**
      * One merged row: the replicas sharing a logical contact (same
-     * vCard UID across accounts and addressbooks); a card without a
-     * UID stays a singleton group.
+     * vCard UID across accounts and addressbooks, grouped by the
+     * bridge); a card without a UID stays a singleton group.
      */
     private static final class Group {
+        final String key;
         final List<Entry> replicas = new ArrayList<>();
+
+        Group(String key) {
+            this.key = key;
+        }
 
         Entry primary() {
             return replicas.get(0);
@@ -177,11 +181,6 @@ public class MainActivity extends Activity {
     /** Sync to re-run once the contacts permission is granted, if any. */
     private Runnable afterContactsPermission;
 
-    /** Link exceptions of the merged view, reloaded on every render. */
-    private java.util.Set<String> detachedRefs = new java.util.HashSet<>();
-
-    private Map<String, String> links = new HashMap<>();
-
     /** Multi-select state on the contacts list, keyed by merged group. */
     private boolean selectionMode;
     private final java.util.Set<String> selectedKeys = new java.util.HashSet<>();
@@ -236,7 +235,7 @@ public class MainActivity extends Activity {
         base = new CardStore(this);
         flipper = findViewById(R.id.flipper);
         authFlipper = findViewById(R.id.auth_flipper);
-        form = new ContactForm(this);
+        form = new ContactForm(this, client);
 
         setUpEmailPanel();
         setUpBooksPanel();
@@ -2488,7 +2487,8 @@ public class MainActivity extends Activity {
                                 }
                             }
                             if (members.size() >= 2
-                                    && !base.isDuplicateDismissed(duplicateKey(members))) {
+                                    && !base.isDuplicateDismissed(
+                                            duplicateGroup(members).optString("key"))) {
                                 first = members;
                                 break;
                             }
@@ -2525,6 +2525,8 @@ public class MainActivity extends Activity {
      * its own addressbook (UID uniqueness is per collection).
      */
     private void reviewDuplicate(List<Entry> members) {
+        JSONObject dup = duplicateGroup(members);
+
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, dp(8), 0, 0);
@@ -2568,7 +2570,7 @@ public class MainActivity extends Activity {
 
         // Link rides as a content action: the three dialog buttons are
         // taken by Merge, Ignore and Cancel.
-        if (linkable(members)) {
+        if (dup.optBoolean("linkable")) {
             TextView link = new TextView(this);
             link.setText(R.string.dup_link);
             link.setTextSize(14);
@@ -2593,39 +2595,28 @@ public class MainActivity extends Activity {
                         .setNeutralButton(
                                 R.string.dup_ignore,
                                 (dialog, which) ->
-                                        base.dismissDuplicate(duplicateKey(members)))
+                                        base.dismissDuplicate(dup.optString("key")))
                         .setNegativeButton(android.R.string.cancel, null)
                         .show();
     }
 
-    /** The group's dismissal key: its sorted replica refs. */
-    private String duplicateKey(List<Entry> members) {
-        List<String> refs = new ArrayList<>();
-        for (Entry entry : members) {
-            if (!refs.contains(replicaRefOf(entry))) {
-                refs.add(replicaRefOf(entry));
-            }
-        }
-        java.util.Collections.sort(refs);
-        return String.join("", refs);
-    }
-
     /**
-     * Whether the group can Link: at least two cards, each in its own
-     * addressbook (a same-book pair sharing a UID would collide).
+     * The group's duplicate-review facts from the bridge: its
+     * dismissal key and whether Link may be offered.
      */
-    private boolean linkable(List<Entry> members) {
-        Map<String, String> refByBook = new HashMap<>();
-        java.util.Set<String> refs = new java.util.HashSet<>();
-        for (Entry entry : members) {
-            String ref = replicaRefOf(entry);
-            refs.add(ref);
-            String other = refByBook.putIfAbsent(entry.book.url, ref);
-            if (other != null && !other.equals(ref)) {
-                return false;
+    private JSONObject duplicateGroup(List<Entry> members) {
+        org.json.JSONArray refs = new org.json.JSONArray();
+        try {
+            for (Entry entry : members) {
+                refs.put(
+                        new JSONObject()
+                                .put("ref", replicaRefOf(entry))
+                                .put("book", entry.book.url));
             }
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
         }
-        return refs.size() >= 2;
+        return client.duplicateGroup(refs);
     }
 
     /**
@@ -2668,24 +2659,45 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Groups the replica pool into merged rows (UID-linked), filters
-     * them by the search query and refreshes the list. A group matches
-     * the query when any of its replicas does.
+     * Groups the replica pool into merged rows (UID-linked and sorted
+     * by the bridge), filters them by the search query and refreshes
+     * the list. A group matches the query when any of its replicas
+     * does.
      */
     private void renderContacts() {
         TextView sticky = findViewById(R.id.contacts_sticky_letter);
         updateSelectionUi();
 
-        detachedRefs = base.loadDetached();
-        links = base.loadLinks();
-
-        Map<String, Group> groups = new java.util.LinkedHashMap<>();
-        for (Entry entry : contacts) {
-            groups.computeIfAbsent(groupKeyOf(entry), key -> new Group()).replicas.add(entry);
+        JSONObject pool;
+        try {
+            org.json.JSONArray replicas = new org.json.JSONArray();
+            for (Entry entry : contacts) {
+                replicas.put(
+                        new JSONObject()
+                                .put("ref", replicaRefOf(entry))
+                                .put("uid", entry.uid)
+                                .put("name", entry.name)
+                                .put("id", entry.card.id));
+            }
+            pool =
+                    new JSONObject()
+                            .put("replicas", replicas)
+                            .put("links", new JSONObject(base.loadLinks()))
+                            .put("detached", new org.json.JSONArray(base.loadDetached()));
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
         }
+        org.json.JSONArray groups = client.groupContacts(pool).optJSONArray("groups");
 
         sortedContacts = new ArrayList<>();
-        for (Group group : groups.values()) {
+        for (int at = 0; groups != null && at < groups.length(); at++) {
+            JSONObject grouped = groups.optJSONObject(at);
+            Group group = new Group(grouped.optString("key"));
+            org.json.JSONArray members = grouped.optJSONArray("replicas");
+            for (int index = 0; members != null && index < members.length(); index++) {
+                group.replicas.add(contacts.get(members.optInt(index)));
+            }
+
             boolean matches = searchQuery.isEmpty();
             for (Entry entry : group.replicas) {
                 if (matches || entry.card.vcard.toLowerCase().contains(searchQuery)) {
@@ -2697,10 +2709,6 @@ public class MainActivity extends Activity {
                 sortedContacts.add(group);
             }
         }
-        sortedContacts.sort(
-                Comparator.comparing(
-                        group -> displayName(group.primary()),
-                        String.CASE_INSENSITIVE_ORDER));
         adapter.notifyDataSetChanged();
 
         // One empty state for every cause: a search miss, an empty
@@ -2794,32 +2802,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * The merged identity of one replica: the cluster the user linked
-     * it into when one exists, its automatic key otherwise.
-     */
-    private String groupKeyOf(Entry entry) {
-        String natural = naturalKeyOf(entry);
-        String cluster = links.get(natural);
-        return cluster != null ? cluster : natural;
-    }
-
-    /**
-     * The automatic group key, before link exceptions: the vCard UID,
-     * or the replica itself when it has none or the user detached it.
-     */
-    private String naturalKeyOf(Entry entry) {
-        String ref = replicaRefOf(entry);
-        if (detachedRefs.contains(ref)) {
-            return "ref\0" + ref;
-        }
-
-        if (!entry.uid.isEmpty()) {
-            return "uid\0" + entry.uid;
-        }
-        return "ref\0" + ref;
-    }
-
     /** The replica's link-layer reference. */
     private String replicaRefOf(Entry entry) {
         AccountEntry account = accountFor(entry.accountEmail);
@@ -2831,7 +2813,7 @@ public class MainActivity extends Activity {
     }
 
     private String groupKey(Group group) {
-        return groupKeyOf(group.primary());
+        return group.key;
     }
 
     /** The single selected merged row, or null when several are. */
@@ -3664,7 +3646,7 @@ public class MainActivity extends Activity {
             // An unreadable registry just leaves the raw field.
         }
 
-        String shape = String.join("", labels);
+        String shape = String.join("\u001F", labels);
         if (shape.equals(area.getTag())) {
             return;
         }
@@ -3726,7 +3708,7 @@ public class MainActivity extends Activity {
             if (shape == null || shape.isEmpty()) {
                 prop.put("value", ((EditText) valueArea.getChildAt(0)).getText().toString());
             } else {
-                String[] labels = shape.split("", -1);
+                String[] labels = shape.split("\u001F", -1);
                 org.json.JSONArray components = new org.json.JSONArray();
                 for (int index = 0; index < valueArea.getChildCount(); index++) {
                     components.put(

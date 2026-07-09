@@ -283,10 +283,11 @@ final class Native {
      * Lists the collection's changes since the given cursor (empty
      * runs the initial round: the complete member set plus the cursor
      * to delta from next time), the backend dispatched from the base
-     * URL. Returns {@code {"changed": [{id, uri, etag, vcard?,
-     * books?}], "vanished": [uri], "token": ".."}}, or
-     * {@code {"invalidToken": true}} when the server no longer accepts
-     * the cursor so the caller re-runs an initial round.
+     * URL. An expired cursor re-runs an initial round and an initial
+     * CardDAV sync a server rejects falls back to the plain
+     * enumeration, both bridge-side. Returns {@code {"changed": [{id,
+     * uri, etag, vcard?, books?}], "vanished": [uri], "token": "..",
+     * "complete": bool}}.
      */
     static native String syncCards(
             Transport transport,
@@ -346,6 +347,66 @@ final class Native {
      * is never touched. Returns {@code {}}.
      */
     static native String offlineMutate(OfflineDriver driver, String collection, String mutation);
+
+    /**
+     * Whether a 412-rejected push may retry unguarded, the last
+     * enumerate proving the handle unchanged (the CardDAV If-Match
+     * quirk); pure computation, no transport. Takes {@code {listed:
+     * {handle: etag}?, complete, handle, ifMatch?}}, returns
+     * {@code {"retry": bool}}.
+     */
+    static native String offlineRetryUnguarded(String facts);
+
+    /**
+     * Projects an account-wide delta (JMAP, Google) onto one book's
+     * enumerate; pure computation, no transport. Takes {@code {bookId?,
+     * complete, changed: [{handle, books, known}], vanished}}, returns
+     * {@code {"members": [index], "vanished": [handle]}}.
+     */
+    static native String offlineAccountSnapshot(String facts);
+
+    /**
+     * Plans one push change (membership patch vs create or delete,
+     * plus the Google post-create membership); pure computation, no
+     * transport. Takes {@code {op, collection, bookId?, origin,
+     * deleted}}, returns {@code {action, postCreateBooks?}}.
+     */
+    static native String offlinePushPlan(String facts);
+
+    /**
+     * Maps one card-plus-membership row to its engine placement on the
+     * server axis; pure computation, no transport. Returns
+     * {@code {"placement": {..} | null}}.
+     */
+    static native String offlinePlacement(String facts);
+
+    /**
+     * Maps one card-plus-membership row to its phone-axis placement;
+     * pure computation, no transport. Returns
+     * {@code {"placement": {..} | null}}.
+     */
+    static native String offlinePhonePlacement(String facts);
+
+    /**
+     * Plans one engine upsert onto the card and membership rows; pure
+     * computation, no transport. Returns {@code {action, row?,
+     * memberState?}}.
+     */
+    static native String offlineUpsertPlan(String facts);
+
+    /**
+     * Plans one phone-axis upsert; pure computation, no transport.
+     * Returns {@code {action, row?, axis}}.
+     */
+    static native String offlinePhoneUpsertPlan(String facts);
+
+    /**
+     * Plans a phone-collection drop (membership removal vs card
+     * deletion); pure computation, no transport. Takes
+     * {@code {collection, deleted, otherMemberships}}, returns
+     * {@code {action}}.
+     */
+    static native String offlinePhoneDropPlan(String facts);
 
     /**
      * Indexes a vCard for the store (display name, first email and
@@ -433,4 +494,45 @@ final class Native {
      * {@code {"vcard": ".."}}.
      */
     static native String applyCard(String vcard, String model);
+
+    /**
+     * The edit form's view support computed from the field model
+     * (summaries, type spinner positions, picker dates); pure
+     * computation, no transport. Returns {@code {name, organization,
+     * gender?, birthday?, anniversary?, phones, emails, relations,
+     * addresses}}.
+     */
+    static native String formView(String model);
+
+    /**
+     * One typed entry saved from an edit dialog, its TYPE set drawn
+     * from the spinner position ({@code phone}, {@code email} and
+     * {@code relation} return the full entry, {@code address} the TYPE
+     * set alone, {@code gender} the GENDER object, empty when unset);
+     * pure computation, no transport.
+     */
+    static native String formEntry(String kind, int index, String value, boolean pref);
+
+    /**
+     * One picked date on the model wire (the vCard {@code yyyy-mm-dd}
+     * form, 1-based month); pure computation, no transport. Returns
+     * {@code {"value": ".."}}.
+     */
+    static native String formDate(int year, int month, int day);
+
+    /**
+     * Groups the replica pool into merged contacts, the groups sorted
+     * by primary display name; pure computation, no transport. Takes
+     * {@code {replicas: [{ref, uid, name, id}], links: {member:
+     * cluster}, detached: [ref]}}, returns {@code {"groups": [{key,
+     * replicas: [index]}]}}.
+     */
+    static native String groupContacts(String input);
+
+    /**
+     * The duplicate review's group facts, the dismissal key and the
+     * Link eligibility; pure computation, no transport. Takes
+     * {@code [{ref, book}]}, returns {@code {key, linkable}}.
+     */
+    static native String duplicateGroup(String members);
 }

@@ -467,17 +467,9 @@ fn display_name(model: &Value) -> String {
         return display.to_string();
     }
 
-    let mut composed = Vec::new();
-    if let Some(name) = model.get("name").and_then(Value::as_object) {
-        for key in ["prefix", "given", "middle", "family", "suffix"] {
-            let part = name.get(key).and_then(Value::as_str).unwrap_or("").trim();
-            if !part.is_empty() {
-                composed.push(part);
-            }
-        }
-    }
+    let composed = name_summary(model);
     if !composed.is_empty() {
-        return composed.join(" ");
+        return composed;
     }
 
     let nickname = model
@@ -692,13 +684,371 @@ fn fallback_info(model: &Value) -> String {
     String::new()
 }
 
+// ---- Edit-form support ----------------------------------------------------
+
+/// Spinner position to vCard TYPE set of the phone rows, aligned with
+/// the Android phone_types string array.
+const PHONE_TYPES: [&[&str]; 8] = [
+    &["cell"],
+    &["home"],
+    &["work"],
+    &["cell", "work"],
+    &["fax", "home"],
+    &["fax", "work"],
+    &["pager"],
+    &[],
+];
+
+/// Spinner position to vCard TYPE set of the email and address rows,
+/// aligned with the Android email_types and address_types arrays.
+const HOME_WORK_OTHER: [&[&str]; 3] = [&["home"], &["work"], &[]];
+
+/// Spinner position to RELATED type set, aligned with the Android
+/// relation_types array.
+const RELATION_TYPES: [&[&str]; 8] = [
+    &["spouse"],
+    &["child"],
+    &["parent"],
+    &["sibling"],
+    &["friend"],
+    &["colleague"],
+    &["emergency"],
+    &[],
+];
+
+/// Spinner position to GENDER sex code (RFC 6350 §6.2.7), aligned with
+/// the Android gender_types array; position 0 means unset.
+const GENDER_SEXES: [&str; 6] = ["", "M", "F", "O", "N", "U"];
+
+/// The edit form's view support, computed from the field model in one
+/// pass: the composed name and organization summaries, the gender
+/// spinner position and identity, the dates parsed for the pickers,
+/// the type spinner position of every typed list entry, and the
+/// address row summaries. The Java form only builds views from it and
+/// localizes the labels the positions address.
+pub fn form_view(model: &Value) -> Value {
+    let mut view = Map::new();
+    view.insert("name".into(), text(name_summary(model)));
+    view.insert("organization".into(), text(organization_summary(model)));
+
+    if let Some(gender) = model.get("gender").and_then(Value::as_object) {
+        let sex = gender.get("sex").and_then(Value::as_str).unwrap_or("");
+        let identity = gender.get("identity").and_then(Value::as_str).unwrap_or("");
+        view.insert(
+            "gender".into(),
+            json!({ "sexIndex": gender_sex_index(sex), "identity": identity.trim() }),
+        );
+    }
+
+    for key in ["birthday", "anniversary"] {
+        if let Some(date) = date_parts(field(model, key)) {
+            view.insert(key.into(), date);
+        }
+    }
+
+    let indexes = |list: &str, index: fn(&Value) -> usize| -> Value {
+        let positions = array(model.get(list))
+            .iter()
+            .map(|entry| index(entry).into())
+            .collect();
+        Value::Array(positions)
+    };
+    view.insert("phones".into(), indexes("phones", phone_type_index));
+    view.insert(
+        "emails".into(),
+        indexes("emails", |entry| type_index(entry, &HOME_WORK_OTHER)),
+    );
+    view.insert(
+        "relations".into(),
+        indexes("relations", |entry| type_index(entry, &RELATION_TYPES)),
+    );
+
+    let addresses = array(model.get("addresses"))
+        .iter()
+        .map(|entry| {
+            json!({
+                "index": type_index(entry, &HOME_WORK_OTHER),
+                "summary": address_summary(entry),
+            })
+        })
+        .collect();
+    view.insert("addresses".into(), Value::Array(addresses));
+
+    Value::Object(view)
+}
+
+/// One typed entry saved from a dialog, its TYPE set drawn from the
+/// spinner position: `phone`, `email` and `relation` return the full
+/// entry (the value under its field name, the pref flag riding along),
+/// `address` returns the TYPE set alone (the dialog owns the other
+/// components), and `gender` returns the GENDER object, empty when the
+/// sex position and the identity are both unset.
+pub fn form_entry(kind: &str, index: i64, value: &str, pref: bool) -> Result<Value, String> {
+    let position = index.max(0) as usize;
+
+    let (field, table): (&str, &[&[&str]]) = match kind {
+        "phone" => ("number", &PHONE_TYPES),
+        "email" => ("address", &HOME_WORK_OTHER),
+        "relation" => ("value", &RELATION_TYPES),
+        "address" => {
+            return Ok(json!({ "types": table_types(&HOME_WORK_OTHER, position) }));
+        }
+        "gender" => {
+            let sex = GENDER_SEXES[position.min(GENDER_SEXES.len() - 1)];
+            let identity = value.trim();
+            if sex.is_empty() && identity.is_empty() {
+                return Ok(json!({}));
+            }
+            return Ok(json!({ "sex": sex, "identity": identity }));
+        }
+        kind => return Err(format!("Unknown form entry kind `{kind}`")),
+    };
+
+    let mut entry = Map::new();
+    entry.insert(field.into(), text(value));
+    entry.insert("types".into(), table_types(table, position));
+    entry.insert("pref".into(), Value::Bool(pref));
+    Ok(Value::Object(entry))
+}
+
+/// One picked date on the model wire (the vCard `yyyy-mm-dd` form the
+/// BDAY and ANNIVERSARY patches expect; the month is 1-based).
+pub fn form_date(year: i64, month: i64, day: i64) -> String {
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The name parts composed for the form's Name row (the display name
+/// has its own row).
+fn name_summary(model: &Value) -> String {
+    let mut composed = Vec::new();
+    if let Some(name) = model.get("name").and_then(Value::as_object) {
+        for key in ["prefix", "given", "middle", "family", "suffix"] {
+            let part = name.get(key).and_then(Value::as_str).unwrap_or("").trim();
+            if !part.is_empty() {
+                composed.push(part);
+            }
+        }
+    }
+    composed.join(" ")
+}
+
+/// The organization summary: the company and the job title, joined by
+/// a middot.
+fn organization_summary(model: &Value) -> String {
+    let mut parts = Vec::new();
+    for key in ["organization.company", "title"] {
+        let value = single_field(model, key);
+        if !value.is_empty() {
+            parts.push(value);
+        }
+    }
+    parts.join(" · ")
+}
+
+/// The address row summary: the first non-empty component in display
+/// priority, cut at its first line (the street stands for the block).
+fn address_summary(entry: &Value) -> String {
+    for key in ["street", "city", "postcode", "country"] {
+        let part = field(entry, key);
+        if !part.is_empty() {
+            return part.lines().next().unwrap_or("").to_string();
+        }
+    }
+    String::new()
+}
+
+/// The gender_types position of a GENDER sex code, 0 (unset) for
+/// anything unknown.
+fn gender_sex_index(sex: &str) -> usize {
+    let sex = sex.trim();
+    GENDER_SEXES
+        .iter()
+        .skip(1)
+        .position(|code| code.eq_ignore_ascii_case(sex))
+        .map(|at| at + 1)
+        .unwrap_or(0)
+}
+
+/// The phone_types position of a TEL entry's TYPE set: the fax and
+/// cell pairings first, then the plain types, the untyped "other" row
+/// last.
+fn phone_type_index(entry: &Value) -> usize {
+    let types = strings(entry.get("types"));
+    let has = |wanted: &str| types.iter().any(|t| t == wanted);
+
+    if has("fax") {
+        return if has("home") { 4 } else { 5 };
+    }
+    if has("cell") {
+        return if has("work") { 3 } else { 0 };
+    }
+    if has("pager") {
+        return 6;
+    }
+    if has("work") {
+        return 2;
+    }
+    if has("home") {
+        return 1;
+    }
+    7
+}
+
+/// The spinner position of an entry's TYPE set against a table: the
+/// first row whose lead type the entry carries, the last (untyped)
+/// row otherwise.
+fn type_index(entry: &Value, table: &[&[&str]]) -> usize {
+    let types = strings(entry.get("types"));
+    for (index, row) in table.iter().enumerate() {
+        if let Some(lead) = row.first() {
+            if types.iter().any(|t| t == lead) {
+                return index;
+            }
+        }
+    }
+    table.len() - 1
+}
+
+/// The TYPE set at a spinner position; anything past the end reads as
+/// the last (untyped) row.
+fn table_types(table: &[&[&str]], position: usize) -> Value {
+    let row = table[position.min(table.len() - 1)];
+    Value::Array(row.iter().map(text).collect())
+}
+
+/// A `yyyy-mm-dd` model value parsed into picker parts (1-based
+/// month), None when absent or not a full numeric date.
+fn date_parts(value: &str) -> Option<Value> {
+    let parts: Vec<&str> = value.split('-').collect();
+    let [year, month, day] = parts[..] else {
+        return None;
+    };
+
+    let year: i64 = year.parse().ok()?;
+    let month: i64 = month.parse().ok()?;
+    let day: i64 = day.parse().ok()?;
+    Some(json!({ "year": year, "month": month, "day": day }))
+}
+
+// ---- Merged view -----------------------------------------------------------
+
+/// Groups the replica pool into merged contacts (docs/merged-view.md).
+/// Each replica's natural key is its vCard UID (`uid\0<uid>`), or the
+/// replica itself (`ref\0<ref>`) when it has none or the user detached
+/// it, and a link row rebinds a natural key to the cluster the user
+/// linked it into. Takes `{"replicas": [{ref, uid, name, id}],
+/// "links": {member: cluster}, "detached": [ref]}` and returns
+/// `{"groups": [{key, replicas: [index]}]}`: the groups sorted by
+/// their primary replica's display name (case-insensitive, the id
+/// standing in for a nameless card), the members in pool order.
+pub fn group_contacts(input: &Value) -> Result<Value, String> {
+    let replicas = input
+        .get("replicas")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Invalid replica pool: no replicas array".to_string())?;
+    let links = input.get("links").and_then(Value::as_object);
+    let detached = strings(input.get("detached"));
+
+    let mut order: Vec<String> = Vec::new();
+    let mut members: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, replica) in replicas.iter().enumerate() {
+        let reference = raw(replica, "ref");
+        let uid = raw(replica, "uid");
+
+        let natural = if uid.is_empty() || detached.contains(&reference) {
+            format!("ref\0{reference}")
+        } else {
+            format!("uid\0{uid}")
+        };
+        let key = links
+            .and_then(|map| map.get(&natural))
+            .and_then(Value::as_str)
+            .unwrap_or(&natural)
+            .to_string();
+
+        members
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key);
+                Vec::new()
+            })
+            .push(index);
+    }
+
+    order.sort_by_cached_key(|key| {
+        let primary = &replicas[members[key][0]];
+        let name = raw(primary, "name");
+        let shown = if name.is_empty() {
+            raw(primary, "id")
+        } else {
+            name
+        };
+        shown.to_lowercase()
+    });
+
+    let groups: Vec<Value> = order
+        .into_iter()
+        .map(|key| json!({ "replicas": members[&key], "key": key }))
+        .collect();
+    Ok(json!({ "groups": groups }))
+}
+
+/// The duplicate review's group facts: the dismissal key (the sorted
+/// distinct replica refs, joined by the unit separator; the store
+/// persists it, so the format is frozen) and whether Link may be
+/// offered (at least two cards, each in its own addressbook: a
+/// same-book pair sharing a UID would collide). Takes `[{ref, book}]`,
+/// returns `{key, linkable}`.
+pub fn duplicate_group(members: &Value) -> Result<Value, String> {
+    let members = members
+        .as_array()
+        .ok_or_else(|| "Invalid duplicate group: not an array".to_string())?;
+
+    let mut refs: Vec<String> = Vec::new();
+    let mut ref_by_book: HashMap<String, String> = HashMap::new();
+    let mut linkable = true;
+    for member in members {
+        let reference = raw(member, "ref");
+        let book = raw(member, "book");
+
+        if !refs.contains(&reference) {
+            refs.push(reference.clone());
+        }
+        match ref_by_book.get(&book) {
+            Some(other) if other != &reference => linkable = false,
+            Some(_) => {}
+            None => {
+                ref_by_book.insert(book, reference);
+            }
+        }
+    }
+
+    linkable = linkable && refs.len() >= 2;
+    refs.sort();
+    Ok(json!({ "key": refs.join("\u{1f}"), "linkable": linkable }))
+}
+
+/// A string field read verbatim (refs carry meaningful bytes; the
+/// trimming [`field`] does would corrupt them).
+fn raw(entry: &Value, key: &str) -> String {
+    entry
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Three-way merges a conflicted push: the staged local edit and the
 /// fetched remote card, against the base both derive from. The local
 /// side wins same-field collisions (it carries the user's explicit
 /// edit), every other remote change flows in, and an update always
 /// beats a removal (the vcard-rs merge rules), so nothing is silently
-/// lost. Returns the merged card and the collision count.
+/// lost. An empty base means unknown (never captured): the local side
+/// stands in, so the edit rides through unscathed and only genuine
+/// remote additions flow in. Returns the merged card and the
+/// collision count.
 pub fn merge_conflict(base: &str, local: &str, remote: &str) -> Result<Value, String> {
+    let base = if base.is_empty() { local } else { base };
     let base = VcardCst::parse(base).map_err(|err| format!("Invalid vCard: {err}"))?;
     let local = VcardCst::parse(local).map_err(|err| format!("Invalid vCard: {err}"))?;
     let remote = VcardCst::parse(remote).map_err(|err| format!("Invalid vCard: {err}"))?;
@@ -1841,5 +2191,130 @@ mod tests {
 
         let indexed = index(&patched).unwrap();
         assert_eq!(indexed["name"], "Jane Doe");
+    }
+
+    /// The form view composes the summaries, positions every typed
+    /// entry's spinner and parses the picker dates in one pass.
+    #[test]
+    fn form_view_supports_the_whole_page() {
+        let model = json!({
+            "name": { "prefix": "Dr", "given": "Jane", "family": "Doe" },
+            "organization": { "company": "ACME" },
+            "title": "Boss",
+            "gender": { "sex": "f", "identity": " she " },
+            "birthday": "1985-04-12",
+            "anniversary": "not-a-date",
+            "phones": [
+                { "number": "1", "types": ["fax", "home"] },
+                { "number": "2", "types": [] },
+            ],
+            "emails": [{ "address": "a@b", "types": ["work"] }],
+            "relations": [{ "value": "Bob", "types": ["colleague"] }],
+            "addresses": [
+                { "street": "12 Main St\nBuilding B", "types": ["home"] },
+                { "city": "Paris", "types": [] },
+            ],
+        });
+
+        let view = form_view(&model);
+
+        assert_eq!(view["name"], "Dr Jane Doe");
+        assert_eq!(view["organization"], "ACME · Boss");
+        assert_eq!(view["gender"]["sexIndex"], 2);
+        assert_eq!(view["gender"]["identity"], "she");
+        assert_eq!(
+            view["birthday"],
+            json!({ "year": 1985, "month": 4, "day": 12 })
+        );
+        assert!(view.get("anniversary").is_none());
+        assert_eq!(view["phones"], json!([4, 7]));
+        assert_eq!(view["emails"], json!([1]));
+        assert_eq!(view["relations"], json!([5]));
+        assert_eq!(view["addresses"][0]["index"], 0);
+        assert_eq!(view["addresses"][0]["summary"], "12 Main St");
+        assert_eq!(view["addresses"][1]["index"], 2);
+        assert_eq!(view["addresses"][1]["summary"], "Paris");
+    }
+
+    /// Every form entry kind resolves its spinner position to the
+    /// documented shape; the gender pair empties to an empty object.
+    #[test]
+    fn form_entry_builds_every_kind() {
+        let phone = form_entry("phone", 3, "0612", true).unwrap();
+        assert_eq!(
+            phone,
+            json!({ "number": "0612", "types": ["cell", "work"], "pref": true }),
+        );
+
+        let email = form_entry("email", 99, "a@b", false).unwrap();
+        assert_eq!(email["types"], json!([]));
+
+        let relation = form_entry("relation", 0, "Bob", false).unwrap();
+        assert_eq!(relation["value"], "Bob");
+        assert_eq!(relation["types"], json!(["spouse"]));
+
+        let address = form_entry("address", 1, "", false).unwrap();
+        assert_eq!(address, json!({ "types": ["work"] }));
+
+        let gender = form_entry("gender", 2, "she", false).unwrap();
+        assert_eq!(gender, json!({ "sex": "F", "identity": "she" }));
+        assert_eq!(form_entry("gender", 0, "  ", false).unwrap(), json!({}));
+
+        assert!(form_entry("website", 0, "", false).is_err());
+        assert_eq!(form_date(1985, 4, 2), "1985-04-02");
+    }
+
+    /// Replicas group by UID, a detached replica falls back to its own
+    /// ref, a link rebinds a natural key to its cluster, and the
+    /// groups sort case-insensitively by primary display name (the id
+    /// standing in for a nameless card).
+    #[test]
+    fn group_contacts_links_detaches_and_sorts() {
+        let input = json!({
+            "replicas": [
+                { "ref": "a\nk1", "uid": "u1", "name": "zoe", "id": "k1" },
+                { "ref": "b\nk2", "uid": "u1", "name": "Zoe", "id": "k2" },
+                { "ref": "c\nk3", "uid": "u1", "name": "Ann", "id": "k3" },
+                { "ref": "d\nk4", "uid": "", "name": "", "id": "Bob-id" },
+                { "ref": "e\nk5", "uid": "u2", "name": "Solo", "id": "k5" },
+            ],
+            "links": { "uid\u{0}u2": "cluster-1", "ref\u{0}d\nk4": "cluster-1" },
+            "detached": ["c\nk3"],
+        });
+
+        let reply = group_contacts(&input).unwrap();
+        let groups = reply["groups"].as_array().unwrap();
+
+        // Ann (detached), then the linked Bob+Solo cluster, then Zoe.
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0]["key"], "ref\u{0}c\nk3");
+        assert_eq!(groups[0]["replicas"], json!([2]));
+        assert_eq!(groups[1]["key"], "cluster-1");
+        assert_eq!(groups[1]["replicas"], json!([3, 4]));
+        assert_eq!(groups[2]["key"], "uid\u{0}u1");
+        assert_eq!(groups[2]["replicas"], json!([0, 1]));
+    }
+
+    /// The dismissal key is the sorted distinct refs joined; Link
+    /// needs at least two cards, each in its own addressbook.
+    #[test]
+    fn duplicate_group_keys_and_gates_link() {
+        let linkable = json!([
+            { "ref": "b", "book": "book2" },
+            { "ref": "a", "book": "book1" },
+            { "ref": "a", "book": "book1" },
+        ]);
+        let reply = duplicate_group(&linkable).unwrap();
+        assert_eq!(reply["key"], "a\u{1f}b");
+        assert_eq!(reply["linkable"], true);
+
+        let same_book = json!([
+            { "ref": "a", "book": "book1" },
+            { "ref": "b", "book": "book1" },
+        ]);
+        assert_eq!(duplicate_group(&same_book).unwrap()["linkable"], false);
+
+        let single = json!([{ "ref": "a", "book": "book1" }]);
+        assert_eq!(duplicate_group(&single).unwrap()["linkable"], false);
     }
 }

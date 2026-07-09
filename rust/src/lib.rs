@@ -38,4 +38,5 @@ mod msgraph;
 mod oauth;
 mod offline;
 mod project;
+mod store;
 mod types;

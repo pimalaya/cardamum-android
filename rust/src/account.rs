@@ -134,6 +134,21 @@ pub fn graph_folder<'a>(base_url: &str, addressbook_url: &'a str) -> &'a str {
     }
 }
 
+/// The card's addressing key, reconstructed for pre-uri local rows:
+/// CardDAV resources are named `<id>.vcf` (Graph rides the same
+/// fallback, though its rows always carry a uri), JMAP and Google
+/// address the bare server id.
+pub fn addressing_key(backend: Backend, id: &str, uri: &str) -> String {
+    if !uri.is_empty() {
+        return uri.to_string();
+    }
+
+    match backend {
+        Backend::Carddav | Backend::Graph => format!("{id}.vcf"),
+        Backend::Jmap | Backend::Google => id.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

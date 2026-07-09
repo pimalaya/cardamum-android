@@ -106,6 +106,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "url",
  "vcard-rs",
 ]
@@ -592,7 +593,7 @@ dependencies = [
 [[package]]
 name = "io-offline"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-offline#9e692408e307a64e8285a073438be386ea7dc9d5"
+source = "git+https://github.com/pimalaya/io-offline#ef4e8c7ce5cffeb3d609d68d7b5dbea4a8d6d672"
 dependencies = [
  "log",
  "thiserror",

@@ -429,9 +429,8 @@ public class CardamumClient {
      * connections sync (changed contacts in full, account-wide with
      * memberships). A null cursor runs the initial round: the complete
      * member set plus the cursor to delta from next time. A cursor the
-     * server no longer accepts comes back as
-     * {@link CardDelta#invalidToken} so the caller re-runs an initial
-     * round.
+     * server no longer accepts re-runs an initial round bridge-side,
+     * flagged {@link CardDelta#complete}.
      */
     public CardDelta syncCards(Account account, String addressbookUrl, String syncToken) {
         Transport transport = new Transport();
@@ -446,10 +445,6 @@ public class CardamumClient {
                             syncToken == null ? "" : syncToken);
 
             JSONObject parsed = object(reply);
-            if (parsed.optBoolean("invalidToken")) {
-                return new CardDelta(List.of(), List.of(), null, true);
-            }
-
             JSONArray rows = parsed.optJSONArray("changed");
             List<Card> changed = new ArrayList<>(rows == null ? 0 : rows.length());
             for (int index = 0; rows != null && index < rows.length(); index++) {
@@ -462,7 +457,11 @@ public class CardamumClient {
                 vanished.add(gone.optString(index));
             }
 
-            return new CardDelta(changed, vanished, optString(parsed, "token"), false);
+            return new CardDelta(
+                    changed,
+                    vanished,
+                    optString(parsed, "token"),
+                    parsed.optBoolean("complete"));
         } finally {
             transport.close();
         }
@@ -513,6 +512,75 @@ public class CardamumClient {
      */
     public void offlineMutate(OfflineDriver driver, String collection, JSONObject mutation) {
         object(Native.offlineMutate(driver, collection, mutation.toString()));
+    }
+
+    /**
+     * Whether a 412-rejected push may retry unguarded, the last
+     * enumerate proving the handle unchanged (the CardDAV If-Match
+     * quirk). Pure computation, no transport.
+     */
+    public boolean offlineRetryUnguarded(JSONObject facts) {
+        return object(Native.offlineRetryUnguarded(facts.toString())).optBoolean("retry");
+    }
+
+    /**
+     * Projects an account-wide delta (JMAP, Google) onto one book's
+     * enumerate ({@code {members, vanished}}). Pure computation, no
+     * transport.
+     */
+    public JSONObject offlineAccountSnapshot(JSONObject facts) {
+        return object(Native.offlineAccountSnapshot(facts.toString()));
+    }
+
+    /**
+     * Plans one push change ({@code {action, postCreateBooks?}}). Pure
+     * computation, no transport.
+     */
+    public JSONObject offlinePushPlan(JSONObject facts) {
+        return object(Native.offlinePushPlan(facts.toString()));
+    }
+
+    /**
+     * Maps one card-plus-membership row to its engine placement on the
+     * server axis, null when the row surfaces nowhere. Pure
+     * computation, no transport.
+     */
+    public JSONObject offlinePlacement(JSONObject facts) {
+        return object(Native.offlinePlacement(facts.toString())).optJSONObject("placement");
+    }
+
+    /**
+     * Maps one card-plus-membership row to its phone-axis placement,
+     * null when the row surfaces nowhere. Pure computation, no
+     * transport.
+     */
+    public JSONObject offlinePhonePlacement(JSONObject facts) {
+        return object(Native.offlinePhonePlacement(facts.toString())).optJSONObject("placement");
+    }
+
+    /**
+     * Plans one engine upsert onto the card and membership rows
+     * ({@code {action, row?, memberState?}}). Pure computation, no
+     * transport.
+     */
+    public JSONObject offlineUpsertPlan(JSONObject facts) {
+        return object(Native.offlineUpsertPlan(facts.toString()));
+    }
+
+    /**
+     * Plans one phone-axis upsert ({@code {action, row?, axis}}). Pure
+     * computation, no transport.
+     */
+    public JSONObject offlinePhoneUpsertPlan(JSONObject facts) {
+        return object(Native.offlinePhoneUpsertPlan(facts.toString()));
+    }
+
+    /**
+     * Plans a phone-collection drop ({@code {action}}). Pure
+     * computation, no transport.
+     */
+    public JSONObject offlinePhoneDropPlan(JSONObject facts) {
+        return object(Native.offlinePhoneDropPlan(facts.toString()));
     }
 
     /**
@@ -674,9 +742,10 @@ public class CardamumClient {
 
     /**
      * Three-way merges a conflicted push: the staged local edit and
-     * the fetched remote card against their common base. The local
-     * side wins same-field collisions; every other remote change flows
-     * in. Pure computation, no transport.
+     * the fetched remote card against their common base (empty means
+     * unknown; the local side stands in). The local side wins
+     * same-field collisions; every other remote change flows in. Pure
+     * computation, no transport.
      */
     public String mergeCardChanges(String base, String local, String remote) {
         return string(object(Native.mergeCardChanges(base, local, remote)), "vcard");
@@ -741,6 +810,49 @@ public class CardamumClient {
      */
     public String cardSource(String vcard) {
         return string(object(Native.cardSource(vcard)), "vcard");
+    }
+
+    /**
+     * The edit form's view support computed from the field model:
+     * summaries, type spinner positions and picker dates. Pure
+     * computation, no transport.
+     */
+    public JSONObject formView(JSONObject model) {
+        return object(Native.formView(model.toString()));
+    }
+
+    /**
+     * One typed entry saved from an edit dialog, its TYPE set drawn
+     * from the spinner position. Pure computation, no transport.
+     */
+    public JSONObject formEntry(String kind, int index, String value, boolean pref) {
+        return object(Native.formEntry(kind, index, value, pref));
+    }
+
+    /**
+     * One picked date on the model wire (the vCard {@code yyyy-mm-dd}
+     * form, 1-based month). Pure computation, no transport.
+     */
+    public String formDate(int year, int month, int day) {
+        return string(object(Native.formDate(year, month, day)), "value");
+    }
+
+    /**
+     * Groups the replica pool ({@code {replicas, links, detached}})
+     * into merged contacts, the groups sorted by primary display name.
+     * Pure computation, no transport.
+     */
+    public JSONObject groupContacts(JSONObject input) {
+        return object(Native.groupContacts(input.toString()));
+    }
+
+    /**
+     * The duplicate review's group facts ({@code {key, linkable}})
+     * from its {@code {ref, book}} members. Pure computation, no
+     * transport.
+     */
+    public JSONObject duplicateGroup(JSONArray members) {
+        return object(Native.duplicateGroup(members.toString()));
     }
 
     // ---- Bridge reply parsing ----------------------------------------------

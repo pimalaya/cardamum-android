@@ -170,9 +170,11 @@ final class OfflineEngine implements OfflineDriver {
         String handle = conflict.getString("handle");
         Card remote = client.readCard(account, url, handle);
 
-        String local = conflict.getString("vcard");
-        String mergeBase = conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
-        String merged = client.mergeCardChanges(mergeBase, local, remote.vcard);
+        String merged =
+                client.mergeCardChanges(
+                        conflict.isNull("baseVcard") ? "" : conflict.getString("baseVcard"),
+                        conflict.getString("vcard"),
+                        remote.vcard);
 
         if (remote.etag != null) {
             base.setConflictRevision(url, handle, remote.etag);
@@ -194,9 +196,11 @@ final class OfflineEngine implements OfflineDriver {
             return;
         }
 
-        String local = conflict.getString("vcard");
-        String mergeBase = conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
-        String merged = client.mergeCardChanges(mergeBase, local, remote.getString("body"));
+        String merged =
+                client.mergeCardChanges(
+                        conflict.isNull("baseVcard") ? "" : conflict.getString("baseVcard"),
+                        conflict.getString("vcard"),
+                        remote.getString("body"));
 
         if (!remote.isNull("revision")) {
             base.setConflictRevision(collection, handle, remote.getString("revision"));
@@ -265,30 +269,7 @@ final class OfflineEngine implements OfflineDriver {
         }
         String cursor = yielded.isNull("cursor") ? null : yielded.getString("cursor");
 
-        CardDelta delta;
-        try {
-            delta = client.syncCards(account, url, cursor);
-        } catch (RuntimeException failure) {
-            if (cursor != null || CardamumClient.isAccountLevel(account) || isGraph()) {
-                throw failure;
-            }
-            // No sync-collection support on an initial CardDAV sync:
-            // fall back to the plain enumeration (a genuine outage
-            // fails there too, the same offline fallback as before).
-            Log.w("cardamum", "sync-collection failed, falling back to enum", failure);
-            return snapshot(url, client.enumCards(account, url), List.of(), true, null);
-        }
-
-        boolean complete = cursor == null;
-        if (delta.invalidToken) {
-            delta = client.syncCards(account, url, null);
-            if (delta.invalidToken) {
-                // Never treat a still-rejected initial round as an
-                // empty collection: that would read as remote-deleted.
-                throw new IllegalStateException("Initial sync round rejected for " + url);
-            }
-            complete = true;
-        }
+        CardDelta delta = client.syncCards(account, url, cursor);
 
         for (Card card : delta.changed) {
             if (!card.vcard.isEmpty()) {
@@ -300,7 +281,7 @@ final class OfflineEngine implements OfflineDriver {
         // pass's body cache with one full listing instead of one read
         // per card. The delta link predates the listing, so anything
         // changed in between simply re-lists on the next round.
-        if (isGraph() && complete && !delta.changed.isEmpty()) {
+        if (isGraph() && delta.complete && !delta.changed.isEmpty()) {
             Map<String, Card> byHandle = new HashMap<>();
             for (Card card : client.listCards(account, url)) {
                 byHandle.put(card.uri, card);
@@ -309,32 +290,48 @@ final class OfflineEngine implements OfflineDriver {
         }
 
         if (CardamumClient.isAccountLevel(account)) {
-            return accountSnapshot(url, delta, complete);
+            return accountSnapshot(url, delta);
         }
-        return snapshot(url, delta.changed, delta.vanished, complete, delta.token);
+        return snapshot(url, delta.changed, delta.vanished, delta.complete, delta.token);
     }
 
     /**
      * Projects an account-wide delta (JMAP, Google) onto one book's
-     * enumerate: cards member of the book are its items, and on an
-     * incremental round a changed card that left the book (still held
-     * locally but no longer listing it) rides as vanished.
+     * enumerate through the bridge: cards member of the book are its
+     * items, and on an incremental round a changed card that left the
+     * book (still held locally but no longer listing it) rides as
+     * vanished.
      */
-    private JSONObject accountSnapshot(String url, CardDelta delta, boolean complete)
-            throws JSONException {
-        String bookId = bookId(url);
-        List<Card> members = new ArrayList<>();
-        List<String> vanished = new ArrayList<>(delta.vanished);
-
+    private JSONObject accountSnapshot(String url, CardDelta delta) throws JSONException {
+        JSONArray changed = new JSONArray();
         for (Card card : delta.changed) {
-            if (card.books.contains(bookId)) {
-                members.add(card);
-            } else if (!complete && base.loadRow(url, card.uri) != null) {
-                vanished.add(card.uri);
-            }
+            changed.put(
+                    new JSONObject()
+                            .put("handle", card.uri)
+                            .put("books", new JSONArray(card.books))
+                            .put(
+                                    "known",
+                                    !delta.complete && base.loadRow(url, card.uri) != null));
+        }
+        JSONObject facts = new JSONObject();
+        facts.put("bookId", bookId(url));
+        facts.put("complete", delta.complete);
+        facts.put("changed", changed);
+        facts.put("vanished", new JSONArray(delta.vanished));
+
+        JSONObject projected = client.offlineAccountSnapshot(facts);
+        List<Card> members = new ArrayList<>();
+        JSONArray indexes = projected.optJSONArray("members");
+        for (int at = 0; indexes != null && at < indexes.length(); at++) {
+            members.add(delta.changed.get(indexes.optInt(at)));
+        }
+        List<String> vanished = new ArrayList<>();
+        JSONArray gone = projected.optJSONArray("vanished");
+        for (int at = 0; gone != null && at < gone.length(); at++) {
+            vanished.add(gone.optString(at));
         }
 
-        return snapshot(url, members, vanished, complete, delta.token);
+        return snapshot(url, members, vanished, delta.complete, delta.token);
     }
 
     /** Builds an enumerate reply, recording the ETags for the 412 quirk. */
@@ -477,9 +474,10 @@ final class OfflineEngine implements OfflineDriver {
     }
 
     /**
-     * Pushes a pending create: a membership patch when the body
-     * already lives on the account (add with an origin), a genuine
-     * create otherwise.
+     * Pushes a pending create as the bridge plans it: a membership
+     * patch when the body already lives on the account (add with an
+     * origin), a genuine create otherwise, with any post-create
+     * membership patch the backend needs riding along.
      */
     private JSONObject pushAdd(String url, JSONObject change) throws JSONException {
         String handle = change.getString("handle");
@@ -488,7 +486,8 @@ final class OfflineEngine implements OfflineDriver {
             return result(handle, false, null, null);
         }
 
-        if (!change.isNull("origin") && CardamumClient.isAccountLevel(account)) {
+        JSONObject plan = pushPlan("add", url, !change.isNull("origin"), false);
+        if ("membership".equals(plan.getString("action"))) {
             client.updateCardBooks(account, row.getString("id"), List.of(bookId(url)), List.of());
             invalidate(url);
             return result(handle, true, handle, null);
@@ -498,13 +497,10 @@ final class OfflineEngine implements OfflineDriver {
                 client.createCard(account, url, row.getString("id"), row.getString("vcard"));
         invalidate(url);
 
-        // Google creates land in the myContacts system group; a create
-        // aimed at another group patches the membership right after.
-        if (isGoogle()) {
-            String bookId = bookId(url);
-            if (bookId != null && !"myContacts".equals(bookId)) {
-                client.updateCardBooks(account, created.id, List.of(bookId), List.of());
-            }
+        JSONArray postCreate = plan.optJSONArray("postCreateBooks");
+        for (int index = 0; postCreate != null && index < postCreate.length(); index++) {
+            client.updateCardBooks(
+                    account, created.id, List.of(postCreate.optString(index)), List.of());
         }
 
         return result(handle, true, created.uri, created.etag);
@@ -555,8 +551,8 @@ final class OfflineEngine implements OfflineDriver {
     }
 
     /**
-     * Pushes a staged removal: a membership patch when the card is not
-     * deleted and other books still hold it (account-level backends),
+     * Pushes a staged removal as the bridge plans it: a membership
+     * patch when the card is not deleted on an account-level backend,
      * the card's deletion otherwise.
      */
     private JSONObject pushRemove(String url, JSONObject change) throws JSONException {
@@ -567,7 +563,8 @@ final class OfflineEngine implements OfflineDriver {
             return result(handle, true, null, null);
         }
 
-        if (CardamumClient.isAccountLevel(account) && !row.optBoolean("deleted")) {
+        JSONObject plan = pushPlan("remove", url, false, row.optBoolean("deleted"));
+        if ("membership".equals(plan.getString("action"))) {
             client.updateCardBooks(account, row.getString("id"), List.of(), List.of(bookId(url)));
             invalidate(url);
             return result(handle, true, null, null);
@@ -631,20 +628,37 @@ final class OfflineEngine implements OfflineDriver {
         return idByUrl.get(url);
     }
 
+    /** One push change's bridge plan. */
+    private JSONObject pushPlan(String op, String url, boolean origin, boolean deleted)
+            throws JSONException {
+        JSONObject facts = new JSONObject();
+        facts.put("op", op);
+        facts.put("collection", url);
+        facts.put("bookId", bookId(url));
+        facts.put("origin", origin);
+        facts.put("deleted", deleted);
+        return client.offlinePushPlan(facts);
+    }
+
     /**
      * Whether the last enumerate proves the handle unchanged at the
-     * staged base revision: listed with that very ETag, or unlisted by
-     * a delta (a delta only lists what changed).
+     * staged base revision, decided by the bridge over the recorded
+     * listing.
      */
     private boolean listingUnchanged(String url, String handle, String ifMatch) {
-        Map<String, String> etags = listedEtags.get(url);
-        if (etags == null || ifMatch == null) {
-            return false;
+        try {
+            JSONObject facts = new JSONObject();
+            Map<String, String> etags = listedEtags.get(url);
+            if (etags != null) {
+                facts.put("listed", new JSONObject(etags));
+            }
+            facts.put("complete", Boolean.TRUE.equals(listedComplete.get(url)));
+            facts.put("handle", handle);
+            facts.put("ifMatch", ifMatch);
+            return client.offlineRetryUnguarded(facts);
+        } catch (JSONException error) {
+            throw new IllegalStateException(error);
         }
-        if (etags.containsKey(handle)) {
-            return ifMatch.equals(etags.get(handle));
-        }
-        return !Boolean.TRUE.equals(listedComplete.get(url));
     }
 
     private static boolean isPreconditionFailure(Exception failure) {
