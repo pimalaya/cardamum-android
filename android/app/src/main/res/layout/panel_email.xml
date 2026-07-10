@@ -65,6 +65,7 @@
          it, leaving the field exactly where it sat with an inline
          button. -->
     <LinearLayout
+        android:id="@+id/email_row"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:baselineAligned="false"

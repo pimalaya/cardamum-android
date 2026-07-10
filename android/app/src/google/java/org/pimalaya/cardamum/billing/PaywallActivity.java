@@ -1,8 +1,11 @@
 package org.pimalaya.cardamum.billing;
 
 import android.app.Activity;
+import android.graphics.Insets;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.Toast;
 import com.android.billingclient.api.AcknowledgePurchaseParams;
 import com.android.billingclient.api.BillingClient;
@@ -39,6 +42,7 @@ public final class PaywallActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_paywall);
+        applyEdgeToEdge();
         entitlement = new Entitlement(this);
         findViewById(R.id.paywall_subscribe).setOnClickListener(view -> subscribe());
 
@@ -150,6 +154,28 @@ public final class PaywallActivity extends Activity {
                         result -> {});
             }
         }
+    }
+
+    /**
+     * Edge-to-edge (enforced for apps targeting API 35): pads the content
+     * by the system-bar insets so the centred offer clears the status and
+     * navigation bars. A no-op below API 35, where the bars stay opaque.
+     */
+    private void applyEdgeToEdge() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            return;
+        }
+        View content = findViewById(android.R.id.content);
+        content.setOnApplyWindowInsetsListener(
+                (view, insets) -> {
+                    Insets bars =
+                            insets.getInsets(
+                                    WindowInsets.Type.systemBars()
+                                            | WindowInsets.Type.displayCutout());
+                    view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                    return insets;
+                });
+        content.requestApplyInsets();
     }
 
     private void showOffer() {

@@ -10,13 +10,16 @@ val releaseKeystore = System.getenv("CARDAMUM_KEYSTORE")?.let { file(it) }
 
 android {
     namespace = "org.pimalaya.cardamum"
-    compileSdk = 34
+    compileSdk = 35
+    // Pinned to the one build-tools the devshell installs (see flake.nix),
+    // newer than AGP's default, so AGP finds it instead of a missing one.
+    buildToolsVersion = "36.1.0"
 
     defaultConfig {
         applicationId = "org.pimalaya.cardamum"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 1
+        targetSdk = 35
+        versionCode = 2
         versionName = "0.1.0"
     }
 

@@ -5,13 +5,16 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Insets;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -231,6 +234,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        applyEdgeToEdge();
 
         // Paid-access gate: a no-op on the FOSS build, the Google build's
         // paywall on that build. Only on a fresh start, so a rotation
@@ -4417,5 +4421,65 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Draws under the system bars (edge-to-edge is enforced for apps
+     * targeting API 35) and pushes the chrome back in with the bar
+     * insets: the top inset pads the colorPrimary app bars, so the status
+     * bar area takes their colour as one bar; the bottom inset lifts the
+     * FAB and adds to each list's FAB clearance, so nothing hides under
+     * the navigation bar; the side insets pad the window for landscape
+     * bars and cutouts. Older devices keep the platform's opaque bars and
+     * automatic content inset, so this only runs on API 35 and up; the
+     * keyboard stays handled by adjustResize.
+     */
+    private void applyEdgeToEdge() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            return;
+        }
+
+        View root = findViewById(android.R.id.content);
+        root.setOnApplyWindowInsetsListener(
+                (view, insets) -> {
+                    Insets bars =
+                            insets.getInsets(
+                                    WindowInsets.Type.systemBars()
+                                            | WindowInsets.Type.displayCutout());
+                    applyBarInsets(root, bars);
+                    return insets;
+                });
+        root.requestApplyInsets();
+    }
+
+    /** Places the system-bar insets on the chrome; see applyEdgeToEdge. */
+    private void applyBarInsets(View root, Insets bars) {
+        root.setPadding(bars.left, root.getPaddingTop(), bars.right, root.getPaddingBottom());
+
+        // Only one bar shows at a time, but all three carry the top inset.
+        padTop(R.id.app_bar, bars.top);
+        padTop(R.id.home_bar, bars.top);
+        padTop(R.id.auth_bar, bars.top);
+
+        // The base is each view's designed FAB clearance, so re-applying
+        // stays idempotent as the listener fires again.
+        padBottom(R.id.fab_frame, 0, bars.bottom);
+        padBottom(R.id.contacts_list, 88, bars.bottom);
+        padBottom(R.id.home_container, 88, bars.bottom);
+        padBottom(R.id.config_container, 88, bars.bottom);
+        padBottom(R.id.books_container, 88, bars.bottom);
+        padBottom(R.id.advanced_container, 24, bars.bottom);
+        padBottom(R.id.source_input, 16, bars.bottom);
+        padBottom(R.id.email_row, 16, bars.bottom);
+    }
+
+    private void padTop(int id, int top) {
+        View v = findViewById(id);
+        v.setPadding(v.getPaddingLeft(), top, v.getPaddingRight(), v.getPaddingBottom());
+    }
+
+    private void padBottom(int id, int baseDp, int inset) {
+        View v = findViewById(id);
+        v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), dp(baseDp) + inset);
     }
 }

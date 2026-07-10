@@ -4,7 +4,8 @@ plugins {
 
 android {
     namespace = "org.pimalaya.cardamum.client"
-    compileSdk = 34
+    compileSdk = 35
+    buildToolsVersion = "36.1.0"
 
     defaultConfig {
         minSdk = 24

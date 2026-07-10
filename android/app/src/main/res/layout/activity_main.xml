@@ -240,6 +240,7 @@
          (icon and action per screen in applyChrome). While an auth step
          works the loader sits on the disc, its icon hidden. -->
     <FrameLayout
+        android:id="@+id/fab_frame"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"

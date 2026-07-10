@@ -46,12 +46,13 @@
         };
 
         # Bump these together; the NDK version must exist in the pinned
-        # nixpkgs androidenv.
-        buildToolsVersion = "34.0.0";
-        ndkVersion = "26.3.11579264";
+        # nixpkgs androidenv. NDK r27+ aligns native libraries to 16 KB
+        # pages by default, which Play requires for apps targeting API 35.
+        buildToolsVersion = "36.1.0";
+        ndkVersion = "29.0.14206865";
 
         androidComposition = pkgs.androidenv.composeAndroidPackages {
-          platformVersions = [ "34" ];
+          platformVersions = [ "35" ];
           buildToolsVersions = [ buildToolsVersion ];
           includeNDK = true;
           ndkVersions = [ ndkVersion ];
