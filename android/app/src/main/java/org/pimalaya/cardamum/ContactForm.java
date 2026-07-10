@@ -341,7 +341,18 @@ final class ContactForm {
      * the app bar tone; an empty section vanishes.
      */
     private void section(int title, int icon, List<View> items) {
-        if (items.isEmpty()) {
+        section(title, icon, 0, items, null);
+    }
+
+    /**
+     * Adds a section header (its icon in front of the accent label) and
+     * its items. A repeatable section carries an add icon right-aligned
+     * to the screen edge in its header; passing a non-null onAdd shows
+     * that header even when the list is empty, since the icon is the way
+     * in. A plain section with no items vanishes.
+     */
+    private void section(int title, int icon, int addLabel, List<View> items, Runnable onAdd) {
+        if (items.isEmpty() && onAdd == null) {
             return;
         }
 
@@ -362,19 +373,20 @@ final class ContactForm {
         TextView label = new TextView(activity);
         label.setText(title);
         label.setTextColor(accentColor);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         LinearLayout.LayoutParams labelParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         labelParams.setMarginStart(dp(8));
 
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(12), dp(16), dp(4));
+        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(10), dp(16), dp(0));
         header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
         header.addView(label, labelParams);
+        if (onAdd != null) {
+            header.addView(addIcon(addLabel, onAdd));
+        }
         container.addView(header);
 
         for (View item : items) {
@@ -383,43 +395,23 @@ final class ContactForm {
     }
 
     /**
-     * A multi-value section: one row per entry, closed by an accent
-     * "Add ..." row. An empty list still shows its header and add row,
-     * since that row is the way in.
+     * A multi-value section: one row per entry, its add action carried
+     * as a right-aligned icon in the header.
      */
     private void listSection(int title, int icon, int addLabel, List<View> items, Runnable onAdd) {
-        List<View> rows = new ArrayList<>(items);
-        rows.add(addItem(addLabel, onAdd));
-        section(title, icon, rows);
+        section(title, icon, addLabel, items, onAdd);
     }
 
-    /** The add action closing a repeatable section. */
-    private View addItem(int label, Runnable onClick) {
-        int textColor = resolveColor(android.R.attr.textColorPrimary);
-
+    /** The right-aligned add action of a repeatable section header. */
+    private View addIcon(int label, Runnable onClick) {
         ImageView icon = new ImageView(activity);
-        icon.setImageResource(R.drawable.ic_add);
-        icon.setImageTintList(ColorStateList.valueOf(textColor));
-
-        TextView titleView = new TextView(activity);
-        titleView.setText(label);
-        titleView.setTextColor(textColor);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        LinearLayout.LayoutParams titleParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        titleParams.setMarginStart(dp(8));
-
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
-        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        row.setOnClickListener(view -> onClick.run());
-        row.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        row.addView(titleView, titleParams);
-        return row;
+        icon.setImageResource(R.drawable.ic_add_entry);
+        icon.setImageTintList(ColorStateList.valueOf(accentColor));
+        icon.setContentDescription(getS(label));
+        icon.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackgroundBorderless));
+        icon.setPadding(dp(6), dp(6), dp(6), dp(6));
+        icon.setOnClickListener(view -> onClick.run());
+        return icon;
     }
 
     /** A tappable row: title over a diminished subtitle. */
@@ -427,7 +419,7 @@ final class ContactForm {
         TextView titleView = new TextView(activity);
         titleView.setText(title);
         titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
 
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.VERTICAL);
@@ -440,7 +432,7 @@ final class ContactForm {
             TextView subtitleView = new TextView(activity);
             subtitleView.setText(subtitle);
             subtitleView.setTextColor(labelColor);
-            subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
             row.addView(subtitleView);
         }
 

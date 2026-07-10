@@ -74,7 +74,7 @@
     <string name="sync_remote">Remote sync</string>
     <string name="sync_remote_hint">Sync contacts with the remote server</string>
     <string name="sync_local">Local sync</string>
-    <string name="sync_local_hint">Sync contacts with the local Contacts app</string>
+    <string name="sync_local_hint">Sync contacts with the phone</string>
     <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
     <string name="contacts_add">Add</string>
     <string name="contacts_search">Search</string>
@@ -184,7 +184,7 @@
     <string name="dup_reason_phone">Same phone</string>
     <string name="dup_reason_name">Same name</string>
 
-    <string name="advanced_title">All properties</string>
+    <string name="advanced_title">Advanced editing</string>
     <string name="advanced_open">Advanced editing</string>
     <string name="advanced_add">Add property</string>
     <string name="advanced_source">Source</string>

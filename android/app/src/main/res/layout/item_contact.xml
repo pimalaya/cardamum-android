@@ -16,13 +16,13 @@
 
     <TextView
         android:id="@+id/contact_avatar"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:gravity="center"
         android:textColor="#ffffff"
-        android:textSize="16sp" />
+        android:textSize="18sp" />
 
     <LinearLayout
         android:layout_width="0dp"
@@ -43,7 +43,7 @@
                 android:fontFamily="sans-serif-medium"
                 android:lineHeight="24dp"
                 android:textColor="?android:attr/textColorPrimary"
-                android:textSize="16sp" />
+                android:textSize="18sp" />
 
             <ImageView
                 android:id="@+id/contact_link_icon"
@@ -60,7 +60,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="2dp"
                 android:textColor="?android:attr/textColorSecondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:visibility="gone" />
 
         </LinearLayout>
@@ -71,7 +71,7 @@
             android:layout_height="wrap_content"
             android:lineHeight="16dp"
             android:textColor="?android:attr/textColorSecondary"
-            android:textSize="11sp"
+            android:textSize="13sp"
             android:visibility="gone" />
 
     </LinearLayout>

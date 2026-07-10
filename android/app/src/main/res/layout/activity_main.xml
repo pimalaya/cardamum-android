@@ -186,17 +186,6 @@
 
         </FrameLayout>
 
-        <!-- Editor: the advanced raw-property editor. -->
-        <ImageButton
-            android:id="@+id/contact_advanced"
-            android:layout_width="@dimen/app_bar_button"
-            android:layout_height="@dimen/app_bar_button"
-            android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/advanced_open"
-            android:src="@drawable/ic_advanced"
-            android:tint="?android:attr/textColorPrimary"
-            android:visibility="gone" />
-
         <!-- Editor: the addressbooks the contact belongs to, the one
              placement gesture (docs/merged-view.md). -->
         <ImageButton
@@ -206,6 +195,17 @@
             android:background="@drawable/ripple_circle"
             android:contentDescription="@string/manage_books_title"
             android:src="@drawable/ic_link"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
+        <!-- Editor: the advanced raw-property editor. -->
+        <ImageButton
+            android:id="@+id/contact_advanced"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/advanced_open"
+            android:src="@drawable/ic_advanced"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 

@@ -40,7 +40,8 @@
             android:gravity="center"
             android:text="@string/empty_title"
             android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
-            android:textColor="?android:attr/textColorSecondary" />
+            android:textColor="?android:attr/textColorSecondary"
+	    android:textSize="18sp" />
 
     </LinearLayout>
 
