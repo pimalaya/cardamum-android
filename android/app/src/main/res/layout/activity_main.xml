@@ -236,17 +236,34 @@
     <include layout="@layout/panel_auth" />
 
     <!-- The screens' primary action, fixed above everything: add on
-         the lists, save on the editor (icon and action per screen in
-         applyChrome). -->
-    <ImageButton
-        android:id="@+id/fab"
-        android:layout_width="@dimen/fab"
-        android:layout_height="@dimen/fab"
+         the lists, save on the editor, continue through the auth flow
+         (icon and action per screen in applyChrome). While an auth step
+         works the loader sits on the disc, its icon hidden. -->
+    <FrameLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_margin="@dimen/fab_margin"
-        android:background="@drawable/fab_background"
-        android:contentDescription="@string/contacts_add"
-        android:elevation="@dimen/fab_elevation"
-        android:src="@drawable/ic_add" />
+        android:layout_margin="@dimen/fab_margin">
+
+        <ImageButton
+            android:id="@+id/fab"
+            android:layout_width="@dimen/fab"
+            android:layout_height="@dimen/fab"
+            android:background="@drawable/fab_background"
+            android:contentDescription="@string/contacts_add"
+            android:elevation="@dimen/fab_elevation"
+            android:src="@drawable/ic_add" />
+
+        <ProgressBar
+            android:id="@+id/fab_progress"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="center"
+            android:elevation="@dimen/fab_elevation"
+            android:indeterminateTint="?android:attr/colorPrimary"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </FrameLayout>

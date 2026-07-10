@@ -68,7 +68,6 @@
 
         </ScrollView>
 
-        <!-- The contacts list's empty state, for the no-account case. -->
         <LinearLayout
             android:id="@+id/home_empty"
             android:layout_width="match_parent"

@@ -35,38 +35,9 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:paddingStart="24dp"
-            android:paddingEnd="24dp" />
+            android:paddingEnd="24dp"
+            android:paddingBottom="88dp" />
 
     </ScrollView>
-
-    <!-- Disabled until an option is picked; while connecting the
-         loader sits on the FAB (disabled again, its arrow hidden). -->
-    <FrameLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end"
-        android:layout_margin="@dimen/fab_margin">
-
-        <ImageButton
-            android:id="@+id/config_continue"
-            android:layout_width="@dimen/fab"
-            android:layout_height="@dimen/fab"
-            android:background="@drawable/fab_background"
-            android:contentDescription="@string/email_submit"
-            android:elevation="@dimen/fab_elevation"
-            android:enabled="false"
-            android:src="@drawable/ic_arrow_forward" />
-
-        <ProgressBar
-            android:id="@+id/config_progress"
-            style="?android:attr/progressBarStyleSmall"
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            android:layout_gravity="center"
-            android:elevation="@dimen/fab_elevation"
-            android:indeterminateTint="?android:attr/colorPrimary"
-            android:visibility="gone" />
-
-    </FrameLayout>
 
 </LinearLayout>

@@ -36,8 +36,15 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:lineSpacingExtra="4dp"
-            android:text="@string/welcome_value"
+            android:text="@string/welcome_value_1"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/welcome_value_2"
             android:textColor="?android:attr/textColorSecondary"
             android:textSize="16sp" />
 
@@ -52,9 +59,11 @@
 
     </LinearLayout>
 
-    <!-- The field and the continue FAB float together at the bottom,
-         above the keyboard (adjustResize); the loader sits on the FAB
-         itself while the search runs. -->
+    <!-- The field floats at the bottom above the keyboard
+         (adjustResize); the shared FAB is the continue action, so an
+         empty view holds its slot in the row and the disc floats over
+         it, leaving the field exactly where it sat with an inline
+         button. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -74,31 +83,10 @@
             android:hint="@string/email_hint"
             android:inputType="textEmailAddress" />
 
-        <FrameLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="16dp">
-
-            <ImageButton
-                android:id="@+id/email_submit"
-                android:layout_width="@dimen/fab"
-                android:layout_height="@dimen/fab"
-                android:background="@drawable/fab_background"
-                android:contentDescription="@string/email_submit"
-                android:elevation="@dimen/fab_elevation"
-                android:src="@drawable/ic_arrow_forward" />
-
-            <ProgressBar
-                android:id="@+id/email_progress"
-                style="?android:attr/progressBarStyleSmall"
-                android:layout_width="24dp"
-                android:layout_height="24dp"
-                android:layout_gravity="center"
-                android:elevation="@dimen/fab_elevation"
-                android:indeterminateTint="?android:attr/colorPrimary"
-                android:visibility="gone" />
-
-        </FrameLayout>
+        <View
+            android:layout_width="@dimen/fab"
+            android:layout_height="@dimen/fab"
+            android:layout_marginStart="16dp" />
 
     </LinearLayout>
 

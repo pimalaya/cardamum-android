@@ -6,8 +6,9 @@
     <string name="new_account">New account</string>
     <string name="cancel_auth">Cancel</string>
     <string name="welcome">Cardamum</string>
-    <string name="welcome_value">All your contacts, from every account, in one place.</string>
-    <string name="welcome_description">Enter your email address to get started; Cardamum finds your server settings automatically.</string>
+    <string name="welcome_value_1">All your contacts from all your accounts</string>
+    <string name="welcome_value_2">accessible offline, in a shared view</string>
+    <string name="welcome_description">Cardamum finds your server settings automatically, just enter anything you know about your provider</string>
     <string name="email_hint">Email, server or URI</string>
     <string name="auth_step_email">Welcome</string>
     <string name="auth_step_config">Configuration</string>
@@ -53,7 +54,7 @@
     <string name="books_title">Choose addressbooks</string>
     <string name="books_description">Pick the addressbooks to sync on this device. You can change this later from the home screen.</string>
     <string name="books_none">This account has no addressbook.</string>
-    <string name="subscriptions_title">Addressbooks</string>
+    <string name="subscriptions_title">Accounts</string>
     <string name="subscriptions_save">Save</string>
     <string name="accounts_failed">Could not create the accounts</string>
     <string name="add_account">Add account</string>

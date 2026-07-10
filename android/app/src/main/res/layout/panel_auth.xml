@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The auth flow, a whole-frame overlay always rising over the
-     addressbooks drawer like a bottom sheet, its own bar included,
-     over an inner flipper holding the steps (email, config, books):
-     navigating the flow slides only the step content. The arrow steps
-     back (leaving from the welcome step), the cross always leaves;
-     both land on the drawer, empty or not. -->
+<!-- The auth flow, a whole-frame overlay sliding in over the
+     addressbooks drawer from the left, its own bar included, over an
+     inner flipper holding the steps (email, config, books): navigating
+     the flow slides only the step content. The shared FAB is the
+     step's continue action. The arrow steps back (leaving from the
+     welcome step), the cross always leaves; both land on the drawer,
+     empty or not. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/overlay_auth"
     android:layout_width="match_parent"

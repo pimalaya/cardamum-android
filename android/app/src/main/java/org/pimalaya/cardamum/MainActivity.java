@@ -243,12 +243,7 @@ public class MainActivity extends Activity {
         setUpContactPanel();
         setUpHomePanel();
 
-        for (int id :
-                new int[] {
-                    R.id.email_submit, R.id.config_continue, R.id.books_continue, R.id.fab,
-                }) {
-            setUpFab(id);
-        }
+        setUpFab(R.id.fab);
         findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
         findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
 
@@ -326,7 +321,7 @@ public class MainActivity extends Activity {
         if (inside) {
             applyChrome(PANEL_AUTH);
         } else {
-            // The flow rises over the current screen like a sheet.
+            // The flow slides in over the current screen like a drawer.
             openOverlay(PANEL_AUTH);
         }
     }
@@ -364,9 +359,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Leaves the auth flow without finishing: the sheet slides down
-     * onto the addressbooks drawer it always rises over. Only
-     * finishing the whole flow lands on the contacts root.
+     * Leaves the auth flow without finishing: the drawer slides back
+     * out to the left onto the addressbooks listing it always opens
+     * over. Only finishing the whole flow lands on the contacts root.
      */
     private void cancelAuth() {
         closeOverlay(PANEL_AUTH);
@@ -442,12 +437,12 @@ public class MainActivity extends Activity {
         contacts = loadEntries();
         renderContacts();
 
-        // Landing on the root is always a return, but the overlays
-        // leave their own way: the addressbooks drawer back out to the
-        // left, the auth sheet back down, the root staying put.
+        // Landing on the root is always a return: both overlays slide
+        // back out to the left, the root staying put underneath.
         if (screen == PANEL_AUTH) {
-            // A drawer beneath the sheet just goes: the sheet's slide
-            // down reveals the root directly.
+            // The addressbooks listing sits directly beneath the auth
+            // drawer; dropping it first lets the auth slide reveal the
+            // root directly.
             findViewById(R.id.overlay_home).setVisibility(View.GONE);
             closeOverlay(PANEL_AUTH);
             screen = PANEL_CONTACTS;
@@ -476,19 +471,11 @@ public class MainActivity extends Activity {
         EditText email = findViewById(R.id.email_input);
         findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
         findViewById(R.id.auth_cancel).setOnClickListener(view -> cancelAuth());
-        findViewById(R.id.config_continue)
-                .setOnClickListener(
-                        view -> {
-                            if (selectedConfig != null) {
-                                selectedConfig.run();
-                            }
-                        });
 
-        View submit = findViewById(R.id.email_submit);
-        // Continue stays disabled until the field holds something
-        // plausible (an email, a server, or a connection URI), so an
-        // empty or malformed input is simply not submittable.
-        setFabEnabled(R.id.email_submit, false);
+        // The shared FAB is the step's continue action; it stays
+        // disabled until the field holds something plausible (an email,
+        // a server, or a connection URI), so an empty or malformed
+        // input is simply not submittable.
         email.addTextChangedListener(
                 new android.text.TextWatcher() {
                     @Override
@@ -499,33 +486,38 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void afterTextChanged(android.text.Editable s) {
-                        String address = s.toString().trim();
-                        setFabEnabled(
-                                R.id.email_submit,
-                                !address.isEmpty() && !address.contains(" "));
+                        if (screen == PANEL_AUTH
+                                && authFlipper.getDisplayedChild() == STEP_EMAIL) {
+                            setFabEnabled(R.id.fab, emailSubmittable());
+                        }
                     }
                 });
+    }
 
-        submit.setOnClickListener(
-                view -> {
-                    // The panel stays visible while the search runs;
-                    // drop the field's focus so the keyboard leaves.
-                    hideKeyboard();
+    /** Whether the email field holds a submittable address or URI. */
+    private boolean emailSubmittable() {
+        String address = ((EditText) findViewById(R.id.email_input)).getText().toString().trim();
+        return !address.isEmpty() && !address.contains(" ");
+    }
 
-                    // One field covers every case, the CLI way: an
-                    // email or a bare domain goes through discovery
-                    // (every mechanism is domain-driven, and the
-                    // provider rules ride inside it as one mechanism
-                    // among the others), a connection URI is a server
-                    // to configure by hand.
-                    String address = email.getText().toString().trim();
-                    pendingEmail = address;
-                    if (address.contains("://")) {
-                        showManualConfigs(address);
-                    } else {
-                        search();
-                    }
-                });
+    /** The email step's continue: discovery for an address, manual for a URI. */
+    private void submitEmail() {
+        // The panel stays visible while the search runs; drop the
+        // field's focus so the keyboard leaves.
+        hideKeyboard();
+
+        // One field covers every case, the CLI way: an email or a bare
+        // domain goes through discovery (every mechanism is
+        // domain-driven, and the provider rules ride inside it as one
+        // mechanism among the others), a connection URI is a server to
+        // configure by hand.
+        String address = ((EditText) findViewById(R.id.email_input)).getText().toString().trim();
+        pendingEmail = address;
+        if (address.contains("://")) {
+            showManualConfigs(address);
+        } else {
+            search();
+        }
     }
 
     /**
@@ -542,7 +534,7 @@ public class MainActivity extends Activity {
      * rows.
      */
     private void search() {
-        setAuthLoading(R.id.email_submit, R.id.email_progress, true);
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
 
         io.execute(
                 () -> {
@@ -564,7 +556,7 @@ public class MainActivity extends Activity {
                             main.post(
                                     () -> {
                                         setAuthLoading(
-                                                R.id.email_submit, R.id.email_progress, false);
+                                                R.id.fab, R.id.fab_progress, false);
                                         showProviderConfigs(matched);
                                     });
                             return;
@@ -586,7 +578,7 @@ public class MainActivity extends Activity {
                     Exception searchFailure = failure;
                     main.post(
                             () -> {
-                                setAuthLoading(R.id.email_submit, R.id.email_progress, false);
+                                setAuthLoading(R.id.fab, R.id.fab_progress, false);
                                 if (searchFailure != null) {
                                     showError(searchFailure, R.string.discover_failed);
                                     return;
@@ -638,8 +630,8 @@ public class MainActivity extends Activity {
 
     /** The config Continue back to idle: enabled once an option is picked. */
     private void resetConfigContinue() {
-        setAuthLoading(R.id.config_continue, R.id.config_progress, false);
-        setFabEnabled(R.id.config_continue, selectedConfig != null);
+        setAuthLoading(R.id.fab, R.id.fab_progress, false);
+        setFabEnabled(R.id.fab, selectedConfig != null);
     }
 
     /**
@@ -989,7 +981,7 @@ public class MainActivity extends Activity {
             option.setOnClickListener(
                     view -> {
                         selectedConfig = action;
-                        setFabEnabled(R.id.config_continue, true);
+                        setFabEnabled(R.id.fab, true);
                     });
         }
 
@@ -1058,7 +1050,7 @@ public class MainActivity extends Activity {
             String tokenEndpoint,
             String clientId,
             String clientSecret) {
-        setAuthLoading(R.id.config_continue, R.id.config_progress, true);
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
 
         io.execute(
                 () -> {
@@ -1092,7 +1084,7 @@ public class MainActivity extends Activity {
     // ---- Addressbook selection -------------------------------------------------
 
     private void setUpBooksPanel() {
-        findViewById(R.id.books_continue).setOnClickListener(view -> confirmBooks());
+        // The books step's continue is the shared FAB (see authContinue).
     }
 
     /**
@@ -1127,21 +1119,23 @@ public class MainActivity extends Activity {
             bookBoxes.add(box);
         }
 
-        setAuthLoading(R.id.books_continue, R.id.books_progress, false);
+        setAuthLoading(R.id.fab, R.id.fab_progress, false);
         updateBooksContinue();
         showAuth(STEP_BOOKS);
     }
 
     /** Continue is enabled only while at least one addressbook is checked. */
     private void updateBooksContinue() {
-        boolean any = false;
+        setFabEnabled(R.id.fab, booksAnyChecked());
+    }
+
+    private boolean booksAnyChecked() {
         for (CheckBox box : bookBoxes) {
             if (box.isChecked()) {
-                any = true;
-                break;
+                return true;
             }
         }
-        setFabEnabled(R.id.books_continue, any);
+        return false;
     }
 
     /**
@@ -1164,7 +1158,7 @@ public class MainActivity extends Activity {
         base.replaceAddressbooks(connectedEmail, pendingBooks);
         base.setSubscriptions(connectedEmail, subscribed);
 
-        setAuthLoading(R.id.books_continue, R.id.books_progress, true);
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
         syncRemote(true);
     }
 
@@ -1204,7 +1198,7 @@ public class MainActivity extends Activity {
         try {
             String url = pendingOauth.authorizeUrl(Oauth.GOOGLE_AUTH_ENDPOINT, extras);
             persistPendingOauth(Oauth.GOOGLE_CLIENT_ID, Oauth.GOOGLE_REDIRECT_URI);
-            setAuthLoading(R.id.config_continue, R.id.config_progress, true);
+            setAuthLoading(R.id.fab, R.id.fab_progress, true);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
             pendingOauth = null;
@@ -1301,7 +1295,7 @@ public class MainActivity extends Activity {
         try {
             String url = pendingOauth.authorizeUrl(Oauth.MICROSOFT_AUTH_ENDPOINT, extras);
             persistPendingOauth(Oauth.MICROSOFT_CLIENT_ID, Oauth.MICROSOFT_REDIRECT_URI);
-            setAuthLoading(R.id.config_continue, R.id.config_progress, true);
+            setAuthLoading(R.id.fab, R.id.fab_progress, true);
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception error) {
             pendingOauth = null;
@@ -1475,7 +1469,7 @@ public class MainActivity extends Activity {
      * can paste a self-registered client id instead.
      */
     private void startIssuerOauth(String baseUrl, String issuer, String resource) {
-        setAuthLoading(R.id.config_continue, R.id.config_progress, true);
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
 
         io.execute(
                 () -> {
@@ -1696,7 +1690,7 @@ public class MainActivity extends Activity {
                         main.post(
                                 () -> {
                                     setAuthLoading(
-                                            R.id.config_continue, R.id.config_progress, true);
+                                            R.id.fab, R.id.fab_progress, true);
                                     startActivity(
                                             new Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)));
                                 });
@@ -1940,6 +1934,14 @@ public class MainActivity extends Activity {
      * collapsed), toggling the books container's visibility.
      */
     private View accountHeader(String email, LinearLayout books) {
+        android.widget.ImageView icon = new android.widget.ImageView(this);
+        icon.setImageResource(R.drawable.ic_account);
+        icon.setImageTintList(
+                android.content.res.ColorStateList.valueOf(
+                        resolveColor(android.R.attr.textColorSecondary)));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+        iconParams.setMarginEnd(dp(16));
+
         TextView label = new TextView(this);
         label.setText(email);
         label.setTextSize(16);
@@ -1961,6 +1963,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(16), 0, dp(4), 0);
         header.setBackgroundColor(getColor(R.color.surface));
         header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
+        header.addView(icon, iconParams);
         header.addView(label);
         header.addView(iconSlot(chevron));
 
@@ -4101,8 +4104,9 @@ public class MainActivity extends Activity {
 
     /**
      * Slides a whole-frame overlay (its own bar included) over the
-     * current screen: the addressbooks drawer from the left, the auth
-     * sheet from the bottom. What is underneath stays put.
+     * current screen from the left, like a drawer; the addressbooks
+     * listing and the auth flow share the gesture. What is underneath
+     * stays put.
      */
     private void openOverlay(int panel) {
         hideKeyboard();
@@ -4110,22 +4114,18 @@ public class MainActivity extends Activity {
                 findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
         overlay.setVisibility(View.VISIBLE);
         overlay.startAnimation(
-                android.view.animation.AnimationUtils.loadAnimation(
-                        this,
-                        panel == PANEL_HOME ? R.anim.slide_in_left : R.anim.slide_in_up));
+                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_in_left));
         screen = panel;
         applyChrome(panel);
     }
 
-    /** Slides a whole-frame overlay back out, then hides it. */
+    /** Slides a whole-frame overlay back out to the left, then hides it. */
     private void closeOverlay(int panel) {
         hideKeyboard();
         View overlay =
                 findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
         android.view.animation.Animation exit =
-                android.view.animation.AnimationUtils.loadAnimation(
-                        this,
-                        panel == PANEL_HOME ? R.anim.slide_out_left : R.anim.slide_out_down);
+                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_out_left);
         exit.setAnimationListener(
                 new android.view.animation.Animation.AnimationListener() {
                     @Override
@@ -4150,11 +4150,22 @@ public class MainActivity extends Activity {
     private void applyChrome(int panel) {
         android.widget.ImageButton fab = findViewById(R.id.fab);
 
+        // Every screen change clears any lingering FAB loader (an auth
+        // step that navigated on while its loader was up) and re-enables
+        // the disc: the icon comes back, the spinner goes, the dim from
+        // a disabled auth step lifts. The auth branch re-disables per
+        // step below.
+        fab.setImageAlpha(255);
+        findViewById(R.id.fab_progress).setVisibility(View.GONE);
+        setFabEnabled(R.id.fab, true);
+
         // The overlays carry their own bars; only the FAB is shared.
         if (panel == PANEL_AUTH) {
-            // The steps carry their own continue FABs (the email one
-            // rides in a row with its field).
-            fab.setVisibility(View.GONE);
+            // The shared FAB is the continue action through the flow.
+            fab.setImageResource(R.drawable.ic_arrow_forward);
+            fab.setContentDescription(getString(R.string.email_submit));
+            fab.setVisibility(View.VISIBLE);
+            setFabEnabled(R.id.fab, authStepReady());
             applyAuthChrome();
             return;
         }
@@ -4236,8 +4247,44 @@ public class MainActivity extends Activity {
             case PANEL_HOME:
                 startAuth();
                 break;
+            case PANEL_AUTH:
+                authContinue();
+                break;
             default:
                 break;
+        }
+    }
+
+    /** The shared FAB's continue action for the current auth step. */
+    private void authContinue() {
+        switch (authFlipper.getDisplayedChild()) {
+            case STEP_EMAIL:
+                submitEmail();
+                break;
+            case STEP_CONFIG:
+                if (selectedConfig != null) {
+                    selectedConfig.run();
+                }
+                break;
+            case STEP_BOOKS:
+                confirmBooks();
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Whether the current auth step's continue is available. */
+    private boolean authStepReady() {
+        switch (authFlipper.getDisplayedChild()) {
+            case STEP_EMAIL:
+                return emailSubmittable();
+            case STEP_CONFIG:
+                return selectedConfig != null;
+            case STEP_BOOKS:
+                return booksAnyChecked();
+            default:
+                return false;
         }
     }
 
