@@ -33,6 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.billing.BillingFactory;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Addressbook;
 import org.pimalaya.cardamum.client.AuthMethod;
@@ -230,6 +231,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Paid-access gate: a no-op on the FOSS build, the Google build's
+        // paywall on that build. Only on a fresh start, so a rotation
+        // does not re-open it.
+        if (savedInstanceState == null) {
+            BillingFactory.create(this).enforce(this);
+        }
 
         store = new SecureStore(this);
         base = new CardStore(this);
@@ -1832,8 +1840,8 @@ public class MainActivity extends Activity {
 
             TextView name = new TextView(this);
             name.setText(entry.book.name);
-            name.setTextSize(16);
-            name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            name.setTextSize(15);
+            name.setTextColor(resolveColor(android.R.attr.textColorSecondary));
             name.setLayoutParams(
                     new LinearLayout.LayoutParams(
                             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1841,10 +1849,12 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            // The trailing checkbox rides in a 48dp slot with a 4dp end
-            // padding, so its centre lines up with the app-bar icon
-            // column and the account-header chevron.
-            row.setPadding(dp(16), 0, dp(4), 0);
+            // The name starts at 56dp so it lines up with the account
+            // header's title, past its icon: 16dp header padding + the
+            // 24dp icon + its 16dp margin. The trailing checkbox rides in
+            // a 48dp slot with a 4dp end padding, so its centre lines up
+            // with the app-bar icon column and the account-header chevron.
+            row.setPadding(dp(56), 0, dp(4), 0);
             row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
             row.addView(name);
 
@@ -1944,8 +1954,8 @@ public class MainActivity extends Activity {
 
         TextView label = new TextView(this);
         label.setText(email);
-        label.setTextSize(16);
-        label.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+        label.setTextSize(18);
+        label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
         label.setLayoutParams(
                 new LinearLayout.LayoutParams(
                         0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -2553,7 +2563,7 @@ public class MainActivity extends Activity {
 
             TextView account = new TextView(this);
             account.setText(entry.accountEmail);
-            account.setTextSize(11);
+            account.setTextSize(12);
             account.setTextColor(resolveColor(android.R.attr.textColorSecondary));
 
             LinearLayout row = new LinearLayout(this);
@@ -2764,7 +2774,8 @@ public class MainActivity extends Activity {
 
             TextView avatar = row.findViewById(R.id.contact_avatar);
             avatar.setText(letter(name));
-            avatar.setBackground(avatarCircle(name));
+            avatar.setBackground(
+                    avatarCircle(entry.card != null ? entry.card.vcard : name));
 
             ((TextView) row.findViewById(R.id.contact_name)).setText(name);
 
@@ -3155,16 +3166,38 @@ public class MainActivity extends Activity {
         reloadContacts();
     }
 
-    /** A round avatar with the name's first letter, coloured by its hash. */
-    /** A muted round avatar background, coloured from the name's hash. */
-    private android.graphics.drawable.GradientDrawable avatarCircle(String name) {
-        int color = android.graphics.Color.HSVToColor(
-                new float[] {Math.abs(name.hashCode()) % 360, 0.4f, 0.55f});
+    /**
+     * A muted round avatar background, its hue mapped from the card's
+     * raw vCard rather than the display name: distinct contacts (their
+     * UID and address fields differ) spread across the wheel, while a
+     * card lightly edited keeps almost the same colour.
+     */
+    private android.graphics.drawable.GradientDrawable avatarCircle(String vcard) {
+        int color =
+                android.graphics.Color.HSVToColor(new float[] {hueOf(vcard), 0.4f, 0.55f});
         android.graphics.drawable.GradientDrawable circle =
                 new android.graphics.drawable.GradientDrawable();
         circle.setShape(android.graphics.drawable.GradientDrawable.OVAL);
         circle.setColor(color);
         return circle;
+    }
+
+    /**
+     * Maps a vCard to a hue in [0, 360) by summing its code points. The
+     * sum is locality preserving, so a one-character edit shifts the hue
+     * by one degree, yet the differing name, email and UID keep distinct
+     * cards far apart (unlike hashing the display name, where near
+     * identical names collapse onto near identical hues).
+     */
+    private static float hueOf(String vcard) {
+        if (vcard == null) {
+            return 0f;
+        }
+        long sum = 0;
+        for (int index = 0; index < vcard.length(); index++) {
+            sum += vcard.charAt(index);
+        }
+        return sum % 360;
     }
 
     /** Sets a diminished sub-line, hiding it when the value is empty. */
