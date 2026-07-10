@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "io-jmap"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-jmap#9df8e996e446ca5a7650176a368e7fc592da1956"
+source = "git+https://github.com/pimalaya/io-jmap#3feb34471b4ef7ae3ebba7636c8ed4b5cd1d59f8"
 dependencies = [
  "io-http",
  "log",
