@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="new_account">Nouveau compte</string>
+    <string name="cancel_auth">Annuler</string>
+    <string name="welcome_value_1">Tous vos contacts de tous vos comptes</string>
+    <string name="welcome_value_2">accessibles hors ligne, dans une vue partagée</string>
+    <string name="welcome_description">Cardamum trouve automatiquement les paramètres de votre serveur ; saisissez simplement ce que vous savez de votre fournisseur</string>
+    <string name="email_hint">E-mail, serveur ou URI</string>
+    <string name="auth_step_email">Bienvenue</string>
+    <string name="auth_step_config">Configuration</string>
+    <string name="auth_step_books">Sélection</string>
+    <string name="email_submit">Continuer</string>
+    <string name="email_invalid">Saisissez une adresse e-mail valide</string>
+    <string name="discover_failed">Impossible de trouver les paramètres de votre serveur de contacts</string>
+
+    <string name="config_title">Choisissez une configuration</string>
+    <string name="config_soon">Bientôt disponible</string>
+    <string name="config_password">Mot de passe</string>
+    <string name="config_token">Jeton d\'API</string>
+    <string name="config_oauth">Se connecter avec le navigateur</string>
+    <string name="custom_login">Identifiant (vide pour un jeton d\'API)</string>
+
+    <string name="oauth_custom_title">Client OAuth 2.0</string>
+    <string name="oauth_defaults_hint">Le client qui gère la connexion. En cas de doute, laissez tout tel quel.</string>
+    <string name="oauth_client_id">Identifiant client</string>
+    <string name="oauth_client_secret">Secret client (facultatif)</string>
+    <string name="oauth_authorization_endpoint">Point de terminaison d\'autorisation</string>
+    <string name="oauth_token_endpoint">Point de terminaison du jeton</string>
+    <string name="oauth_scope">Portée</string>
+    <string name="oauth_redirect">URI de redirection</string>
+    <string name="oauth_client_id_empty">Saisissez l\'identifiant client</string>
+    <string name="oauth_redirect_invalid">Saisissez une URL de rebouclage http://127.0.0.1, ou org.pimalaya.cardamum:/oauth2redirect</string>
+    <string name="oauth_port_taken">Impossible d\'utiliser le port de rebouclage ; essayez-en un autre</string>
+    <string name="oauth_loopback_done">Connexion réussie. Vous pouvez fermer cet onglet et revenir à Cardamum.</string>
+    <string name="oauth_metadata_incomplete">Il manque un point de terminaison dans les métadonnées OAuth du serveur</string>
+
+    <string name="password_title">Connexion</string>
+    <string name="password_server">%1$s sur %2$s</string>
+    <string name="password_hint">Mot de passe</string>
+    <string name="password_submit">Se connecter</string>
+    <string name="password_empty">Saisissez votre mot de passe</string>
+    <string name="error_title">Erreur</string>
+    <string name="connect_failed">Impossible de se connecter</string>
+
+    <string name="books_title">Choisissez des carnets d\'adresses</string>
+    <string name="books_description">Choisissez les carnets d\'adresses à synchroniser sur cet appareil. Vous pourrez modifier ce choix plus tard depuis l\'écran d\'accueil.</string>
+    <string name="books_none">Ce compte n\'a aucun carnet d\'adresses.</string>
+    <string name="subscriptions_title">Comptes</string>
+    <string name="subscriptions_save">Enregistrer</string>
+    <string name="accounts_failed">Impossible de créer les comptes</string>
+    <string name="add_account">Ajouter un compte</string>
+    <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
+    <string name="delete_account_confirm">Supprimer le compte %1$s et ses données locales ?</string>
+
+    <string name="sync_title">Synchronisation</string>
+    <string name="sync_addressbooks">Récupération des carnets d\'adresses</string>
+    <string name="sync_push">Envoi des modifications de %1$s</string>
+    <string name="sync_cards">Récupération des contacts de %1$s</string>
+    <string name="sync_no_addressbook">Aucun carnet d\'adresses trouvé.</string>
+    <string name="sync_failed">Impossible de synchroniser</string>
+    <string name="sync_conflicts">%1$d modification(s) en conflit avec le serveur restent locales</string>
+    <string name="sync_local_requested">Synchronisation locale planifiée</string>
+
+    <string name="contacts_title">Contacts</string>
+    <string name="contacts_sync">Synchroniser</string>
+    <string name="sync_remote">Synchronisation distante</string>
+    <string name="sync_remote_hint">Synchroniser les contacts avec le serveur distant</string>
+    <string name="sync_local">Synchronisation locale</string>
+    <string name="sync_local_hint">Synchroniser les contacts avec le téléphone</string>
+    <string name="sync_done">Synchronisé : %1$d reçus, %2$d envoyés, %3$d fusionnés</string>
+    <string name="contacts_add">Ajouter</string>
+    <string name="contacts_search">Rechercher</string>
+    <string name="contact_diverged">Divergent</string>
+    <string name="save_target_title">Ajouter au carnet d\'adresses</string>
+    <string name="merge_selected">Fusionner les contacts sélectionnés en un seul</string>
+    <string name="merge_target_title">Conserver la copie de quel carnet d\'adresses ?</string>
+    <string name="merge_done">Contacts fusionnés ; les modifications seront envoyées à la prochaine synchronisation</string>
+    <string name="manage_books_title">Carnets d\'adresses de ce contact</string>
+    <string name="manage_books_locked">Le contact doit conserver au moins un carnet d\'adresses</string>
+    <string name="contact_open_failed">Impossible d\'ouvrir le contact</string>
+    <string name="empty_title">Aucun contenu trouvé</string>
+
+    <string name="back">Retour</string>
+    <string name="more">Plus</string>
+    <string name="delete_selected">Supprimer les contacts sélectionnés</string>
+    <string name="cancel_selection">Annuler la sélection</string>
+    <string name="settings_title">Paramètres</string>
+    <string name="selected_count">%1$d sélectionné(s)</string>
+    <string name="delete_selected_confirm">Supprimer les contacts sélectionnés ?</string>
+    <string name="contact_new">Nouveau contact</string>
+    <string name="contact_save">Enregistrer</string>
+    <string name="contact_delete">Supprimer</string>
+    <string name="contact_delete_confirm">Supprimer ce contact ?</string>
+    <string name="save_failed">Impossible d\'enregistrer le contact</string>
+    <string name="delete_failed">Impossible de supprimer le contact</string>
+    <string name="invalid_birthday">La date de naissance doit être au format AAAA-MM-JJ</string>
+
+    <string name="tab_name">Nom</string>
+    <string name="tab_contact">Contact</string>
+    <string name="tab_address">Adresse</string>
+    <string name="tab_work">Professionnel</string>
+    <string name="tab_more">Plus</string>
+    <string name="tab_source">Source</string>
+
+    <string name="section_identity">Identité</string>
+    <string name="item_name">Nom</string>
+    <string name="item_nickname">Surnom</string>
+    <string name="item_phone">Téléphone</string>
+    <string name="item_email">E-mail</string>
+    <string name="item_address">Adresse</string>
+    <string name="item_organization">Organisation</string>
+    <string name="item_website">Site web</string>
+    <string name="item_note">Note</string>
+    <string name="hint_number">Numéro</string>
+    <string name="hint_email_address">Adresse</string>
+    <string name="hint_url">URL</string>
+    <string name="value_not_set">Non défini</string>
+
+    <string name="hint_display_name">Nom affiché</string>
+    <string name="hint_prefix">Préfixe</string>
+    <string name="hint_given">Prénom</string>
+    <string name="hint_middle">Deuxième prénom</string>
+    <string name="hint_family">Nom</string>
+    <string name="hint_suffix">Suffixe</string>
+    <string name="hint_street">Rue</string>
+    <string name="hint_city">Ville</string>
+    <string name="hint_region">Région</string>
+    <string name="hint_postcode">Code postal</string>
+    <string name="hint_country">Pays</string>
+    <string name="hint_company">Entreprise</string>
+    <string name="hint_department">Service</string>
+    <string name="hint_job_title">Fonction</string>
+    <string name="hint_role">Rôle</string>
+    <string name="hint_birthday">Date de naissance</string>
+    <string name="item_anniversary">Anniversaire</string>
+    <string name="item_gender">Genre</string>
+    <string name="hint_gender_identity">Identité</string>
+    <string name="item_impp">Adresse de messagerie instantanée</string>
+    <string name="hint_impp">URI</string>
+    <string name="item_language">Langue</string>
+    <string name="hint_language">Étiquette de langue</string>
+    <string name="item_relation">Relation</string>
+    <string name="hint_relation">Nom ou URI</string>
+    <string name="invalid_anniversary">L\'anniversaire doit être une date complète</string>
+
+    <string name="section_nicknames">Surnoms</string>
+    <string name="section_phones">Téléphones</string>
+    <string name="section_emails">E-mails</string>
+    <string name="section_addresses">Adresses</string>
+    <string name="section_websites">Sites web</string>
+    <string name="section_notes">Notes</string>
+    <string name="section_impps">Messagerie instantanée</string>
+    <string name="section_languages">Langues</string>
+    <string name="section_relations">Relations</string>
+
+    <string name="add">Ajouter</string>
+    <string name="add_nickname">Ajouter un surnom</string>
+    <string name="add_phone">Ajouter un téléphone</string>
+    <string name="add_email">Ajouter un e-mail</string>
+    <string name="add_address">Ajouter une adresse</string>
+    <string name="add_website">Ajouter un site web</string>
+    <string name="add_note">Ajouter une note</string>
+    <string name="add_impp">Ajouter une adresse de messagerie instantanée</string>
+    <string name="add_language">Ajouter une langue</string>
+    <string name="add_relation">Ajouter une relation</string>
+    <string name="remove_row">Supprimer</string>
+    <string name="clear">Effacer</string>
+
+    <string name="dup_find">Rechercher les doublons</string>
+    <string name="dup_title">Doublon possible</string>
+    <string name="dup_none">Aucun doublon trouvé</string>
+    <string name="dup_ignore">Ignorer</string>
+    <string name="dup_merge">Fusionner</string>
+    <string name="dup_link">Lier</string>
+    <string name="dup_reason_email">Même e-mail</string>
+    <string name="dup_reason_phone">Même téléphone</string>
+    <string name="dup_reason_name">Même nom</string>
+
+    <string name="advanced_title">Édition avancée</string>
+    <string name="advanced_open">Édition avancée</string>
+    <string name="advanced_add">Ajouter une propriété</string>
+    <string name="advanced_source">Source</string>
+    <string name="advanced_prop_name">Nom</string>
+    <string name="advanced_value">Valeur</string>
+    <string name="advanced_param_name">Paramètre</string>
+    <string name="advanced_param_values">Valeurs (séparées par des virgules)</string>
+    <string name="advanced_add_param">Ajouter un paramètre</string>
+    <string name="advanced_invalid">Propriété invalide</string>
+
+    <string-array name="phone_types">
+        <item>Mobile</item>
+        <item>Domicile</item>
+        <item>Professionnel</item>
+        <item>Mobile professionnel</item>
+        <item>Fax (domicile)</item>
+        <item>Fax (professionnel)</item>
+        <item>Bipeur</item>
+        <item>Autre</item>
+    </string-array>
+
+    <string-array name="email_types">
+        <item>Domicile</item>
+        <item>Professionnel</item>
+        <item>Autre</item>
+    </string-array>
+
+    <string-array name="address_types">
+        <item>Domicile</item>
+        <item>Professionnel</item>
+        <item>Autre</item>
+    </string-array>
+
+    <string-array name="relation_types">
+        <item>Conjoint</item>
+        <item>Enfant</item>
+        <item>Parent</item>
+        <item>Frère ou sœur</item>
+        <item>Ami</item>
+        <item>Collègue</item>
+        <item>Urgence</item>
+        <item>Autre</item>
+    </string-array>
+
+    <string-array name="gender_types">
+        <item>Non défini</item>
+        <item>Homme</item>
+        <item>Femme</item>
+        <item>Autre</item>
+        <item>Aucun</item>
+        <item>Inconnu</item>
+    </string-array>
+
+</resources>

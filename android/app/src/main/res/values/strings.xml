@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <string name="app_name">Cardamum</string>
+    <string name="app_name" translatable="false">Cardamum</string>
 
     <string name="new_account">New account</string>
     <string name="cancel_auth">Cancel</string>
-    <string name="welcome">Cardamum</string>
+    <string name="welcome" translatable="false">Cardamum</string>
     <string name="welcome_value_1">All your contacts from all your accounts</string>
     <string name="welcome_value_2">accessible offline, in a shared view</string>
     <string name="welcome_description">Cardamum finds your server settings automatically, just enter anything you know about your provider</string>
@@ -18,14 +18,14 @@
     <string name="discover_failed">Could not find your contacts server settings</string>
 
     <string name="config_title">Choose a configuration</string>
-    <string name="config_carddav">CardDAV</string>
-    <string name="config_jmap">JMAP</string>
-    <string name="config_google_api">Google People API</string>
-    <string name="config_msgraph">Microsoft Graph</string>
+    <string name="config_carddav" translatable="false">CardDAV</string>
+    <string name="config_jmap" translatable="false">JMAP</string>
+    <string name="config_google_api" translatable="false">Google People API</string>
+    <string name="config_msgraph" translatable="false">Microsoft Graph</string>
     <string name="config_soon">Coming soon</string>
     <string name="config_password">Password</string>
     <string name="config_token">API token</string>
-    <string name="config_oauth2">OAuth 2.0</string>
+    <string name="config_oauth2" translatable="false">OAuth 2.0</string>
     <string name="config_oauth">Sign in with your browser</string>
     <string name="custom_login">Login (empty for an API token)</string>
 
@@ -189,7 +189,7 @@
     <string name="advanced_open">Advanced editing</string>
     <string name="advanced_add">Add property</string>
     <string name="advanced_source">Source</string>
-    <string name="advanced_hint">NAME;PARAM=value:value</string>
+    <string name="advanced_hint" translatable="false">NAME;PARAM=value:value</string>
     <string name="advanced_prop_name">Name</string>
     <string name="advanced_value">Value</string>
     <string name="advanced_param_name">Parameter</string>

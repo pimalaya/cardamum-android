@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- British English overrides; every other string falls back to the
+     United States English base in values/strings.xml. -->
+<resources>
+
+    <string name="oauth_authorization_endpoint">Authorisation endpoint</string>
+
+    <string name="sync_title">Synchronising</string>
+    <string name="sync_failed">Could not synchronise</string>
+
+    <string name="item_organization">Organisation</string>
+
+    <string name="hint_postcode">Postcode</string>
+
+</resources>
