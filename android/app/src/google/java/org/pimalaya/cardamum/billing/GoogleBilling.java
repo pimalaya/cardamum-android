@@ -6,10 +6,13 @@ import android.content.Intent;
 
 /**
  * Google Play Billing gate. The whole app is behind an active
- * subscription, so {@link #enforce} opens the paywall over the host; the
- * paywall itself queries Play, lets an active subscriber (trial included)
- * straight through, and otherwise offers the subscription. The billing
- * work lives in {@link PaywallActivity}.
+ * subscription. {@link #enforce} gates on the cached {@link Entitlement}
+ * so an entitled subscriber opens the app offline with no startup network
+ * wait: within the grace window it lets the app through and refreshes the
+ * cache from Play in the background; otherwise it opens the paywall, which
+ * queries Play live, lets an active subscriber (trial included) straight
+ * through, and otherwise offers the subscription. See
+ * docs/subscription-entitlement.md.
  */
 final class GoogleBilling implements Billing {
     private final Context context;
@@ -20,6 +23,14 @@ final class GoogleBilling implements Billing {
 
     @Override
     public void enforce(Activity host) {
-        host.startActivity(new Intent(host, PaywallActivity.class));
+        Entitlement entitlement = new Entitlement(context);
+        if (entitlement.isValid()) {
+            // Trusted offline within the grace window: open the app now
+            // and re-verify against Play in the background. A lapse
+            // surfaces at the next launch, not mid-session.
+            new PlayVerifier(context, entitlement).verify();
+        } else {
+            host.startActivity(new Intent(host, PaywallActivity.class));
+        }
     }
 }

@@ -27,16 +27,19 @@ import org.pimalaya.cardamum.R;
  * leaves the app entirely, since nothing is usable without it.
  */
 public final class PaywallActivity extends Activity {
-    // TODO: set to the subscription product id created in the Play
-    // Console (Monetize > Products > Subscriptions).
+    // The subscription product id created in the Play Console (Monetize >
+    // Products > Subscriptions): base plan "cardamum" with the trial offer
+    // "cardamum-trial".
     private static final String SUBSCRIPTION_ID = "cardamum";
 
     private BillingClient billing;
+    private Entitlement entitlement;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_paywall);
+        entitlement = new Entitlement(this);
         findViewById(R.id.paywall_subscribe).setOnClickListener(view -> subscribe());
 
         billing =
@@ -73,7 +76,15 @@ public final class PaywallActivity extends Activity {
                         .setProductType(BillingClient.ProductType.SUBS)
                         .build(),
                 (result, purchases) -> {
-                    if (isActive(purchases)) {
+                    boolean answered =
+                            result.getResponseCode() == BillingClient.BillingResponseCode.OK;
+                    boolean active = answered && Subscriptions.isActive(purchases);
+                    // Only refresh the cache on a definitive Play answer, so
+                    // a failed query never marks a subscriber as lapsed.
+                    if (answered) {
+                        entitlement.record(active);
+                    }
+                    if (active) {
                         acknowledge(purchases);
                         runOnUiThread(this::unlock);
                     } else {
@@ -120,22 +131,11 @@ public final class PaywallActivity extends Activity {
 
     private void onPurchasesUpdated(BillingResult result, List<Purchase> purchases) {
         if (result.getResponseCode() == BillingClient.BillingResponseCode.OK
-                && isActive(purchases)) {
+                && Subscriptions.isActive(purchases)) {
+            entitlement.record(true);
             acknowledge(purchases);
             unlock();
         }
-    }
-
-    private boolean isActive(List<Purchase> purchases) {
-        if (purchases == null) {
-            return false;
-        }
-        for (Purchase purchase : purchases) {
-            if (purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /** Google requires a purchase to be acknowledged or it is refunded. */
