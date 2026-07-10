@@ -90,6 +90,8 @@
     <string name="delete_selected_confirm">Supprimer les contacts sélectionnés ?</string>
     <string name="contact_new">Nouveau contact</string>
     <string name="contact_save">Enregistrer</string>
+    <string name="contact_add_field">Ajouter un champ</string>
+    <string name="add_field_none">Tous les champs sont affichés</string>
     <string name="contact_delete">Supprimer</string>
     <string name="contact_delete_confirm">Supprimer ce contact ?</string>
     <string name="save_failed">Impossible d\'enregistrer le contact</string>

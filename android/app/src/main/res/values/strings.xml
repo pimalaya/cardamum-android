@@ -98,6 +98,8 @@
     <string name="delete_selected_confirm">Delete the selected contacts?</string>
     <string name="contact_new">New contact</string>
     <string name="contact_save">Save</string>
+    <string name="contact_add_field">Add field</string>
+    <string name="add_field_none">All fields are shown</string>
     <string name="contact_delete">Delete</string>
     <string name="contact_delete_confirm">Delete this contact?</string>
     <string name="save_failed">Could not save the contact</string>

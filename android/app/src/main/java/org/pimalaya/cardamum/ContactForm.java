@@ -11,6 +11,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
@@ -21,7 +22,9 @@ import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.HashSet;
 import java.util.List;
@@ -55,6 +58,34 @@ final class ContactForm {
     private static final int TEXT_NAME =
             InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS;
 
+    private static final int URI_INPUT =
+            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI;
+
+    /**
+     * One addable field in the catalog: the model key, the section
+     * (category) it belongs to (a section-title resource, its identity),
+     * its chooser label and icon, whether it is a repeatable list (always
+     * offerable, one entry per pick) or a single field (offerable only
+     * while absent), and the action that opens its edit dialog.
+     */
+    private final class Field {
+        final String key;
+        final int category;
+        final int label;
+        final int icon;
+        final boolean list;
+        final Runnable open;
+
+        Field(String key, int category, int label, int icon, boolean list, Runnable open) {
+            this.key = key;
+            this.category = category;
+            this.label = label;
+            this.icon = icon;
+            this.list = list;
+            this.open = open;
+        }
+    }
+
     private final Activity activity;
     private final CardamumClient client;
     private final int accentColor;
@@ -74,6 +105,10 @@ final class ContactForm {
 
     /** Changed list sections of a conflict; null outside conflict mode. */
     private Set<String> changedLists;
+
+    /** Field kinds the user revealed this session through the add-field
+     *  dialog, so their empty section keeps showing. Cleared on load. */
+    private final Set<String> revealed = new HashSet<>();
 
     ContactForm(Activity activity, CardamumClient client) {
         this.activity = activity;
@@ -95,11 +130,16 @@ final class ContactForm {
         this.model = model != null ? model : new JSONObject();
         this.alternatives = alternatives;
         this.changedLists = null;
+        this.revealed.clear();
         if (changed != null) {
             changedLists = new HashSet<>();
             for (int index = 0; index < changed.length(); index++) {
                 changedLists.add(changed.optString(index));
             }
+        } else if (this.model.length() == 0) {
+            // A brand-new contact has nothing to show, so start it on the
+            // display name rather than a blank page under the add button.
+            revealed.add("displayName");
         }
 
         render();
@@ -127,6 +167,215 @@ final class ContactForm {
         return changedLists != null;
     }
 
+    /**
+     * Whether a field or list section shows in normal (non-conflict)
+     * mode: one that carries a value or was added through a chooser this
+     * session. So the editor opens showing only the sections that hold
+     * data. Conflict mode shows the disagreeing items instead, via the
+     * {@code || conflicted / changed} branch kept at each render site.
+     */
+    private boolean shown(String key, boolean filled) {
+        return !conflict() && (filled || revealed.contains(key));
+    }
+
+    /** Whether the field or list section currently carries a value. */
+    private boolean filled(String key) {
+        switch (key) {
+            case "displayName":
+                return !model.optString("displayName").trim().isEmpty();
+            case "name.prefix":
+            case "name.given":
+            case "name.middle":
+            case "name.family":
+            case "name.suffix":
+                return !namePart(key.substring("name.".length())).isEmpty();
+            case "birthday":
+            case "anniversary":
+                return !model.optString(key).trim().isEmpty();
+            case "gender":
+                return isSet(genderSummary());
+            case "organization":
+                return isSet(organizationSummary());
+            default:
+                JSONArray values = model.optJSONArray(key);
+                return values != null && values.length() > 0;
+        }
+    }
+
+    /** A single component of the structured name, empty when unset. */
+    private String namePart(String part) {
+        JSONObject name = model.optJSONObject("name");
+        return name == null ? "" : name.optString(part).trim();
+    }
+
+    /** Appends a structured-name component row when it carries a value,
+     *  was revealed, or (in conflict mode) disagrees. */
+    private void namePartRow(List<View> identity, String part, int hint) {
+        String key = "name." + part;
+        if (shown(key, filled(key)) || conflicted(key)) {
+            identity.add(entryItem(getS(hint), value(namePart(part)), () -> namePartDialog(part, hint)));
+        }
+    }
+
+    /** Whether a summary holds a value rather than the not-set placeholder. */
+    private boolean isSet(String summary) {
+        return !summary.equals(getS(R.string.value_not_set));
+    }
+
+    /** The full field catalog with each field's category, chooser label
+     *  and icon, and the action that opens its edit dialog. */
+    private List<Field> catalog() {
+        int person = R.drawable.ic_section_person;
+        int identity = R.string.section_identity;
+        List<Field> fields = new ArrayList<>();
+
+        fields.add(new Field("displayName", identity, R.string.hint_display_name,
+                R.drawable.ic_display_name, false, this::displayNameDialog));
+        fields.add(new Field("name.prefix", identity, R.string.hint_prefix,
+                R.drawable.ic_prefix, false, () -> namePartDialog("prefix", R.string.hint_prefix)));
+        fields.add(new Field("name.given", identity, R.string.hint_given, person, false,
+                () -> namePartDialog("given", R.string.hint_given)));
+        fields.add(new Field("name.middle", identity, R.string.hint_middle, person, false,
+                () -> namePartDialog("middle", R.string.hint_middle)));
+        fields.add(new Field("name.family", identity, R.string.hint_family, person, false,
+                () -> namePartDialog("family", R.string.hint_family)));
+        fields.add(new Field("name.suffix", identity, R.string.hint_suffix,
+                R.drawable.ic_suffix, false, () -> namePartDialog("suffix", R.string.hint_suffix)));
+        fields.add(new Field("gender", identity, R.string.item_gender,
+                R.drawable.ic_gender, false, this::genderDialog));
+        fields.add(new Field("birthday", identity, R.string.hint_birthday,
+                R.drawable.ic_birthday, false, () -> pickDate("birthday")));
+        fields.add(new Field("anniversary", identity, R.string.item_anniversary,
+                R.drawable.ic_anniversary, false, () -> pickDate("anniversary")));
+
+        fields.add(new Field("organization", R.string.tab_work, R.string.item_organization,
+                R.drawable.ic_section_work, false, this::organizationDialog));
+
+        fields.add(new Field("nicknames", R.string.section_nicknames, R.string.item_nickname,
+                R.drawable.ic_section_label, true,
+                () -> stringDialog("nicknames", -1, R.string.item_nickname, 0, TEXT_NAME)));
+        fields.add(new Field("relations", R.string.section_relations, R.string.item_relation,
+                R.drawable.ic_section_group, true, () -> relationDialog(-1)));
+        fields.add(new Field("phones", R.string.section_phones, R.string.item_phone,
+                R.drawable.ic_section_call, true, () -> phoneDialog(-1)));
+        fields.add(new Field("emails", R.string.section_emails, R.string.item_email,
+                R.drawable.ic_section_mail, true, () -> emailDialog(-1)));
+        fields.add(new Field("impps", R.string.section_impps, R.string.item_impp,
+                R.drawable.ic_section_chat, true,
+                () -> stringDialog("impps", -1, R.string.item_impp, R.string.hint_impp, URI_INPUT)));
+        fields.add(new Field("addresses", R.string.section_addresses, R.string.item_address,
+                R.drawable.ic_section_location_on, true, () -> addressDialog(-1)));
+        fields.add(new Field("websites", R.string.section_websites, R.string.item_website,
+                R.drawable.ic_section_language, true,
+                () -> stringDialog("websites", -1, R.string.item_website, R.string.hint_url,
+                        URI_INPUT)));
+        fields.add(new Field("languages", R.string.section_languages, R.string.item_language,
+                R.drawable.ic_section_translate, true,
+                () -> stringDialog("languages", -1, R.string.item_language, R.string.hint_language,
+                        InputType.TYPE_CLASS_TEXT)));
+        fields.add(new Field("notes", R.string.section_notes, R.string.item_note,
+                R.drawable.ic_section_notes, true, () -> noteDialog(-1)));
+
+        return fields;
+    }
+
+    /** Whether a field can still be added: a list takes another entry any
+     *  time, a single field only while it is absent. */
+    private boolean offerable(Field field) {
+        return field.list || !shown(field.key, filled(field.key));
+    }
+
+    /** The main add action (FAB): every field that can still be added,
+     *  across all sections. */
+    void addField() {
+        List<Field> offer = new ArrayList<>();
+        for (Field field : catalog()) {
+            if (offerable(field)) {
+                offer.add(field);
+            }
+        }
+        showChooser(offer);
+    }
+
+    /** A section's add action: the same chooser, filtered to that section
+     *  (category), so its header icon only offers its own fields. */
+    private void addToSection(int category) {
+        List<Field> offer = new ArrayList<>();
+        for (Field field : catalog()) {
+            if (field.category == category && offerable(field)) {
+                offer.add(field);
+            }
+        }
+        showChooser(offer);
+    }
+
+    /**
+     * Presents the field chooser. Picking a field opens its edit dialog;
+     * saving it adds the field (and its section, when new) to the page. A
+     * lone option skips the list and opens straight away; an empty set
+     * says everything is already on the page.
+     */
+    private void showChooser(List<Field> fields) {
+        if (fields.isEmpty()) {
+            Toast.makeText(activity, R.string.add_field_none, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (fields.size() == 1) {
+            fields.get(0).open.run();
+            return;
+        }
+
+        LinearLayout list = new LinearLayout(activity);
+        list.setOrientation(LinearLayout.VERTICAL);
+        // Match the framework title's top padding at the bottom so the
+        // dialog is vertically symmetric and the last row clears the
+        // rounded corner; the title supplies the gap above the first row.
+        list.setPadding(0, dp(8), 0, dp(18));
+        ScrollView scroller = new ScrollView(activity);
+        scroller.addView(list);
+
+        AlertDialog dialog =
+                new AlertDialog.Builder(activity)
+                        .setTitle(R.string.contact_add_field)
+                        .setView(scroller)
+                        .create();
+
+        for (Field field : fields) {
+            list.addView(chooserRow(field, dialog));
+        }
+        dialog.show();
+    }
+
+    /** One icon-and-label chooser row; picking it closes the chooser and
+     *  opens the field's edit dialog. */
+    private View chooserRow(Field field, AlertDialog dialog) {
+        ImageView iconView = new ImageView(activity);
+        iconView.setImageResource(field.icon);
+        iconView.setImageTintList(ColorStateList.valueOf(labelColor));
+
+        TextView labelView = new TextView(activity);
+        labelView.setText(field.label);
+        labelView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        LinearLayout.LayoutParams labelParams =
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        labelParams.setMarginStart(dp(12));
+
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(24), dp(14), dp(24), dp(14));
+        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        row.addView(iconView, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        row.addView(labelView, labelParams);
+        row.setOnClickListener(
+                view -> {
+                    dialog.dismiss();
+                    field.open.run();
+                });
+        return row;
+    }
+
     /** Rebuilds the whole page from the working model. */
     private void render() {
         view = client.formView(model);
@@ -136,44 +385,39 @@ final class ContactForm {
         // line), the name parts, the dates and the gender. Every
         // multi-valued list is its own section below.
         List<View> identity = new ArrayList<>();
-        if (!conflict() || conflicted("displayName")) {
+        if (shown("displayName", filled("displayName")) || conflicted("displayName")) {
             identity.add(
                     entryItem(
                             getS(R.string.hint_display_name),
                             value(model.optString("displayName")),
                             this::displayNameDialog));
         }
-        if (!conflict()
-                || conflicted(
-                        "name.prefix",
-                        "name.given",
-                        "name.middle",
-                        "name.family",
-                        "name.suffix")) {
-            identity.add(
-                    entryItem(getS(R.string.item_name), nameSummary(), this::nameDialog));
-        }
-        if (!conflict() || conflicted("birthday")) {
+        namePartRow(identity, "prefix", R.string.hint_prefix);
+        namePartRow(identity, "given", R.string.hint_given);
+        namePartRow(identity, "middle", R.string.hint_middle);
+        namePartRow(identity, "family", R.string.hint_family);
+        namePartRow(identity, "suffix", R.string.hint_suffix);
+        if (shown("birthday", filled("birthday")) || conflicted("birthday")) {
             identity.add(
                     entryItem(
                             getS(R.string.hint_birthday),
                             value(model.optString("birthday")),
                             () -> pickDate("birthday")));
         }
-        if (!conflict() || conflicted("anniversary")) {
+        if (shown("anniversary", filled("anniversary")) || conflicted("anniversary")) {
             identity.add(
                     entryItem(
                             getS(R.string.item_anniversary),
                             value(model.optString("anniversary")),
                             () -> pickDate("anniversary")));
         }
-        if (!conflict() || conflicted("gender.sex", "gender.identity")) {
+        if (shown("gender", filled("gender")) || conflicted("gender.sex", "gender.identity")) {
             identity.add(
                     entryItem(getS(R.string.item_gender), genderSummary(), this::genderDialog));
         }
         section(R.string.section_identity, R.drawable.ic_section_person, identity);
 
-        if (!conflict() || changedLists.contains("nicknames")) {
+        if (shown("nicknames", filled("nicknames")) || (conflict() && changedLists.contains("nicknames"))) {
             List<View> items = new ArrayList<>();
             JSONArray nicknames = array("nicknames");
             for (int index = 0; index < nicknames.length(); index++) {
@@ -185,12 +429,11 @@ final class ContactForm {
                                 () -> stringDialog("nicknames", at, R.string.item_nickname, 0,
                                         TEXT_NAME)));
             }
-            listSection(R.string.section_nicknames, R.drawable.ic_section_label, R.string.add_nickname, items,
-                    () -> stringDialog("nicknames", -1, R.string.item_nickname, 0, TEXT_NAME));
+            section(R.string.section_nicknames, R.drawable.ic_section_label, items);
         }
 
         List<View> work = new ArrayList<>();
-        if (!conflict()
+        if (shown("organization", filled("organization"))
                 || conflicted(
                         "organization.company", "organization.department", "title", "role")) {
             work.add(
@@ -201,7 +444,7 @@ final class ContactForm {
         }
         section(R.string.tab_work, R.drawable.ic_section_work, work);
 
-        if (!conflict() || changedLists.contains("relations")) {
+        if (shown("relations", filled("relations")) || (conflict() && changedLists.contains("relations"))) {
             List<View> items = new ArrayList<>();
             JSONArray relations = array("relations");
             for (int index = 0; index < relations.length(); index++) {
@@ -213,11 +456,10 @@ final class ContactForm {
                                 typeLabel(R.array.relation_types, typeAt("relations", index)),
                                 () -> relationDialog(at)));
             }
-            listSection(R.string.section_relations, R.drawable.ic_section_group, R.string.add_relation, items,
-                    () -> relationDialog(-1));
+            section(R.string.section_relations, R.drawable.ic_section_group, items);
         }
 
-        if (!conflict() || changedLists.contains("phones")) {
+        if (shown("phones", filled("phones")) || (conflict() && changedLists.contains("phones"))) {
             List<View> items = new ArrayList<>();
             JSONArray phones = array("phones");
             for (int index = 0; index < phones.length(); index++) {
@@ -229,11 +471,10 @@ final class ContactForm {
                                 typeLabel(R.array.phone_types, typeAt("phones", index)),
                                 () -> phoneDialog(at)));
             }
-            listSection(R.string.section_phones, R.drawable.ic_section_call, R.string.add_phone, items,
-                    () -> phoneDialog(-1));
+            section(R.string.section_phones, R.drawable.ic_section_call, items);
         }
 
-        if (!conflict() || changedLists.contains("emails")) {
+        if (shown("emails", filled("emails")) || (conflict() && changedLists.contains("emails"))) {
             List<View> items = new ArrayList<>();
             JSONArray emails = array("emails");
             for (int index = 0; index < emails.length(); index++) {
@@ -245,11 +486,10 @@ final class ContactForm {
                                 typeLabel(R.array.email_types, typeAt("emails", index)),
                                 () -> emailDialog(at)));
             }
-            listSection(R.string.section_emails, R.drawable.ic_section_mail, R.string.add_email, items,
-                    () -> emailDialog(-1));
+            section(R.string.section_emails, R.drawable.ic_section_mail, items);
         }
 
-        if (!conflict() || changedLists.contains("impps")) {
+        if (shown("impps", filled("impps")) || (conflict() && changedLists.contains("impps"))) {
             List<View> items = new ArrayList<>();
             JSONArray impps = array("impps");
             for (int index = 0; index < impps.length(); index++) {
@@ -263,12 +503,10 @@ final class ContactForm {
                                         InputType.TYPE_CLASS_TEXT
                                                 | InputType.TYPE_TEXT_VARIATION_URI)));
             }
-            listSection(R.string.section_impps, R.drawable.ic_section_chat, R.string.add_impp, items,
-                    () -> stringDialog("impps", -1, R.string.item_impp, R.string.hint_impp,
-                            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
+            section(R.string.section_impps, R.drawable.ic_section_chat, items);
         }
 
-        if (!conflict() || changedLists.contains("addresses")) {
+        if (shown("addresses", filled("addresses")) || (conflict() && changedLists.contains("addresses"))) {
             List<View> items = new ArrayList<>();
             JSONArray entries = array("addresses");
             for (int index = 0; index < entries.length(); index++) {
@@ -281,11 +519,10 @@ final class ContactForm {
                                         addressAt(index).optInt("index")),
                                 () -> addressDialog(at)));
             }
-            listSection(R.string.section_addresses, R.drawable.ic_section_location_on, R.string.add_address, items,
-                    () -> addressDialog(-1));
+            section(R.string.section_addresses, R.drawable.ic_section_location_on, items);
         }
 
-        if (!conflict() || changedLists.contains("websites")) {
+        if (shown("websites", filled("websites")) || (conflict() && changedLists.contains("websites"))) {
             List<View> items = new ArrayList<>();
             JSONArray websites = array("websites");
             for (int index = 0; index < websites.length(); index++) {
@@ -299,13 +536,10 @@ final class ContactForm {
                                         InputType.TYPE_CLASS_TEXT
                                                 | InputType.TYPE_TEXT_VARIATION_URI)));
             }
-            listSection(R.string.section_websites, R.drawable.ic_section_language, R.string.add_website, items,
-                    () -> stringDialog("websites", -1, R.string.item_website,
-                            R.string.hint_url,
-                            InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI));
+            section(R.string.section_websites, R.drawable.ic_section_language, items);
         }
 
-        if (!conflict() || changedLists.contains("languages")) {
+        if (shown("languages", filled("languages")) || (conflict() && changedLists.contains("languages"))) {
             List<View> items = new ArrayList<>();
             JSONArray languages = array("languages");
             for (int index = 0; index < languages.length(); index++) {
@@ -317,42 +551,30 @@ final class ContactForm {
                                 () -> stringDialog("languages", at, R.string.item_language,
                                         R.string.hint_language, InputType.TYPE_CLASS_TEXT)));
             }
-            listSection(R.string.section_languages, R.drawable.ic_section_translate, R.string.add_language, items,
-                    () -> stringDialog("languages", -1, R.string.item_language,
-                            R.string.hint_language, InputType.TYPE_CLASS_TEXT));
+            section(R.string.section_languages, R.drawable.ic_section_translate, items);
         }
 
-        if (!conflict() || changedLists.contains("notes")) {
+        if (shown("notes", filled("notes")) || (conflict() && changedLists.contains("notes"))) {
             List<View> items = new ArrayList<>();
             JSONArray notes = array("notes");
             for (int index = 0; index < notes.length(); index++) {
                 int at = index;
                 items.add(entryItem(notes.optString(index), null, () -> noteDialog(at)));
             }
-            listSection(R.string.section_notes, R.drawable.ic_section_notes, R.string.add_note, items,
-                    () -> noteDialog(-1));
+            section(R.string.section_notes, R.drawable.ic_section_notes, items);
         }
 
     }
 
     /**
-     * Adds a section header (its icon in front of the accent label)
-     * and its items, separated from the previous section by a line in
-     * the app bar tone; an empty section vanishes.
+     * Adds a section: its icon and accent label, then a right-aligned add
+     * icon opening the chooser filtered to this section (so its header
+     * only offers its own fields), then its items, separated from the
+     * previous section by a line in the app bar tone. An empty section
+     * vanishes, and the add icon is hidden in conflict mode.
      */
     private void section(int title, int icon, List<View> items) {
-        section(title, icon, 0, items, null);
-    }
-
-    /**
-     * Adds a section header (its icon in front of the accent label) and
-     * its items. A repeatable section carries an add icon right-aligned
-     * to the screen edge in its header; passing a non-null onAdd shows
-     * that header even when the list is empty, since the icon is the way
-     * in. A plain section with no items vanishes.
-     */
-    private void section(int title, int icon, int addLabel, List<View> items, Runnable onAdd) {
-        if (items.isEmpty() && onAdd == null) {
+        if (items.isEmpty()) {
             return;
         }
 
@@ -384,8 +606,8 @@ final class ContactForm {
         header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(10), dp(16), dp(0));
         header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
         header.addView(label, labelParams);
-        if (onAdd != null) {
-            header.addView(addIcon(addLabel, onAdd));
+        if (!conflict()) {
+            header.addView(addIcon(R.string.contact_add_field, () -> addToSection(title)));
         }
         container.addView(header);
 
@@ -394,15 +616,7 @@ final class ContactForm {
         }
     }
 
-    /**
-     * A multi-value section: one row per entry, its add action carried
-     * as a right-aligned icon in the header.
-     */
-    private void listSection(int title, int icon, int addLabel, List<View> items, Runnable onAdd) {
-        section(title, icon, addLabel, items, onAdd);
-    }
-
-    /** The right-aligned add action of a repeatable section header. */
+    /** The right-aligned add action of a section header. */
     private View addIcon(int label, Runnable onClick) {
         ImageView icon = new ImageView(activity);
         icon.setImageResource(R.drawable.ic_add_entry);
@@ -440,11 +654,6 @@ final class ContactForm {
     }
 
     // ---- Item summaries -----------------------------------------------------
-
-    /** The name parts composed (the display name has its own row). */
-    private String nameSummary() {
-        return value(view.optString("name"));
-    }
 
     private String organizationSummary() {
         return value(view.optString("organization"));
@@ -510,52 +719,47 @@ final class ContactForm {
                 () -> {
                     try {
                         model.put("displayName", text(display));
+                        revealed.add("displayName");
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
                     }
                 },
-                null);
+                () -> {
+                    model.remove("displayName");
+                    revealed.remove("displayName");
+                });
     }
 
-    private void nameDialog() {
-        JSONObject name = model.optJSONObject("name");
-        JSONObject safe = name == null ? new JSONObject() : name;
-
+    /** Edits one structured-name component in place, leaving the others
+     *  (kept under the model's {@code name} object) untouched. */
+    private void namePartDialog(String part, int hint) {
         LinearLayout content = dialogContent();
-        EditText prefix =
-                dialogField(content, "name.prefix", R.string.hint_prefix,
-                        safe.optString("prefix"), TEXT_NAME);
-        EditText given =
-                dialogField(content, "name.given", R.string.hint_given,
-                        safe.optString("given"), TEXT_NAME);
-        EditText middle =
-                dialogField(content, "name.middle", R.string.hint_middle,
-                        safe.optString("middle"), TEXT_NAME);
-        EditText family =
-                dialogField(content, "name.family", R.string.hint_family,
-                        safe.optString("family"), TEXT_NAME);
-        EditText suffix =
-                dialogField(content, "name.suffix", R.string.hint_suffix,
-                        safe.optString("suffix"), TEXT_NAME);
+        EditText field =
+                dialogField(content, "name." + part, hint, namePart(part), TEXT_NAME);
 
         showDialog(
-                getS(R.string.item_name),
+                getS(hint),
                 content,
                 () -> {
                     try {
-                        model.put(
-                                "name",
-                                new JSONObject()
-                                        .put("prefix", text(prefix))
-                                        .put("given", text(given))
-                                        .put("middle", text(middle))
-                                        .put("family", text(family))
-                                        .put("suffix", text(suffix)));
+                        JSONObject name = model.optJSONObject("name");
+                        if (name == null) {
+                            name = new JSONObject();
+                        }
+                        name.put(part, text(field));
+                        model.put("name", name);
+                        revealed.add("name." + part);
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
                     }
                 },
-                null);
+                () -> {
+                    JSONObject name = model.optJSONObject("name");
+                    if (name != null) {
+                        name.remove(part);
+                    }
+                    revealed.remove("name." + part);
+                });
     }
 
     private void organizationDialog() {
@@ -588,11 +792,17 @@ final class ContactForm {
                                         .put("department", text(department)));
                         model.put("title", text(jobTitle));
                         model.put("role", text(role));
+                        revealed.add("organization");
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
                     }
                 },
-                null);
+                () -> {
+                    model.remove("organization");
+                    model.remove("title");
+                    model.remove("role");
+                    revealed.remove("organization");
+                });
     }
 
     private void phoneDialog(int index) {
@@ -805,40 +1015,73 @@ final class ContactForm {
                 index >= 0 ? () -> relations.remove(index) : null);
     }
 
-    /** The GENDER dialog: the sex code as a spinner, the identity free. */
+    /**
+     * The GENDER field: one free-text line with the standard genders as
+     * a dropdown of choices, since any identity is allowed. A listed
+     * value stores its RFC 6350 sex code, anything else the free-text
+     * identity. The dropdown opens with the dialog when adding, stays
+     * closed when editing an existing value.
+     */
     private void genderDialog() {
-        JSONObject gender = model.optJSONObject("gender");
-        JSONObject safe = gender == null ? new JSONObject() : gender;
+        String[] labels = activity.getResources().getStringArray(R.array.gender_types);
+        // The suggestions drop the leading "Not set" placeholder.
+        String[] choices = Arrays.copyOfRange(labels, 1, labels.length);
+        boolean adding = !filled("gender");
 
         LinearLayout content = dialogContent();
-        Spinner type = typeSpinner(R.array.gender_types);
-        JSONObject genderView = view.optJSONObject("gender");
-        type.setSelection(genderView == null ? 0 : genderView.optInt("sexIndex"));
-        EditText identity =
-                typedValueLine(content, type, R.string.hint_gender_identity,
-                        safe.optString("identity"), TEXT_NAME);
+        AutoCompleteTextView field =
+                autoCompleteField(content, R.string.item_gender, genderPrefill(labels), choices,
+                        adding);
 
         showDialog(
                 getS(R.string.item_gender),
                 content,
                 () -> {
-                    JSONObject fresh =
-                            client.formEntry(
-                                    "gender",
-                                    type.getSelectedItemPosition(),
-                                    text(identity),
-                                    false);
+                    String value = text(field);
                     try {
-                        if (fresh.length() == 0) {
+                        if (value.isEmpty()) {
                             model.remove("gender");
                         } else {
-                            model.put("gender", fresh);
+                            int position = indexOfIgnoreCase(labels, value);
+                            model.put(
+                                    "gender",
+                                    position > 0
+                                            ? client.formEntry("gender", position, "", false)
+                                            : new JSONObject().put("sex", "").put("identity", value));
+                            revealed.add("gender");
                         }
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
                     }
                 },
-                null);
+                () -> {
+                    model.remove("gender");
+                    revealed.remove("gender");
+                });
+    }
+
+    /** The gender field's current display value: the free identity when
+     *  set, otherwise the label of its sex code, else empty. */
+    private String genderPrefill(String[] labels) {
+        JSONObject genderView = view.optJSONObject("gender");
+        if (genderView == null) {
+            return "";
+        }
+        String identity = genderView.optString("identity");
+        if (!identity.isEmpty()) {
+            return identity;
+        }
+        int sexIndex = genderView.optInt("sexIndex");
+        return sexIndex > 0 && sexIndex < labels.length ? labels[sexIndex] : "";
+    }
+
+    private static int indexOfIgnoreCase(String[] labels, String value) {
+        for (int index = 0; index < labels.length; index++) {
+            if (labels[index].equalsIgnoreCase(value)) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     /** A date field goes straight to the system date picker. */
@@ -859,6 +1102,7 @@ final class ContactForm {
                         (picker, year, month, day) -> {
                             try {
                                 model.put(field, client.formDate(year, month + 1, day));
+                                revealed.add(field);
                             } catch (JSONException error) {
                                 throw new IllegalStateException(error);
                             }
@@ -872,6 +1116,7 @@ final class ContactForm {
                 activity.getString(R.string.clear),
                 (d, which) -> {
                     model.remove(field);
+                    revealed.remove(field);
                     render();
                 });
         dialog.show();
@@ -918,14 +1163,19 @@ final class ContactForm {
 
         AlertDialog dialog = builder.create();
 
-        // Focus the first field so the keyboard opens with the dialog.
+        // Focus the first field so it is ready. A plain field opens the
+        // keyboard with the dialog; an autocomplete does not, so its
+        // choices drop into the space the keyboard would cover instead of
+        // landing behind it.
         EditText first = firstInput(content);
         if (first != null) {
             first.requestFocus();
             first.setSelection(first.getText().length());
-            dialog.getWindow()
-                    .setSoftInputMode(
-                            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            if (!(first instanceof AutoCompleteTextView)) {
+                dialog.getWindow()
+                        .setSoftInputMode(
+                                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            }
         }
 
         dialog.show();
@@ -990,6 +1240,34 @@ final class ContactForm {
         }
 
         return input;
+    }
+
+    /**
+     * A free-text field backed by a dropdown of choices (the same
+     * completer the advanced editor used for property names): the value
+     * is editable to anything, the choices only suggest. When {@code
+     * open} the dropdown pops as the dialog opens (a fresh field), else
+     * it waits for a tap (editing an existing value).
+     */
+    private AutoCompleteTextView autoCompleteField(
+            LinearLayout content, int hint, String prefill, String[] choices, boolean open) {
+        AutoCompleteTextView field = new AutoCompleteTextView(activity);
+        field.setBackgroundTintList(ColorStateList.valueOf(accentColor));
+        field.setHint(hint);
+        field.setText(prefill);
+        field.setThreshold(1);
+        field.setAdapter(new ArrayAdapter<>(activity, R.layout.dropdown_item, choices));
+        field.setOnClickListener(view -> field.showDropDown());
+        if (open) {
+            field.setOnFocusChangeListener(
+                    (view, focused) -> {
+                        if (focused) {
+                            field.post(field::showDropDown);
+                        }
+                    });
+        }
+        content.addView(field);
+        return field;
     }
 
     /** The type spinner of an entry dialog (self-describing, no label). */

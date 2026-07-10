@@ -209,6 +209,17 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
+        <!-- Editor: save the contact; the FAB is the add-field action. -->
+        <ImageButton
+            android:id="@+id/contact_save"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/contact_save"
+            android:src="@drawable/ic_check"
+            android:tint="?android:attr/textColorPrimary"
+            android:visibility="gone" />
+
     </LinearLayout>
 
     <ViewFlipper

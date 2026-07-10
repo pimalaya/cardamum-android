@@ -221,6 +221,11 @@ public class MainActivity extends Activity {
     /** Whether the open contact offers the advanced raw editor. */
     private boolean advancedAvailable;
 
+    /** Whether the open contact loaded in conflict-resolution mode (the
+     *  form shows only diverging fields), which hides the add-field FAB
+     *  since new fields cannot show under the conflict filter. */
+    private boolean editingConflict;
+
     /** The screen currently shown: a flipper panel, or an overlay. */
     private int screen = PANEL_CONTACTS;
 
@@ -3255,6 +3260,7 @@ public class MainActivity extends Activity {
 
         editingTitle = getString(R.string.contact_new);
         advancedAvailable = true;
+        editingConflict = false;
 
         form.load(null, null, null);
         show(PANEL_CONTACT);
@@ -3316,6 +3322,9 @@ public class MainActivity extends Activity {
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
         advancedAvailable = distinctRefs(replicas).size() == 1;
+        // A non-null changed set means the union merge diverged: the form
+        // opens in conflict mode.
+        editingConflict = changed != null;
 
         form.load(model, alternatives, changed);
         show(PANEL_CONTACT);
@@ -3324,7 +3333,7 @@ public class MainActivity extends Activity {
 
     private void setUpContactPanel() {
         findViewById(R.id.contact_books).setOnClickListener(view -> manageBooks());
-        findViewById(R.id.contact_advanced).setOnClickListener(view -> openAdvanced());
+        findViewById(R.id.contact_save).setOnClickListener(view -> saveContact());
     }
 
     /**
@@ -4227,6 +4236,7 @@ public class MainActivity extends Activity {
                     R.id.contacts_sync_slot,
                     R.id.contact_advanced,
                     R.id.contact_books,
+                    R.id.contact_save,
                 }) {
             findViewById(id).setVisibility(View.GONE);
         }
@@ -4244,13 +4254,16 @@ public class MainActivity extends Activity {
             case PANEL_CONTACT:
                 title.setText(editingTitle);
                 findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                findViewById(R.id.contact_advanced)
-                        .setVisibility(advancedAvailable ? View.VISIBLE : View.GONE);
+                // The advanced raw-vCard editor is removed for now.
                 findViewById(R.id.contact_books)
                         .setVisibility(editingCard != null ? View.VISIBLE : View.GONE);
-                fab.setImageResource(R.drawable.ic_check);
-                fab.setContentDescription(getString(R.string.contact_save));
-                fab.setVisibility(View.VISIBLE);
+                // Save lives in the bar; the FAB reveals more fields, but
+                // not in conflict mode where added fields cannot show
+                // under the diverging-only filter.
+                findViewById(R.id.contact_save).setVisibility(View.VISIBLE);
+                fab.setImageResource(R.drawable.ic_add);
+                fab.setContentDescription(getString(R.string.contact_add_field));
+                fab.setVisibility(editingConflict ? View.GONE : View.VISIBLE);
                 break;
             case PANEL_ADVANCED:
                 title.setText(R.string.advanced_title);
@@ -4276,7 +4289,7 @@ public class MainActivity extends Activity {
                 addContact();
                 break;
             case PANEL_CONTACT:
-                saveContact();
+                form.addField();
                 break;
             case PANEL_SOURCE:
                 applySource();
