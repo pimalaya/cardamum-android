@@ -44,6 +44,27 @@ android {
             )
             signingConfig = signingConfigs.findByName("release")
         }
+
+        // The Google Play build: the FOSS release plus Google Play
+        // Billing, built and uploaded to Play by hand. Kept a separate
+        // build type on purpose, so `assembleRelease` stays FOSS-only
+        // (GitHub CI is untouched) and this just adds `assembleGoogle` /
+        // `bundleGoogle`. The matching-fallback lets it consume the
+        // :client `release`.
+        create("google") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+        }
+    }
+
+    // The billing seam swaps by variant, so the interface lives in
+    // `main` and each build binds its own implementation: the FOSS
+    // `src/foss` no-op is shared with debug and release, while `google`
+    // gets the Play Billing binding from its own source set. The FOSS
+    // APK never sees any Google code.
+    sourceSets {
+        getByName("debug").java.srcDir("src/foss/java")
+        getByName("release").java.srcDir("src/foss/java")
     }
 
     // One APK per ABI (smaller per-device downloads) plus a universal APK
@@ -66,6 +87,12 @@ android {
 dependencies {
     // The app's only door to the native bridge: sockets, JNI and Rust stay inside.
     implementation(project(":client"))
+
+    // Google Play Billing, pulled into the google build only, so the
+    // FOSS builds carry no Google dependency. Its manifest merge is what
+    // adds the com.android.vending.BILLING capability that unlocks
+    // subscriptions/products in the Play Console.
+    "googleImplementation"("com.android.billingclient:billing:7.1.1")
 
     // JVM-only test dependencies (nothing ships in the APK). The org.json
     // artifact stands in for the android.jar stubs so Mapping runs on the

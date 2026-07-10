@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the Google build's paywall; absent from the FOSS build. -->
+<resources>
+    <string name="paywall_title">Subscribe to use Cardamum</string>
+    <string name="paywall_description">Cardamum is a subscription app. Start your free trial to unlock it; cancel anytime in Google Play.</string>
+    <string name="paywall_subscribe">Start free trial</string>
+    <string name="paywall_unavailable">Subscriptions are unavailable right now</string>
+</resources>
