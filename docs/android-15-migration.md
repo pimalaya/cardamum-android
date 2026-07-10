@@ -20,7 +20,8 @@ SDK levels:
 
 Edge-to-edge insets: apps targeting 35 draw under the system bars, so the chrome is pushed back in with the bar insets (only on API 35 and up; older devices keep the platform's opaque bars and automatic inset).
 
-- MainActivity.applyEdgeToEdge sets a window-insets listener on the content view: the top inset pads the three colorPrimary app bars (main, addressbooks drawer, auth overlay), so the status bar area takes their colour as one bar; the bottom inset lifts the FAB and adds to each scrolling list's existing FAB clearance (contacts, addressbooks, config, books, advanced, source, the email row), so nothing hides under the navigation bar; the side insets pad the window for landscape bars and cutouts. The keyboard stays handled by adjustResize.
+- MainActivity.applyEdgeToEdge sets a window-insets listener on the content view: the top inset pads the three colorPrimary app bars (main, addressbooks drawer, auth overlay), so the status bar area takes their colour as one bar; the bottom inset lifts the FAB and adds to each scrolling list's existing FAB clearance (contacts, addressbooks, config, books, advanced, source, the email row), so nothing hides under the navigation bar; the side insets pad the window for landscape bars and cutouts.
+- The keyboard: edge-to-edge stops adjustResize from resizing the window for the IME, so the keyboard inset is folded into the bottom by hand, max'd with the navigation bar inset (they overlap), so the bottom-anchored email field and the FAB ride above the keyboard instead of staying behind it.
 - The Google build's PaywallActivity pads its centred content by the same insets.
 
 ## Native 16 KB alignment

@@ -4429,10 +4429,10 @@ public class MainActivity extends Activity {
      * insets: the top inset pads the colorPrimary app bars, so the status
      * bar area takes their colour as one bar; the bottom inset lifts the
      * FAB and adds to each list's FAB clearance, so nothing hides under
-     * the navigation bar; the side insets pad the window for landscape
-     * bars and cutouts. Older devices keep the platform's opaque bars and
-     * automatic content inset, so this only runs on API 35 and up; the
-     * keyboard stays handled by adjustResize.
+     * the navigation bar or the keyboard; the side insets pad the window
+     * for landscape bars and cutouts. Older devices keep the platform's
+     * opaque bars and automatic content inset, so this only runs on API 35
+     * and up.
      */
     private void applyEdgeToEdge() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
@@ -4446,14 +4446,20 @@ public class MainActivity extends Activity {
                             insets.getInsets(
                                     WindowInsets.Type.systemBars()
                                             | WindowInsets.Type.displayCutout());
-                    applyBarInsets(root, bars);
+                    // Edge-to-edge stops adjustResize from resizing for the
+                    // keyboard, so the keyboard inset is folded into the
+                    // bottom by hand; it overlaps the navigation bar, hence
+                    // the max rather than a sum.
+                    Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                    int bottom = Math.max(bars.bottom, ime.bottom);
+                    applyBarInsets(root, bars, bottom);
                     return insets;
                 });
         root.requestApplyInsets();
     }
 
-    /** Places the system-bar insets on the chrome; see applyEdgeToEdge. */
-    private void applyBarInsets(View root, Insets bars) {
+    /** Places the system-bar and keyboard insets on the chrome; see applyEdgeToEdge. */
+    private void applyBarInsets(View root, Insets bars, int bottom) {
         root.setPadding(bars.left, root.getPaddingTop(), bars.right, root.getPaddingBottom());
 
         // Only one bar shows at a time, but all three carry the top inset.
@@ -4462,15 +4468,16 @@ public class MainActivity extends Activity {
         padTop(R.id.auth_bar, bars.top);
 
         // The base is each view's designed FAB clearance, so re-applying
-        // stays idempotent as the listener fires again.
-        padBottom(R.id.fab_frame, 0, bars.bottom);
-        padBottom(R.id.contacts_list, 88, bars.bottom);
-        padBottom(R.id.home_container, 88, bars.bottom);
-        padBottom(R.id.config_container, 88, bars.bottom);
-        padBottom(R.id.books_container, 88, bars.bottom);
-        padBottom(R.id.advanced_container, 24, bars.bottom);
-        padBottom(R.id.source_input, 16, bars.bottom);
-        padBottom(R.id.email_row, 16, bars.bottom);
+        // stays idempotent as the listener fires again. The bottom folds
+        // in the keyboard, so the FAB and the email field ride above it.
+        padBottom(R.id.fab_frame, 0, bottom);
+        padBottom(R.id.contacts_list, 88, bottom);
+        padBottom(R.id.home_container, 88, bottom);
+        padBottom(R.id.config_container, 88, bottom);
+        padBottom(R.id.books_container, 88, bottom);
+        padBottom(R.id.advanced_container, 24, bottom);
+        padBottom(R.id.source_input, 16, bottom);
+        padBottom(R.id.email_row, 16, bottom);
     }
 
     private void padTop(int id, int top) {

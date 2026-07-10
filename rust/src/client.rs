@@ -122,6 +122,7 @@ use pimconf::{
 };
 use secrecy::SecretString;
 use url::Url;
+use vcard::tree::cst::VcardCst;
 
 use crate::{
     account::{self, Backend},
@@ -874,7 +875,7 @@ impl<'a, 'local> Client<'a, 'local> {
             USER_AGENT,
             url.path(),
             id,
-            vcard.as_bytes().to_vec(),
+            normalize_vcard(vcard).as_bytes().to_vec(),
         );
 
         Ok(self.run(url, coroutine)?.etag)
@@ -921,7 +922,7 @@ impl<'a, 'local> Client<'a, 'local> {
             USER_AGENT,
             url.path(),
             uri,
-            vcard.as_bytes().to_vec(),
+            normalize_vcard(vcard).as_bytes().to_vec(),
             if_match,
         );
 
@@ -2359,6 +2360,23 @@ fn auth(credentials: &Credentials) -> WebdavAuth {
     }
 }
 
+/// Ensures an outgoing vCard carries the mandatory properties its version
+/// requires, so strict CardDAV servers accept it.
+///
+/// A vCard 3.0 without the required `N` is rejected by iCloud and Fastmail
+/// with a parse error; contacts entered with only a display name have `FN`
+/// but no `N`. This delegates to vcard-rs's spec-driven, byte-preserving
+/// repair (`VcardCst::fill_required`), which supplies the missing empty
+/// `N:;;;;` (and any other required property) and leaves a valid card
+/// untouched. A body that will not parse is sent as-is rather than
+/// dropped.
+fn normalize_vcard(vcard: &str) -> Cow<'_, str> {
+    match VcardCst::parse(vcard) {
+        Ok(mut card) => Cow::Owned(card.fill_required().to_string()),
+        Err(_) => Cow::Borrowed(vcard),
+    }
+}
+
 /// Authorization header value from the credentials, following the same
 /// convention as [`auth`]: an empty login means the password field
 /// carries an OAuth 2.0 access token (Bearer), otherwise HTTP Basic.
@@ -2565,5 +2583,20 @@ mod tests {
 
         assert!(search_domain("").is_err());
         assert!(search_domain("user@").is_err());
+    }
+
+    /// The CardDAV write path repairs a vCard 3.0 that lacks the
+    /// mandatory `N` via vcard-rs; an already valid card round-trips
+    /// unchanged, and unparseable input passes straight through. The
+    /// injection itself is covered in vcard-rs.
+    #[test]
+    fn normalize_vcard_supplies_the_mandatory_n() {
+        let missing = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:x\r\nFN:Only\r\nEND:VCARD\r\n";
+        assert!(normalize_vcard(missing).contains("N:;;;;\r\n"));
+
+        let with_n = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jane;;;\r\nFN:Jane\r\nEND:VCARD\r\n";
+        assert_eq!(&*normalize_vcard(with_n), with_n);
+
+        assert!(matches!(normalize_vcard("not a vcard"), Cow::Borrowed(_)));
     }
 }
