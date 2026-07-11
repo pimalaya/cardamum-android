@@ -1963,8 +1963,10 @@ public class MainActivity extends Activity {
             // An unsubscribed book is dimmed.
             row.setAlpha(entry.subscribed ? 1f : 0.5f);
 
+            // The leading icon reflects the book's state: pinned when
+            // enabled, crossed-out when disabled.
             android.widget.ImageView book = new android.widget.ImageView(this);
-            book.setImageResource(R.drawable.ic_addressbooks);
+            book.setImageResource(entry.subscribed ? R.drawable.ic_pin : R.drawable.ic_pin_off);
             book.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.textColorSecondary)));
@@ -1975,12 +1977,11 @@ public class MainActivity extends Activity {
 
             row.addView(name);
 
-            // A tiny trailing glyph flags a subscribed book that is not
-            // mirrored to the phone; an unsubscribed book needs none (the
-            // dimmed row already says it).
-            if (entry.subscribed && !entry.phoneSynced) {
+            // A tiny trailing glyph flags a book mirrored into the phone's
+            // Contacts app.
+            if (entry.subscribed && entry.phoneSynced) {
                 android.widget.ImageView state = new android.widget.ImageView(this);
-                state.setImageResource(R.drawable.ic_mobile_off);
+                state.setImageResource(R.drawable.ic_phone_sync);
                 state.setAlpha(0.6f);
                 LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(dp(16), dp(16));
                 stateParams.setMarginStart(dp(8));
@@ -2543,6 +2544,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
+        findViewById(R.id.contacts_select_all).setOnClickListener(view -> toggleSelectAll());
 
         findViewById(R.id.contacts_search).setOnClickListener(view -> openSearch());
         findViewById(R.id.contacts_search_close).setOnClickListener(view -> closeSearch());
@@ -2592,6 +2594,10 @@ public class MainActivity extends Activity {
                 });
 
         TextView sticky = findViewById(R.id.contacts_sticky_letter);
+        // Clickable only in selection mode (else it passes touches through
+        // to the list): tapping it selects or clears that whole letter.
+        sticky.setClickable(false);
+        sticky.setOnClickListener(view -> toggleLetter(sticky.getText().toString()));
         list.setOnScrollListener(
                 new android.widget.AbsListView.OnScrollListener() {
                     @Override
@@ -2665,7 +2671,7 @@ public class MainActivity extends Activity {
         openMerged(group.replicas);
     }
 
-    /** Prompts for a vCard file to import (parsing lands later). */
+    /** Prompts for a vCard file to import. */
     private void importContacts() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -2677,9 +2683,115 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == REQUEST_IMPORT && result == RESULT_OK && data != null && data.getData() != null) {
-            // TODO: hand the file to the bridge for parsing; for now just
-            // acknowledge the pick.
-            toast(data.getData().getLastPathSegment());
+            chooseImportTarget(data.getData());
+        }
+    }
+
+    /**
+     * Picks the addressbook the file imports into: the hidden local book
+     * when no real account is configured, the sole book when there is one,
+     * otherwise a chooser (the local book is never offered explicitly).
+     */
+    private void chooseImportTarget(Uri uri) {
+        List<BookEntry> books = new ArrayList<>();
+        BookEntry local = null;
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            if (LocalBook.is(entry.accountEmail)) {
+                local = entry;
+            } else {
+                books.add(entry);
+            }
+        }
+
+        if (books.isEmpty()) {
+            if (local != null) {
+                importFile(uri, local);
+            }
+            return;
+        }
+        if (books.size() == 1) {
+            importFile(uri, books.get(0));
+            return;
+        }
+
+        List<BookEntry> targets = books;
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.import_target_title)
+                .setItems(
+                        bookLabels(targets),
+                        (dialog, which) -> importFile(uri, targets.get(which)))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /**
+     * Reads a vCard file off the main thread and stores each card it holds
+     * in the chosen addressbook (a card in the local book stays unattached
+     * and shows muted until placed).
+     */
+    private void importFile(Uri uri, BookEntry target) {
+        // The FAB disables and spins while the file is read, exactly as it
+        // does through the auth flow.
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
+        io.execute(
+                () -> {
+                    int count = 0;
+                    Exception failure = null;
+                    try {
+                        count = importCards(readText(uri), target);
+                    } catch (Exception error) {
+                        failure = error;
+                    }
+                    int imported = count;
+                    Exception error = failure;
+                    main.post(
+                            () -> {
+                                setAuthLoading(R.id.fab, R.id.fab_progress, false);
+                                if (error != null) {
+                                    showError(error, R.string.import_failed);
+                                } else {
+                                    reloadContacts();
+                                    toast(getString(R.string.import_done, imported));
+                                }
+                            });
+                });
+    }
+
+    /** Splits the text into vCards and stores each in the target book. */
+    private int importCards(String text, BookEntry target) {
+        AccountEntry account = accountFor(target.accountEmail);
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile(
+                                "BEGIN:VCARD.*?END:VCARD",
+                                java.util.regex.Pattern.DOTALL
+                                        | java.util.regex.Pattern.CASE_INSENSITIVE)
+                        .matcher(text);
+        int count = 0;
+        while (matcher.find()) {
+            String vcard = matcher.group();
+            String uid = cardIndex(vcard).optString("uid");
+            String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
+            String key =
+                    account != null
+                            ? cardKey(account.account, target.book.url, id)
+                            : CardStore.key(target.book.url, id);
+            base.saveLocal(
+                    target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
+            count++;
+        }
+        return count;
+    }
+
+    /** Reads a content Uri fully as UTF-8 text. */
+    private String readText(Uri uri) throws java.io.IOException {
+        try (java.io.InputStream in = getContentResolver().openInputStream(uri);
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            return out.toString("UTF-8");
         }
     }
 
@@ -3323,6 +3435,59 @@ public class MainActivity extends Activity {
         adapter.notifyDataSetChanged();
     }
 
+    /** True when every listed contact is selected. */
+    private boolean allSelected() {
+        if (sortedContacts.isEmpty()) {
+            return false;
+        }
+        for (Group group : sortedContacts) {
+            if (!selectedKeys.contains(groupKey(group))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Selects every contact, or clears them when all are already selected. */
+    private void toggleSelectAll() {
+        boolean all = allSelected();
+        selectedKeys.clear();
+        if (!all) {
+            for (Group group : sortedContacts) {
+                selectedKeys.add(groupKey(group));
+            }
+        }
+        updateSelectionUi();
+        adapter.notifyDataSetChanged();
+    }
+
+    /**
+     * Selects every contact under a letter, or clears them when they are
+     * all already selected (the sticky letter's tap target in selection
+     * mode).
+     */
+    private void toggleLetter(String letter) {
+        List<String> keys = new ArrayList<>();
+        for (Group group : sortedContacts) {
+            if (letter.equals(letter(displayName(group.primary())))) {
+                keys.add(groupKey(group));
+            }
+        }
+        boolean all = !keys.isEmpty();
+        for (String key : keys) {
+            all &= selectedKeys.contains(key);
+        }
+        for (String key : keys) {
+            if (all) {
+                selectedKeys.remove(key);
+            } else {
+                selectedKeys.add(key);
+            }
+        }
+        updateSelectionUi();
+        adapter.notifyDataSetChanged();
+    }
+
     /** Clears the search query (the bar itself is always visible). */
     /** Swaps the title for the search pill and opens the keyboard. */
     private void openSearch() {
@@ -3409,6 +3574,14 @@ public class MainActivity extends Activity {
                                 : View.GONE);
         findViewById(R.id.contacts_delete)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+        // The select-all box, checked when every contact is selected. The
+        // sticky letter only intercepts taps (to select its letter) while
+        // selecting.
+        findViewById(R.id.contacts_select_all_slot)
+                .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
+        ((CheckBox) findViewById(R.id.contacts_select_all))
+                .setChecked(selectionMode && allSelected());
+        findViewById(R.id.contacts_sticky_letter).setClickable(selectionMode);
         // The whole overflow slot goes in selection mode, not just the
         // inner button: an empty 48dp frame would push the selection icons
         // off the edge. It stays through search, so the field stops at it.
@@ -4492,6 +4665,7 @@ public class MainActivity extends Activity {
                     R.id.contacts_search,
                     R.id.contacts_merge,
                     R.id.contacts_delete,
+                    R.id.contacts_select_all_slot,
                     R.id.contacts_more_slot,
                     R.id.contact_advanced,
                     R.id.contact_books,

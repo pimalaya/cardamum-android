@@ -161,6 +161,25 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
+        <!-- Contacts selection mode: select or clear every contact. The
+             box is centred in an app-bar-button-wide slot, exactly like
+             the per-row checkboxes (contact_end_slot). -->
+        <FrameLayout
+            android:id="@+id/contacts_select_all_slot"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:visibility="gone">
+
+            <CheckBox
+                android:id="@+id/contacts_select_all"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:buttonTint="?android:attr/textColorPrimary"
+                android:contentDescription="@string/select_all" />
+
+        </FrameLayout>
+
         <!-- Contacts: the overflow menu (Synchronize, Find duplicates);
              its icon gives way to a spinner while a sync runs. -->
         <FrameLayout
@@ -369,7 +388,7 @@
                 <ImageView
                     android:layout_width="96dp"
                     android:layout_height="96dp"
-                    android:alpha="0.75"
+                    android:alpha="0.25"
                     android:contentDescription="@null"
                     android:src="@drawable/ic_no_account"
                     android:tint="?android:attr/textColorSecondary" />
@@ -378,7 +397,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:alpha="0.75"
+                    android:alpha="0.25"
                     android:gravity="center"
                     android:text="@string/no_account"
                     android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"

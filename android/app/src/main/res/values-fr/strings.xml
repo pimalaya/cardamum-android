@@ -80,6 +80,9 @@
     <string name="add_title">Ajouter</string>
     <string name="add_contact">Ajouter un contact</string>
     <string name="import_contacts">Importer des contacts</string>
+    <string name="import_done">%1$d contact(s) importé(s)</string>
+    <string name="import_failed">Impossible d\'importer le fichier</string>
+    <string name="import_target_title">Importer dans le carnet</string>
     <string name="contacts_search">Rechercher</string>
     <string name="contact_diverged">Divergent</string>
     <string name="save_target_title">Ajouter au carnet d\'adresses</string>
@@ -95,6 +98,7 @@
     <string name="more">Plus</string>
     <string name="delete_selected">Supprimer les contacts sélectionnés</string>
     <string name="cancel_selection">Annuler la sélection</string>
+    <string name="select_all">Tout sélectionner</string>
     <string name="settings_title">Paramètres</string>
     <string name="selected_count">%1$d sélectionné(s)</string>
     <string name="delete_selected_confirm">Supprimer les contacts sélectionnés ?</string>
