@@ -448,10 +448,10 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRefreshAcce
 }
 
 /// `Native.accountInfo`: the backend behind an account base URL
-/// (`carddav`, `graph`, `jmap` or `google`) and whether its cards are
-/// account-level resources with m:n addressbook memberships; pure
-/// computation, no transport. Returns
-/// `{"backend": "..", "accountLevel": bool}`.
+/// (`carddav`, `graph`, `jmap`, `google`, or `local` for the built-in
+/// on-device account) and whether its cards are account-level resources
+/// with m:n addressbook memberships; pure computation, no transport.
+/// Returns `{"backend": "..", "accountLevel": bool}`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountInfo<'local>(
     mut env: EnvUnowned<'local>,
@@ -460,11 +460,20 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountInfo<'loc
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let base_url = read_string(env, &base_url);
-        let backend = Backend::of(&base_url);
+
+        // The local account has no transport: it is not a Backend, and
+        // reporting it as one keeps its cards non-account-level (one
+        // book, per-collection keys) and out of every backend match.
+        let (backend, account_level) = if base_url.starts_with(account::LOCAL_PREFIX) {
+            ("local", false)
+        } else {
+            let backend = Backend::of(&base_url);
+            (backend.name(), backend.account_level())
+        };
 
         let json = serde_json::json!({
-            "backend": backend.name(),
-            "accountLevel": backend.account_level(),
+            "backend": backend,
+            "accountLevel": account_level,
         })
         .to_string();
 

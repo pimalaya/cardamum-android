@@ -50,6 +50,10 @@
     <string name="subscriptions_save">Enregistrer</string>
     <string name="accounts_failed">Impossible de créer les comptes</string>
     <string name="add_account">Ajouter un compte</string>
+    <string name="local_account">Cette application</string>
+    <string name="local_book">Contacts locaux</string>
+    <string name="book_subscribe">S\'abonner</string>
+    <string name="book_phone_sync">Synchroniser avec les contacts du téléphone</string>
     <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
     <string name="delete_account_confirm">Supprimer le compte %1$s et ses données locales ?</string>
 
@@ -64,10 +68,6 @@
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Synchroniser</string>
-    <string name="sync_remote">Synchronisation distante</string>
-    <string name="sync_remote_hint">Synchroniser les contacts avec le serveur distant</string>
-    <string name="sync_local">Synchronisation locale</string>
-    <string name="sync_local_hint">Synchroniser les contacts avec le téléphone</string>
     <string name="sync_done">Synchronisé : %1$d reçus, %2$d envoyés, %3$d fusionnés</string>
     <string name="contacts_add">Ajouter</string>
     <string name="contacts_search">Rechercher</string>
@@ -77,7 +77,6 @@
     <string name="merge_target_title">Conserver la copie de quel carnet d\'adresses ?</string>
     <string name="merge_done">Contacts fusionnés ; les modifications seront envoyées à la prochaine synchronisation</string>
     <string name="manage_books_title">Carnets d\'adresses de ce contact</string>
-    <string name="manage_books_locked">Le contact doit conserver au moins un carnet d\'adresses</string>
     <string name="contact_open_failed">Impossible d\'ouvrir le contact</string>
     <string name="empty_title">Aucun contenu trouvé</string>
 

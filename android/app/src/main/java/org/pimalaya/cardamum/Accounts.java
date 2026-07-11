@@ -91,6 +91,11 @@ final class Accounts {
     }
 
     private static String name(String login, Addressbook book) {
+        // The local book has no login to qualify it; its own name stands
+        // alone in the phone's Contacts app.
+        if (LocalBook.is(login)) {
+            return book.name;
+        }
         return book.name + " (" + login + ")";
     }
 }

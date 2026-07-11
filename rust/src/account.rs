@@ -26,6 +26,12 @@ pub const GOOGLE_PREFIX: &str = "google://";
 /// `/.well-known/jmap` discovery).
 pub const JMAP_PREFIX: &str = "jmap://";
 
+/// Sentinel scheme of the built-in local account: its cards live only
+/// in the app's store and never sync to any server, so it has no
+/// transport and never reaches a [`Backend`]; only the account info
+/// tells it apart, to keep the local book out of the sync loop.
+pub const LOCAL_PREFIX: &str = "local://";
+
 /// Path segment of the default Contacts folder (empty Graph folder id).
 pub const MSGRAPH_DEFAULT_FOLDER: &str = "contacts";
 

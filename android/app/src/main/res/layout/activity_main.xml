@@ -194,7 +194,7 @@
             android:layout_height="@dimen/app_bar_button"
             android:background="@drawable/ripple_circle"
             android:contentDescription="@string/manage_books_title"
-            android:src="@drawable/ic_link"
+            android:src="@drawable/ic_addressbooks"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
@@ -255,7 +255,9 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_margin="@dimen/fab_margin">
+        android:layout_margin="@dimen/fab_margin"
+        android:clipChildren="false"
+        android:clipToPadding="false">
 
         <ImageButton
             android:id="@+id/fab"

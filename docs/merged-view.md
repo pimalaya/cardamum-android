@@ -38,6 +38,19 @@ Divergence follows the same rule: the bridge indexes every card at write time (d
 
 A contact backed by several physical cards shows a link glyph and the card count next to its name. (Colour badges per addressbook were tried and removed; per-book colours and display names may come back later as a settings page.)
 
+### Stage 5: the local book and the two-axis addressbook model (implemented)
+
+A built-in, undeletable local account "This app" with one addressbook "Local contacts" makes the app usable with no account at all: onboarding is never forced, the merged list opens on the (empty) local book, and its cards live only in the app's store. It is synthesized in memory (never in the credential store) and seeded into the addressbook table on launch, so a fresh install or a schema rebuild always finds it present and subscribed. Its `local://` base URL keeps it out of every backend transport (Native.accountInfo reports a transport-less `local` backend, non-account-level), so the remote sync skips it.
+
+Every addressbook now carries two independent switches, replacing the single subscription that used to also drive the phone projection:
+
+- **Subscribe**: its contacts are visible in the merged list and take part in sync. The local book is always subscribed (locked on).
+- **Sync to phone**: it is projected into the phone's Contacts app as its own account (the existing per-book Android-account spoke). Phone sync requires the subscription, so a book reaches the Contacts app only when both are on. Off by default, including for the local book: turn it on to push those cards to the phone under their own account name (the local book projects as "Local contacts").
+
+This decouples "synced with the server" from "on the phone" and matches how the OS Contacts app organises contacts by account, so a Gmail book shows as Gmail on the phone and a Posteo book as Posteo, instead of a single flattened pile. The accounts screen shows each book as a row with a cog (opening a settings dialog: fixed name, the two switches) plus a phone glyph when it is mirrored and a dimmed row when it is not subscribed. There is one Sync button (no remote/local dropdown): it runs the remote exchange for every subscribed book, then the phone projection for every mirrored book, and asks the contacts permission only when something actually projects.
+
+The local book is a normal, listed entry in the editor's addressbooks dialog and the guaranteed home of the placement model: unchecking every book force-checks "Local contacts" and locks it, so a contact always lives somewhere without a nagging message (Delete is the explicit removal). Checking another book re-enables it and clears the forced check. Saving applies the desired state through the same staged-membership / copy / removal machinery as any book. The create-target chooser lists "Local contacts" alongside the rest, so a new contact can be born on the device directly.
+
 ## Non-goals
 
 - **Multi-master sync**: a logical contact never pushes anywhere; only replicas do.

@@ -264,23 +264,24 @@ public class MainActivity extends Activity {
         findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
         findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
 
+        // The built-in local book is always present and subscribed, so
+        // the app opens usable with no account: onboarding is never
+        // forced; accounts are added from the addressbooks screen.
+        base.ensureLocalAddressbook(
+                LocalBook.URL, LocalBook.ACCOUNT, LocalBook.ID, getString(R.string.local_book));
+        accounts.add(LocalBook.account());
         accounts.addAll(store.loadAll());
-        if (accounts.isEmpty()) {
-            // First run: the onboarding opens over the (empty)
-            // addressbooks drawer, so backing out of it lands there.
-            startAuth();
-        } else {
-            // Offline first: the merged contacts root renders instantly
-            // from the store, syncs are manual (the Sync menu).
-            goHome();
 
-            // NOTE: adb-only hooks, so syncs can be driven headlessly:
-            // am start ... --ez syncRemote true / --ez syncLocal true
-            if (getIntent().getBooleanExtra("syncRemote", false)) {
-                syncRemote(true);
-            } else if (getIntent().getBooleanExtra("syncLocal", false)) {
-                syncLocal();
-            }
+        // Offline first: the merged contacts root renders instantly from
+        // the store, syncs are manual (the Sync menu).
+        goHome();
+
+        // NOTE: adb-only hooks, so syncs can be driven headlessly:
+        // am start ... --ez syncRemote true / --ez syncLocal true
+        if (getIntent().getBooleanExtra("syncRemote", false)) {
+            syncRemote(true);
+        } else if (getIntent().getBooleanExtra("syncLocal", false)) {
+            syncLocal();
         }
 
         // An OAuth redirect can land here rather than in onNewIntent:
@@ -1849,7 +1850,7 @@ public class MainActivity extends Activity {
 
             TextView name = new TextView(this);
             name.setText(entry.book.name);
-            name.setTextSize(15);
+            name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
             name.setTextColor(resolveColor(android.R.attr.textColorSecondary));
             name.setLayoutParams(
                     new LinearLayout.LayoutParams(
@@ -1858,48 +1859,101 @@ public class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            // The name starts at 56dp so it lines up with the account
-            // header's title, past its icon: 16dp header padding + the
-            // 24dp icon + its 16dp margin. The trailing checkbox rides in
-            // a 48dp slot with a 4dp end padding, so its centre lines up
-            // with the app-bar icon column and the account-header chevron.
-            row.setPadding(dp(56), 0, dp(4), 0);
-            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+            // The name keeps the standard 16dp left inset (lining up with
+            // the header's chevron); the cog rides in a 48dp slot whose
+            // 4dp end padding lands its glyph the same 16dp from the edge.
+            row.setPadding(dp(16), 0, dp(4), 0);
+            // An unsubscribed book is dimmed.
+            row.setAlpha(entry.subscribed ? 1f : 0.5f);
             row.addView(name);
 
-            CheckBox sync = new CheckBox(this);
-            sync.setChecked(entry.subscribed);
-            sync.setOnClickListener(view -> toggleSync(entry));
-            row.addView(iconSlot(sync));
+            // A phone glyph flags the books mirrored into the Contacts
+            // app, so the two switches read at a glance without opening.
+            if (entry.phoneSynced) {
+                android.widget.ImageView phone = new android.widget.ImageView(this);
+                phone.setImageResource(R.drawable.ic_phone_android);
+                phone.setImageTintList(
+                        android.content.res.ColorStateList.valueOf(
+                                resolveColor(android.R.attr.textColorSecondary)));
+                LinearLayout.LayoutParams phoneParams = new LinearLayout.LayoutParams(dp(20), dp(20));
+                phoneParams.setMarginEnd(dp(8));
+                row.addView(phone, phoneParams);
+            }
 
-            // The whole row is the checkbox's tap target: subscribing
-            // is the only action a book row carries.
-            row.setOnClickListener(view -> toggleSync(entry));
+            // Only the cog is the tap target: a book's settings are its
+            // only action.
+            android.widget.ImageView cog = new android.widget.ImageView(this);
+            cog.setImageResource(R.drawable.ic_settings);
+            cog.setImageTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            resolveColor(android.R.attr.textColorSecondary)));
+            android.widget.FrameLayout cogSlot = iconSlot(cog);
+            cogSlot.setBackgroundResource(
+                    resolveAttr(android.R.attr.selectableItemBackgroundBorderless));
+            cogSlot.setOnClickListener(view -> showBookSettings(entry));
+            row.addView(cogSlot);
+
             books.addView(row);
         }
     }
 
     /**
-     * Flips one addressbook's subscription within its account. A pure
-     * view filter: the cached cards stay and reappear on re-check;
-     * syncs and the phone projection only cover subscribed books.
+     * The per-addressbook settings (its name is the dialog title): a
+     * switch to subscribe (its contacts are visible and take part in
+     * sync) and a switch to mirror it into the phone's Contacts app.
+     * Phone sync needs the subscription, so it is disabled while the
+     * book is off. The local book is always subscribed, so its subscribe
+     * switch is locked on.
      */
-    private void toggleSync(BookEntry entry) {
-        java.util.Set<String> subscribed = new java.util.HashSet<>();
-        for (BookEntry candidate : base.loadAllAddressbooks()) {
-            if (!candidate.accountEmail.equals(entry.accountEmail)) {
-                continue;
-            }
-            boolean keep =
-                    candidate.book.url.equals(entry.book.url)
-                            ? !entry.subscribed
-                            : candidate.subscribed;
-            if (keep) {
-                subscribed.add(candidate.book.url);
-            }
-        }
-        base.setSubscriptions(entry.accountEmail, subscribed);
-        reloadHome();
+    private void showBookSettings(BookEntry entry) {
+        boolean local = LocalBook.is(entry.accountEmail);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(24);
+        content.setPadding(pad, dp(8), pad, 0);
+
+        LinearLayout.LayoutParams switchParams =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        switchParams.topMargin = dp(12);
+
+        android.widget.Switch subscribe = new android.widget.Switch(this);
+        subscribe.setText(R.string.book_subscribe);
+        subscribe.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+        subscribe.setChecked(local || entry.subscribed);
+        subscribe.setEnabled(!local);
+        content.addView(subscribe, switchParams);
+
+        android.widget.Switch phone = new android.widget.Switch(this);
+        phone.setText(R.string.book_phone_sync);
+        phone.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+        phone.setChecked(entry.phoneSynced);
+        phone.setEnabled(subscribe.isChecked());
+        content.addView(phone, switchParams);
+
+        // Phone sync only makes sense for a subscribed book.
+        subscribe.setOnCheckedChangeListener(
+                (view, checked) -> {
+                    phone.setEnabled(checked);
+                    if (!checked) {
+                        phone.setChecked(false);
+                    }
+                });
+
+        new AlertDialog.Builder(this)
+                .setTitle(entry.book.name)
+                .setView(content)
+                .setPositiveButton(
+                        android.R.string.ok,
+                        (dialog, which) -> {
+                            base.setBookState(
+                                    entry.book.url, subscribe.isChecked(), phone.isChecked());
+                            reloadHome();
+                        })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     /** Confirms, then removes the account and everything under it. */
@@ -1953,38 +2007,36 @@ public class MainActivity extends Activity {
      * collapsed), toggling the books container's visibility.
      */
     private View accountHeader(String email, LinearLayout books) {
-        android.widget.ImageView icon = new android.widget.ImageView(this);
-        icon.setImageResource(R.drawable.ic_account);
-        icon.setImageTintList(
+        // The chevron takes the account icon's place, as the header's
+        // leading disclosure control (right when collapsed, down when
+        // expanded).
+        android.widget.ImageView chevron = new android.widget.ImageView(this);
+        chevron.setImageResource(R.drawable.ic_chevron_right);
+        chevron.setRotation(collapsedAccounts.contains(email) ? 0 : 90);
+        chevron.setImageTintList(
                 android.content.res.ColorStateList.valueOf(
                         resolveColor(android.R.attr.textColorSecondary)));
-        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
-        iconParams.setMarginEnd(dp(16));
+        LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+        chevronParams.setMarginEnd(dp(16));
 
         TextView label = new TextView(this);
-        label.setText(email);
-        label.setTextSize(18);
+        label.setText(LocalBook.is(email) ? getString(R.string.local_account) : email);
+        label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
+        label.setTypeface(label.getTypeface(), android.graphics.Typeface.BOLD);
         label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
         label.setLayoutParams(
                 new LinearLayout.LayoutParams(
                         0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        android.widget.ImageView chevron = new android.widget.ImageView(this);
-        chevron.setImageResource(R.drawable.ic_chevron_right);
-        chevron.setRotation(collapsedAccounts.contains(email) ? 0 : 90);
-
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        // The chevron rides in a 48dp slot with a 4dp end padding, so
-        // its centre lines up with the app-bar icon column and the book
-        // rows' checkboxes.
-        header.setPadding(dp(16), 0, dp(4), 0);
+        header.setMinimumHeight(dp(48));
+        header.setPadding(dp(16), 0, dp(16), 0);
         header.setBackgroundColor(getColor(R.color.surface));
         header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
-        header.addView(icon, iconParams);
+        header.addView(chevron, chevronParams);
         header.addView(label);
-        header.addView(iconSlot(chevron));
 
         header.setOnClickListener(view -> {
             boolean collapse = books.getVisibility() == View.VISIBLE;
@@ -1996,10 +2048,14 @@ public class MainActivity extends Activity {
             books.setVisibility(collapse ? View.GONE : View.VISIBLE);
             chevron.setRotation(collapse ? 0 : 90);
         });
-        header.setOnLongClickListener(view -> {
-            confirmDeleteAccount(email);
-            return true;
-        });
+        // The local account is undeletable; every other account can be
+        // removed by long-pressing its header.
+        if (!LocalBook.is(email)) {
+            header.setOnLongClickListener(view -> {
+                confirmDeleteAccount(email);
+                return true;
+            });
+        }
 
         return header;
     }
@@ -2102,7 +2158,9 @@ public class MainActivity extends Activity {
             known.add(entry.accountEmail);
         }
         for (AccountEntry account : new ArrayList<>(accounts)) {
-            if (known.contains(account.email)) {
+            // The local account has no server to list; its book is seeded
+            // on launch, so it never needs recovery.
+            if (LocalBook.is(account.email) || known.contains(account.email)) {
                 continue;
             }
             try {
@@ -2121,6 +2179,10 @@ public class MainActivity extends Activity {
         }
 
         for (Map.Entry<String, List<BookEntry>> group : byAccount.entrySet()) {
+            // The local book has no server to reconcile against.
+            if (LocalBook.is(group.getKey())) {
+                continue;
+            }
             AccountEntry account = accountFor(group.getKey());
             if (account == null) {
                 continue;
@@ -2237,6 +2299,41 @@ public class MainActivity extends Activity {
         return message != null && message.contains("HTTP 401");
     }
 
+    /**
+     * The one sync behind the sync button: the remote exchange for every
+     * subscribed book, then the phone projection for every book set to
+     * mirror, under a single spinner. The contacts permission is asked
+     * only when something actually projects to the phone.
+     */
+    private void syncAll() {
+        // The phone passes touch ContactsContract, so they need the
+        // permission; reconciling the Android accounts (which also purges
+        // a book just switched off) does not, so it always runs.
+        if (!phoneSyncedBooks().isEmpty() && !ensureContactsPermission(this::syncAll)) {
+            return;
+        }
+
+        setSyncing(true);
+        io.execute(
+                () -> {
+                    SyncOutcome outcome = runRemoteSync();
+                    OfflineEngine.Report report = new OfflineEngine.Report();
+                    Exception failure = runLocalSync(report);
+                    outcome.pulled += report.pulled;
+                    outcome.pushed += report.pushed;
+                    outcome.merged += report.merged;
+                    if (outcome.failure == null) {
+                        outcome.failure = failure;
+                    }
+                    main.post(
+                            () -> {
+                                setSyncing(false);
+                                finishSync(false);
+                                reportSync(outcome);
+                            });
+                });
+    }
+
     /** After a sync, lands on the merged root or refreshes the open list. */
     private void finishSync(boolean toHome) {
         if (toHome) {
@@ -2284,20 +2381,22 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Reconciles the per-addressbook Android accounts and runs one
-     * phone engine pass per subscribed book, tallying into `report`.
-     * Returns a failure, or null.
+     * Reconciles the per-addressbook Android accounts and runs one phone
+     * engine pass per phone-synced book, tallying into `report`. Returns
+     * a failure, or null.
      */
     private Exception runLocalSync(OfflineEngine.Report report) {
-        List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
+        // Only the books set to mirror reach the phone; the local book
+        // rides here too when its phone switch is on.
+        List<BookEntry> phoneBooks = phoneSyncedBooks();
 
         try {
-            // The full subscribed set at once: reconcile purges accounts
-            // no longer in it, across all accounts.
-            Accounts.reconcile(this, subscribed);
+            // The full phone-synced set at once: reconcile purges the
+            // Android accounts of books no longer mirrored.
+            Accounts.reconcile(this, phoneBooks);
 
             OfflineEngine engine = new OfflineEngine(base, client, null, this);
-            for (BookEntry entry : subscribed) {
+            for (BookEntry entry : phoneBooks) {
                 engine.syncPhone(entry.book.url, report);
             }
         } catch (Exception error) {
@@ -2305,6 +2404,17 @@ public class MainActivity extends Activity {
         }
 
         return null;
+    }
+
+    /** The subscribed addressbooks the user set to mirror into the phone's Contacts app. */
+    private List<BookEntry> phoneSyncedBooks() {
+        List<BookEntry> phone = new ArrayList<>();
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            if (entry.phoneSynced) {
+                phone.add(entry);
+            }
+        }
+        return phone;
     }
 
     /**
@@ -2328,7 +2438,7 @@ public class MainActivity extends Activity {
     // ---- Contacts screen ----------------------------------------------------
 
     private void setUpContactsPanel() {
-        findViewById(R.id.contacts_sync).setOnClickListener(this::showSyncMenu);
+        findViewById(R.id.contacts_sync).setOnClickListener(view -> syncAll());
         findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
         findViewById(R.id.contacts_duplicates).setOnClickListener(view -> findDuplicates());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
@@ -2415,17 +2525,10 @@ public class MainActivity extends Activity {
      * landing cards where the user does not expect them.
      */
     private void addContact() {
-        // No account yet: the plus leads straight into onboarding.
-        if (accounts.isEmpty()) {
-            startAuth();
-            return;
-        }
-
+        // The local book is always subscribed, so there is always at
+        // least one target: with no account, a new contact lands on the
+        // device; onboarding is reached from the addressbooks screen.
         List<BookEntry> books = base.loadSubscribedAddressbooks();
-        if (books.isEmpty()) {
-            toast(getString(R.string.home_empty));
-            return;
-        }
         if (books.size() == 1) {
             openNewContact(books.get(0).book, books.get(0).accountEmail);
             return;
@@ -2444,32 +2547,6 @@ public class MainActivity extends Activity {
     }
 
     /** Shows the sync menu anchored to the sync button. */
-    private void showSyncMenu(View anchor) {
-        View content = getLayoutInflater().inflate(R.layout.menu_sync, null);
-        android.widget.PopupWindow popup =
-                new android.widget.PopupWindow(
-                        content,
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                        android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                        true);
-        popup.setElevation(dp(8));
-        popup.setBackgroundDrawable(
-                new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-        content.findViewById(R.id.menu_sync_remote)
-                .setOnClickListener(
-                        view -> {
-                            popup.dismiss();
-                            syncRemote(false);
-                        });
-        content.findViewById(R.id.menu_sync_local)
-                .setOnClickListener(
-                        view -> {
-                            popup.dismiss();
-                            syncLocal();
-                        });
-        popup.showAsDropDown(anchor);
-    }
-
     // ---- Duplicate remover ---------------------------------------------------
 
     /**
@@ -2874,7 +2951,11 @@ public class MainActivity extends Activity {
         CharSequence[] labels = new CharSequence[books.size()];
         for (int index = 0; index < books.size(); index++) {
             BookEntry entry = books.get(index);
-            labels[index] = bookLabel(entry.book.name, entry.accountEmail);
+            // The local book has no account email, so it shows on one line.
+            labels[index] =
+                    LocalBook.is(entry.accountEmail)
+                            ? getString(R.string.local_book)
+                            : bookLabel(entry.book.name, entry.accountEmail);
         }
         return labels;
     }
@@ -3822,12 +3903,15 @@ public class MainActivity extends Activity {
     /**
      * The addressbooks dialog of the open contact, the one placement
      * gesture: checked means the contact exists there, through any of
-     * its cards. The dialog only records the desired state (reopening
-     * shows it); everything applies on SAVE: a staged membership when
-     * the contact already has a card on that account-level backend, a
-     * copied card sharing the vCard UID anywhere else, a membership
-     * removal or the card's staged delete on uncheck. The contact must
-     * keep at least one addressbook (removing it everywhere is Delete).
+     * its cards. The local book ("Local contacts") is listed like any
+     * other and is the guaranteed home: unchecking every book force-
+     * checks it and locks it, so a contact always lives somewhere
+     * without a nagging message (Delete is the explicit removal). The
+     * dialog only records the desired state (reopening shows it);
+     * everything applies on SAVE: a staged membership when the contact
+     * already has a card on that account-level backend, a copied card
+     * sharing the vCard UID anywhere else, a membership removal or the
+     * card's staged delete on uncheck.
      */
     private void manageBooks() {
         if (editingReplicas.isEmpty()) {
@@ -3840,47 +3924,92 @@ public class MainActivity extends Activity {
         }
 
         List<BookEntry> books = base.loadSubscribedAddressbooks();
-        boolean[] checked = new boolean[books.size()];
+        CharSequence[] labels = bookLabels(books);
+        int localIndex = -1;
+        for (int index = 0; index < books.size(); index++) {
+            if (LocalBook.is(books.get(index).accountEmail)) {
+                localIndex = index;
+            }
+        }
+        final int local = localIndex;
+
+        CheckBox[] boxes = new CheckBox[books.size()];
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(24), dp(8), dp(24), dp(8));
+
+        // The listener re-checks and disables the local book whenever it
+        // is the only one left, and clears it again once another book is
+        // picked; the guard stops those adjustments from re-entering.
+        boolean[] updating = {false};
+        boolean[] localForced = {false};
+        Runnable enforce =
+                () -> {
+                    updating[0] = true;
+                    int count = 0;
+                    for (CheckBox box : boxes) {
+                        count += box.isChecked() ? 1 : 0;
+                    }
+                    if (count == 0 && local >= 0) {
+                        boxes[local].setChecked(true);
+                        localForced[0] = true;
+                        count = 1;
+                    }
+                    if (local >= 0) {
+                        boolean sole = count == 1 && boxes[local].isChecked();
+                        boxes[local].setEnabled(!sole);
+                    }
+                    updating[0] = false;
+                };
+
         for (int index = 0; index < books.size(); index++) {
             String url = books.get(index).book.url;
             Boolean pending = pendingBookState == null ? null : pendingBookState.get(url);
-            checked[index] = pending != null ? pending : replicaByBook.containsKey(url);
+            boolean start = pending != null ? pending : replicaByBook.containsKey(url);
+
+            final int at = index;
+            CheckBox box = new CheckBox(this);
+            box.setText(labels[index]);
+            box.setChecked(start);
+            box.setPadding(box.getPaddingLeft(), dp(12), box.getPaddingRight(), dp(12));
+            box.setOnCheckedChangeListener(
+                    (view, isChecked) -> {
+                        if (updating[0]) {
+                            return;
+                        }
+                        if (isChecked && at != local && localForced[0]) {
+                            updating[0] = true;
+                            boxes[local].setChecked(false);
+                            localForced[0] = false;
+                            updating[0] = false;
+                        }
+                        if (at == local && isChecked) {
+                            localForced[0] = false;
+                        }
+                        enforce.run();
+                    });
+            boxes[index] = box;
+            list.addView(box);
         }
+        enforce.run();
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.manage_books_title)
-                .setMultiChoiceItems(
-                        bookLabels(books),
-                        checked,
-                        (dialog, which, isChecked) -> {
-                            if (!isChecked && checkedCount(checked) == 0) {
-                                ((AlertDialog) dialog)
-                                        .getListView()
-                                        .setItemChecked(which, true);
-                                checked[which] = true;
-                                toast(getString(R.string.manage_books_locked));
-                            }
-                        })
+                .setView(scroll)
                 .setPositiveButton(
                         android.R.string.ok,
                         (dialog, which) -> {
                             pendingBookState = new HashMap<>();
                             for (int index = 0; index < books.size(); index++) {
-                                pendingBookState.put(books.get(index).book.url, checked[index]);
+                                pendingBookState.put(
+                                        books.get(index).book.url, boxes[index].isChecked());
                             }
                         })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
-    }
-
-    private static int checkedCount(boolean[] checked) {
-        int count = 0;
-        for (boolean state : checked) {
-            if (state) {
-                count++;
-            }
-        }
-        return count;
     }
 
     /**

@@ -38,7 +38,7 @@ public class CardStore extends SQLiteOpenHelper {
     // 12 = the index gained the info fallback line; 11 = the
     // divergence hash covering the extended model fields; index
     // changes rebuild the card tables.
-    private static final int VERSION = 15;
+    private static final int VERSION = 16;
 
     /** Indexes vCards at write time (pure bridge computation). */
     private final org.pimalaya.cardamum.client.CardamumClient client =
@@ -141,6 +141,7 @@ public class CardStore extends SQLiteOpenHelper {
                         + "description TEXT, "
                         + "color TEXT, "
                         + "subscribed INTEGER NOT NULL DEFAULT 1, "
+                        + "phone_synced INTEGER NOT NULL DEFAULT 0, "
                         + "checkpoint TEXT)");
         // name/email/phone/uid/hash are the write-time index computed
         // by the bridge (Native.indexCard), so the contacts list never
@@ -224,6 +225,10 @@ public class CardStore extends SQLiteOpenHelper {
         db.execSQL("DROP TABLE IF EXISTS link");
         if (oldVersion < 14) {
             db.execSQL("ALTER TABLE addressbook ADD COLUMN checkpoint TEXT");
+        }
+        if (oldVersion < 16) {
+            db.execSQL(
+                    "ALTER TABLE addressbook ADD COLUMN phone_synced INTEGER NOT NULL DEFAULT 0");
         }
         onCreate(db);
     }
@@ -441,6 +446,18 @@ public class CardStore extends SQLiteOpenHelper {
         }
     }
 
+    /**
+     * Sets one addressbook's two switches. Phone sync requires the
+     * subscription, so it is forced off whenever the book is not
+     * subscribed.
+     */
+    public void setBookState(String url, boolean subscribed, boolean phoneSynced) {
+        ContentValues values = new ContentValues();
+        values.put("subscribed", subscribed ? 1 : 0);
+        values.put("phone_synced", subscribed && phoneSynced ? 1 : 0);
+        getWritableDatabase().update("addressbook", values, "url = ?", new String[] {url});
+    }
+
     /** Drops an account and everything under it (its addressbooks and cards). */
     public void removeAccount(String accountEmail) {
         SQLiteDatabase db = getWritableDatabase();
@@ -454,6 +471,29 @@ public class CardStore extends SQLiteOpenHelper {
         } finally {
             db.endTransaction();
         }
+    }
+
+    /**
+     * Seeds the built-in local addressbook, so a fresh install or a
+     * schema rebuild always finds it present and subscribed. Ignored
+     * when the row already exists, keeping any cards and subscription.
+     */
+    public void ensureLocalAddressbook(String url, String accountEmail, String id, String name) {
+        SQLiteDatabase db = getWritableDatabase();
+
+        ContentValues values = new ContentValues();
+        values.put("url", url);
+        values.put("account_email", accountEmail);
+        values.put("id", id);
+        values.put("name", name);
+        values.put("subscribed", 1);
+        db.insertWithOnConflict("addressbook", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+
+        // Refresh only the name, so a rename across versions lands
+        // without resetting the subscription or the phone switch.
+        ContentValues rename = new ContentValues();
+        rename.put("name", name);
+        db.update("addressbook", rename, "url = ?", new String[] {url});
     }
 
     /** Every subscribed addressbook, ordered by account then name (drives the home listing). */
@@ -472,7 +512,14 @@ public class CardStore extends SQLiteOpenHelper {
                 db.query(
                         "addressbook",
                         new String[] {
-                            "url", "account_email", "id", "name", "description", "color", "subscribed"
+                            "url",
+                            "account_email",
+                            "id",
+                            "name",
+                            "description",
+                            "color",
+                            "subscribed",
+                            "phone_synced"
                         },
                         selection,
                         null,
@@ -488,7 +535,12 @@ public class CardStore extends SQLiteOpenHelper {
                                 cursor.getString(0),
                                 cursor.isNull(4) ? null : cursor.getString(4),
                                 cursor.isNull(5) ? null : cursor.getString(5));
-                books.add(new BookEntry(book, cursor.getString(1), cursor.getInt(6) == 1));
+                books.add(
+                        new BookEntry(
+                                book,
+                                cursor.getString(1),
+                                cursor.getInt(6) == 1,
+                                cursor.getInt(7) == 1));
             }
             return books;
         }
