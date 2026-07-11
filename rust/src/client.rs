@@ -1867,7 +1867,32 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let coroutine = PeopleContactUpdate::new(&auth, &person, &fields, google::READ_FIELDS, &[])
             .map_err(|err| err.to_string())?;
-        Ok(google_card(self.run_google(coroutine)?))
+        match self.run_google(coroutine) {
+            Ok(updated) => Ok(google_card(updated)),
+            // People's connections.list etag (which the engine carries as
+            // the row revision) is rejected by updateContact; only a
+            // people.get or prior-update etag is accepted. Re-read the
+            // current etag and retry once. Concurrency stays the engine's
+            // enumerate to guard: a real remote change since the base
+            // re-conflicts the row before this push runs, so the retry only
+            // bridges the etag representation gap.
+            Err(err) if err.contains("HTTP 400") && err.to_ascii_lowercase().contains("etag") => {
+                let coroutine = PeoplePersonGet::new(
+                    &auth,
+                    &resource_name,
+                    &[PeoplePersonField::ClientData],
+                    &[],
+                )
+                .map_err(|err| err.to_string())?;
+                person.etag = self.run_google(coroutine)?.etag;
+
+                let coroutine =
+                    PeopleContactUpdate::new(&auth, &person, &fields, google::READ_FIELDS, &[])
+                        .map_err(|err| err.to_string())?;
+                Ok(google_card(self.run_google(coroutine)?))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Deletes the People contact `id`.

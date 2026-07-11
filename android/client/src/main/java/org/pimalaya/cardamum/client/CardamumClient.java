@@ -752,6 +752,18 @@ public class CardamumClient {
     }
 
     /**
+     * Builds the conflict form's inputs for a both-sides-edited row: the
+     * merged document with the newer side (by REV) winning collisions as
+     * the pre-filled default, its field model, the two candidate values of
+     * every genuinely conflicted field, and an (always empty, non-null)
+     * changed list. An empty {@code alternatives} means nothing needs the
+     * user. Pure computation, no transport.
+     */
+    public JSONObject mergeConflictForm(String base, String local, String remote) {
+        return object(Native.mergeConflictForm(base, local, remote));
+    }
+
+    /**
      * Rewrites the card's UID, preserving every other byte (a plain
      * copy is a new identity). Pure computation, no transport.
      */

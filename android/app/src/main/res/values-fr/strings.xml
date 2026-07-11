@@ -22,7 +22,8 @@
     <string name="custom_login">Identifiant (vide pour un jeton d\'API)</string>
 
     <string name="oauth_custom_title">Client OAuth 2.0</string>
-    <string name="oauth_defaults_hint">Le client qui gère la connexion. En cas de doute, laissez tout tel quel.</string>
+    <string name="oauth_shipped_hint">Connexion via le client intégré de l\'application. N\'activez la configuration avancée que pour utiliser votre propre client OAuth.</string>
+    <string name="oauth_advanced">Configuration avancée</string>
     <string name="oauth_client_id">Identifiant client</string>
     <string name="oauth_client_secret">Secret client (facultatif)</string>
     <string name="oauth_authorization_endpoint">Point de terminaison d\'autorisation</string>
@@ -60,7 +61,7 @@
     <string name="book_subscribe">S\'abonner</string>
     <string name="book_phone_sync">Synchroniser avec les contacts du téléphone</string>
     <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
-    <string name="delete_account_confirm">Supprimer le compte %1$s et ses données locales ?</string>
+    <string name="delete_account_confirm">Retirer le compte %1$s ? Ses contacts restent sur cet appareil.</string>
 
     <string name="sync_title">Synchronisation</string>
     <string name="sync_addressbooks">Récupération des carnets d\'adresses</string>
@@ -69,6 +70,7 @@
     <string name="sync_no_addressbook">Aucun carnet d\'adresses trouvé.</string>
     <string name="sync_failed">Impossible de synchroniser</string>
     <string name="sync_conflicts">%1$d modification(s) en conflit avec le serveur restent locales</string>
+    <string name="sync_conflicts_pending">%1$d contact(s) divergent ; résolvez-les pour synchroniser</string>
     <string name="sync_local_requested">Synchronisation locale planifiée</string>
 
     <string name="contacts_title">Contacts</string>

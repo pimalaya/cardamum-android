@@ -432,6 +432,15 @@ final class Native {
     static native String mergeCardChanges(String base, String local, String remote);
 
     /**
+     * Builds the conflict form's inputs for a both-sides-edited row: the
+     * three-way merge with the newer side (by REV) winning collisions as
+     * the pre-filled default, and the two candidates per genuinely
+     * conflicted field; pure computation, no transport. Returns
+     * {@code {vcard, model, alternatives, changed}}.
+     */
+    static native String mergeConflictForm(String base, String local, String remote);
+
+    /**
      * Rewrites the card's UID (a plain copy is a new identity); pure
      * computation, no transport. Returns {@code {"vcard": ".."}}.
      */

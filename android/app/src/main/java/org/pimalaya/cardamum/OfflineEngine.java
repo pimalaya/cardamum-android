@@ -67,6 +67,7 @@ final class OfflineEngine implements OfflineDriver {
         int pulled;
         int pushed;
         int merged;
+        int conflicts;
     }
 
     /**
@@ -97,9 +98,10 @@ final class OfflineEngine implements OfflineDriver {
 
     /**
      * The server collection's engine pass: reconcile with the remote,
-     * fetch the bodies the spine still misses, then resolve any
-     * conflict by three-way merge (local wins same-field collisions)
-     * and push the resolutions with a second reconcile.
+     * fetch the bodies the spine still misses, then capture the remote
+     * side of any both-sides-edited row so the user can resolve the
+     * divergence by hand. Conflicts are not auto-merged or pushed; they
+     * stay conflicted until an in-app resolution stages an edit.
      */
     private void syncServer(String url, Report report) throws JSONException {
         JSONObject sync = client.offlineSync(this, url, false);
@@ -108,16 +110,10 @@ final class OfflineEngine implements OfflineDriver {
         hydrate(url);
 
         List<JSONObject> conflicts = base.loadConflicts(url);
-        if (!conflicts.isEmpty()) {
-            for (JSONObject conflict : conflicts) {
-                resolveConflict(url, conflict);
-            }
-            report.merged += conflicts.size();
-
-            JSONObject retry = client.offlineSync(this, url, false);
-            report.pushed += retry.optInt("pushed");
-            hydrate(url);
+        for (JSONObject conflict : conflicts) {
+            captureConflict(url, conflict);
         }
+        report.conflicts += conflicts.size();
     }
 
     /**
@@ -166,20 +162,18 @@ final class OfflineEngine implements OfflineDriver {
      * before the engine), and the merged card is staged as the
      * resolution, conditioned on the remote state it reconciled.
      */
-    private void resolveConflict(String url, JSONObject conflict) throws JSONException {
+    private void captureConflict(String url, JSONObject conflict) throws JSONException {
         String handle = conflict.getString("handle");
         Card remote = client.readCard(account, url, handle);
 
-        String merged =
-                client.mergeCardChanges(
-                        conflict.isNull("baseVcard") ? "" : conflict.getString("baseVcard"),
-                        conflict.getString("vcard"),
-                        remote.vcard);
-
-        if (remote.etag != null) {
-            base.setConflictRevision(url, handle, remote.etag);
-        }
-        mutateEdit(url, handle, merged);
+        // Persist only the remote body, for the resolution form. The
+        // revision the resolving push guards on stays the one the engine
+        // recorded from the enumerate (its own axis): overriding it with
+        // this read's etag breaks backends whose read etag differs from the
+        // list etag (Google People API), so the push guards on a foreign
+        // revision and the server rejects it. The row stays conflicted
+        // until the user resolves it in the conflict form.
+        base.setConflictRemote(url, handle, remote.vcard);
     }
 
     /**

@@ -25,8 +25,8 @@ use vcard::{
         prop::{
             VcardPropLens, adr::ADR, anniversary::ANNIVERSARY, bday::BDAY, categories::CATEGORIES,
             email::EMAIL, r#fn::FN, gender::GENDER, impp::IMPP, lang::LANG, n::N,
-            nickname::NICKNAME, note::NOTE, org::ORG, related::RELATED, role::ROLE, tel::TEL,
-            title::TITLE, uid::UID, url::URL,
+            nickname::NICKNAME, note::NOTE, org::ORG, related::RELATED, rev::REV, role::ROLE,
+            tel::TEL, title::TITLE, uid::UID, url::URL,
         },
     },
     value::{
@@ -1043,12 +1043,13 @@ fn raw(entry: &Value, key: &str) -> String {
 /// side wins same-field collisions (it carries the user's explicit
 /// edit), every other remote change flows in, and an update always
 /// beats a removal (the vcard-rs merge rules), so nothing is silently
-/// lost. An empty base means unknown (never captured): the local side
-/// stands in, so the edit rides through unscathed and only genuine
-/// remote additions flow in. Returns the merged card and the
-/// collision count.
+/// lost. An empty base means unknown (never captured): the remote side
+/// stands in as the base, so against it the local edit reads as the
+/// change and rides through unscathed while the remote value drops out
+/// (merging against `local` would invert this and let the remote win).
+/// Returns the merged card and the collision count.
 pub fn merge_conflict(base: &str, local: &str, remote: &str) -> Result<Value, String> {
-    let base = if base.is_empty() { local } else { base };
+    let base = if base.is_empty() { remote } else { base };
     let base = VcardCst::parse(base).map_err(|err| format!("Invalid vCard: {err}"))?;
     let local = VcardCst::parse(local).map_err(|err| format!("Invalid vCard: {err}"))?;
     let remote = VcardCst::parse(remote).map_err(|err| format!("Invalid vCard: {err}"))?;
@@ -1059,6 +1060,84 @@ pub fn merge_conflict(base: &str, local: &str, remote: &str) -> Result<Value, St
         "vcard": report.merged.to_string(),
         "conflicts": report.conflicts.len(),
     }))
+}
+
+/// Builds the conflict form's inputs for a both-sides-edited row, so the
+/// user resolves the divergence by hand. Same shape as [`merge_cards`]
+/// (`{"vcard", "model", "alternatives", "changed"}`):
+///
+/// - `vcard`/`model`: the three-way merge of `local` and `remote` against
+///   their `base`, with the newer side (by `REV`) winning genuine
+///   collisions, so its value is the form's pre-filled default; lists
+///   set-merge and non-conflicting scalars fold in.
+/// - `alternatives`: for every single field both sides moved away from the
+///   base to different values, its two candidates (the winner's first), so
+///   the form offers one chip per choice. Lists never conflict, so
+///   `changed` is always empty; it stays non-null, which turns the form's
+///   conflict mode on. An empty `alternatives` means nothing needs the
+///   user, and the caller may stage `vcard` straight away.
+pub fn merge_conflict_form(base: &str, local: &str, remote: &str) -> Result<Value, String> {
+    let remote_newer = match (rev_seconds(remote), rev_seconds(local)) {
+        (Some(remote), Some(local)) => remote > local,
+        _ => false,
+    };
+    let (winner, loser) = if remote_newer {
+        (remote, local)
+    } else {
+        (local, remote)
+    };
+
+    // With no ancestor, merging against the loser lets the winner
+    // dominate; a real base gives a true three-way.
+    let base_for_merge = if base.is_empty() { loser } else { base };
+    let merged = {
+        let base_cst =
+            VcardCst::parse(base_for_merge).map_err(|err| format!("Invalid vCard: {err}"))?;
+        let left = VcardCst::parse(winner).map_err(|err| format!("Invalid vCard: {err}"))?;
+        let right = VcardCst::parse(loser).map_err(|err| format!("Invalid vCard: {err}"))?;
+        merge(&base_cst, &left, &right).merged.to_string()
+    };
+
+    let mut model = project(&merged)?;
+    dedup_lists(&mut model);
+
+    let base_model = if base.is_empty() {
+        Value::Object(Map::new())
+    } else {
+        project(base)?
+    };
+    let winner_model = project(winner)?;
+    let loser_model = project(loser)?;
+
+    let mut alternatives = Map::new();
+    for field in SINGLE_FIELDS {
+        let base_value = single_field(&base_model, field);
+        let winner_value = single_field(&winner_model, field);
+        let loser_value = single_field(&loser_model, field);
+        if winner_value != base_value && loser_value != base_value && winner_value != loser_value {
+            alternatives.insert((*field).into(), json!([winner_value, loser_value]));
+        }
+    }
+
+    Ok(json!({
+        "vcard": merged,
+        "model": model,
+        "alternatives": Value::Object(alternatives),
+        "changed": Vec::<&str>::new(),
+    }))
+}
+
+/// The card's REV as a comparable instant, `None` when absent or
+/// unparseable.
+fn rev_seconds(vcard: &str) -> Option<i64> {
+    let card = VcardCst::parse(vcard).ok()?;
+    let version = card.version();
+    card.props
+        .iter()
+        .find_map(|line| match VcardPropKind::from_str(line.name.get()) {
+            Ok(VcardPropKind::Rev) => REV::decode(line, version).to_unix_seconds(),
+            _ => None,
+        })
 }
 
 /// Rewrites the card's UID: a plain copy is a new identity, and
@@ -1866,6 +1945,50 @@ mod tests {
         assert!(merged.contains("FN:Janet\r\n"), "got: {merged}");
         assert!(merged.contains("TEL:+332222\r\n"), "got: {merged}");
         assert_eq!(report["conflicts"], 0);
+    }
+
+    #[test]
+    fn merge_conflict_empty_base_lets_the_local_edit_win() {
+        // No captured base (the phone axis lost it): the local hub edit
+        // must win, not be silently reverted to the remote's value.
+        let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:ZZZ123\r\nEND:VCARD\r\n";
+        let remote = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company2\r\nEND:VCARD\r\n";
+
+        let report = merge_conflict("", local, remote).unwrap();
+        let merged = report["vcard"].as_str().unwrap();
+
+        assert!(merged.contains("ORG:ZZZ123\r\n"), "got: {merged}");
+        assert!(!merged.contains("ORG:Company2\r\n"), "got: {merged}");
+    }
+
+    #[test]
+    fn merge_conflict_form_surfaces_same_field_collisions_only() {
+        // ORG collides (both moved from Company20); TITLE changed on the
+        // remote only, so it is auto-taken, not offered for review.
+        let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company20\r\nTITLE:Dev\r\nREV:2026-07-11T17:00:00Z\r\nEND:VCARD\r\n";
+        let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company30\r\nTITLE:Dev\r\nREV:2026-07-11T17:08:14Z\r\nEND:VCARD\r\n";
+        let remote = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company31\r\nTITLE:Lead\r\nREV:2026-07-11T17:25:59Z\r\nEND:VCARD\r\n";
+
+        let form = merge_conflict_form(base, local, remote).unwrap();
+
+        // The remote-only TITLE change flows in; the ORG collision
+        // defaults to the newer side (remote), and only ORG is offered.
+        assert_eq!(form["model"]["title"], "Lead");
+        assert_eq!(form["model"]["organization"]["company"], "Company31");
+
+        let alternatives = form["alternatives"].as_object().unwrap();
+        assert_eq!(alternatives.len(), 1);
+        let org = alternatives["organization.company"].as_array().unwrap();
+        assert_eq!(org[0], "Company31");
+        assert_eq!(org[1], "Company30");
+
+        // Lists never conflict, so `changed` is empty but present.
+        assert_eq!(form["changed"].as_array().unwrap().len(), 0);
     }
 
     #[test]

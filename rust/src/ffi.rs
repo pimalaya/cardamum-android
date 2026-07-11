@@ -29,7 +29,7 @@ use crate::{
     project::{
         apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
         duplicate_group, find_duplicates, form_date, form_entry, form_view, group_contacts, index,
-        merge_cards, merge_conflict, project, set_uid,
+        merge_cards, merge_conflict, merge_conflict_form, project, set_uid,
     },
     store,
     types::{CardDelta, Credentials},
@@ -1300,6 +1300,34 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_mergeCardChanges
 
         let json = match merge_conflict(&base, &local, &remote) {
             Ok(merged) => merged.to_string(),
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.mergeConflictForm`: builds the conflict form's inputs for a
+/// both-sides-edited row (the newer side by REV wins collisions as the
+/// pre-filled default, both candidates offered per field); pure
+/// computation, no transport. Returns `{"vcard", "model", "alternatives",
+/// "changed"}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_mergeConflictForm<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    base: JString<'local>,
+    local: JString<'local>,
+    remote: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base = read_string(env, &base);
+        let local = read_string(env, &local);
+        let remote = read_string(env, &remote);
+
+        let json = match merge_conflict_form(&base, &local, &remote) {
+            Ok(form) => form.to_string(),
             Err(err) => error_json(&err),
         };
 

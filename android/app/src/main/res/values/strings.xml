@@ -30,7 +30,8 @@
     <string name="custom_login">Login (empty for an API token)</string>
 
     <string name="oauth_custom_title">OAuth 2.0 client</string>
-    <string name="oauth_defaults_hint">The client driving the sign-in. If unsure, leave everything as it is.</string>
+    <string name="oauth_shipped_hint">Signs in with the app\'s built-in client. Turn on advanced configuration only to use your own OAuth client.</string>
+    <string name="oauth_advanced">Advanced configuration</string>
     <string name="oauth_client_id">Client ID</string>
     <string name="oauth_client_secret">Client secret (optional)</string>
     <string name="oauth_authorization_endpoint">Authorization endpoint</string>
@@ -68,7 +69,7 @@
     <string name="book_subscribe">Enable addressbook</string>
     <string name="book_phone_sync">Enable local phone sync</string>
     <string name="home_empty">No addressbook yet. Add an account to get started.</string>
-    <string name="delete_account_confirm">Delete the account %1$s and its local data?</string>
+    <string name="delete_account_confirm">Remove the account %1$s? Its contacts stay on this device.</string>
 
     <string name="sync_title">Synchronizing</string>
     <string name="sync_addressbooks">Fetching addressbooks</string>
@@ -77,6 +78,7 @@
     <string name="sync_no_addressbook">No addressbook found.</string>
     <string name="sync_failed">Could not synchronize</string>
     <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
+    <string name="sync_conflicts_pending">%1$d contact(s) diverged; resolve them to sync</string>
     <string name="sync_local_requested">Local sync scheduled</string>
 
     <string name="contacts_title">Contacts</string>

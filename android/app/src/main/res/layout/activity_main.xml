@@ -207,7 +207,7 @@
             android:layout_height="@dimen/app_bar_button"
             android:background="@drawable/ripple_circle"
             android:contentDescription="@string/manage_books_title"
-            android:src="@drawable/ic_addressbooks"
+            android:src="@drawable/ic_account"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
@@ -337,15 +337,6 @@
                 android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
                 android:textColor="?android:attr/textColorPrimary" />
 
-            <ImageButton
-                android:id="@+id/drawer_header_add"
-                android:layout_width="@dimen/app_bar_button"
-                android:layout_height="@dimen/app_bar_button"
-                android:background="@drawable/ripple_circle"
-                android:contentDescription="@string/add_account"
-                android:src="@drawable/ic_add"
-                android:tint="?android:attr/textColorPrimary" />
-
         </LinearLayout>
 
         <FrameLayout
@@ -367,7 +358,7 @@
 
             <!-- The drawer's empty state, shown when no real account is
                  configured: an icon and a title. Adding an account lives
-                 in the title bar's plus. -->
+                 in the footer's Add row. -->
             <LinearLayout
                 android:id="@+id/drawer_empty"
                 android:layout_width="match_parent"
@@ -402,15 +393,44 @@
 
         </FrameLayout>
 
-        <!-- Bottom band on the same primary colour: sync, then About (its
-             dialog carries the app version). Add account lives in the
-             title bar's plus. -->
+        <!-- Bottom band on the same primary colour: add account, then
+             sync, then About (its dialog carries the app version). -->
         <LinearLayout
             android:id="@+id/drawer_actions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="?android:attr/colorPrimary"
             android:orientation="vertical">
+
+            <LinearLayout
+                android:id="@+id/drawer_add"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minHeight="@dimen/item_height"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/item_padding"
+                android:paddingEnd="@dimen/item_padding">
+
+                <ImageView
+                    android:layout_width="@dimen/item_icon"
+                    android:layout_height="@dimen/item_icon"
+                    android:layout_marginEnd="@dimen/item_gap"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_add"
+                    android:tint="?android:attr/textColorPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/add_account"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="@dimen/item_text" />
+
+            </LinearLayout>
 
             <LinearLayout
                 android:id="@+id/drawer_sync"

@@ -22,7 +22,6 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
-import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ViewFlipper;
@@ -96,6 +95,7 @@ public class MainActivity extends Activity {
         final String info;
         final String uid;
         final String hash;
+        final boolean conflicted;
 
         Entry(Addressbook book, String accountEmail, CardStore.Indexed indexed) {
             this.book = book;
@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
             this.info = indexed.info;
             this.uid = indexed.uid;
             this.hash = indexed.hash;
+            this.conflicted = indexed.conflicted;
         }
     }
 
@@ -247,6 +248,11 @@ public class MainActivity extends Activity {
      *  since new fields cannot show under the conflict filter. */
     private boolean editingConflict;
 
+    /** Whether the editor is resolving a both-sides-edited sync conflict:
+     *  the form's picks apply onto the captured three-way merge
+     *  (editingVcard) and stage onto the one conflicted replica. */
+    private boolean resolvingConflict;
+
     /** The screen currently shown: a flipper panel, or an overlay. */
     private int screen = PANEL_CONTACTS;
 
@@ -320,7 +326,7 @@ public class MainActivity extends Activity {
         // up before anything shows; back dismisses it onto the empty list.
         // Skipped while an OAuth redirect is being processed.
         if (savedInstanceState == null && getIntent().getData() == null && !hasRealAccount()) {
-            findViewById(R.id.flipper).postDelayed(this::startAuth, 1000);
+            findViewById(R.id.flipper).postDelayed(this::startAuth, 500);
         }
     }
 
@@ -728,6 +734,12 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.config_container);
         container.removeAllViews();
 
+        // Present the configs in preference order (JMAP, CardDAV, then
+        // the rest); the sort is stable, so discovery order breaks ties.
+        java.util.Collections.sort(
+                searchedConfigs,
+                (left, right) ->
+                        Integer.compare(serviceRank(left.service), serviceRank(right.service)));
         for (ServiceConfig config : searchedConfigs) {
             addConfigItems(container, config);
         }
@@ -746,6 +758,7 @@ public class MainActivity extends Activity {
             }
         }
 
+        selectFirstConfig();
         showAuth(STEP_CONFIG);
     }
 
@@ -770,6 +783,7 @@ public class MainActivity extends Activity {
             addMicrosoftItems(container);
         }
 
+        selectFirstConfig();
         showAuth(STEP_CONFIG);
     }
 
@@ -856,19 +870,21 @@ public class MainActivity extends Activity {
 
         LinearLayout container = findViewById(R.id.config_container);
         container.removeAllViews();
-        container.addView(
-                configItem(
-                        getString(R.string.config_carddav),
-                        host,
-                        getString(R.string.config_password),
-                        () -> promptCredentials(url, host, emailLogin())));
+        // JMAP before CardDAV, per the protocol preference order.
         container.addView(
                 configItem(
                         getString(R.string.config_jmap),
                         host,
                         getString(R.string.config_password),
                         () -> promptCredentials(jmapUrl, host, emailLogin())));
+        container.addView(
+                configItem(
+                        getString(R.string.config_carddav),
+                        host,
+                        getString(R.string.config_password),
+                        () -> promptCredentials(url, host, emailLogin())));
 
+        selectFirstConfig();
         showAuth(STEP_CONFIG);
     }
 
@@ -943,7 +959,12 @@ public class MainActivity extends Activity {
                         ? CardamumClient.jmapBase(config.url)
                         : config.url;
 
-        for (AuthMethod method : config.auth) {
+        // Offer the auth variants in preference order (OAuth 2.0, then
+        // API token, then password).
+        List<AuthMethod> methods = new ArrayList<>(config.auth);
+        java.util.Collections.sort(
+                methods, (left, right) -> Integer.compare(authRank(left.type), authRank(right.type)));
+        for (AuthMethod method : methods) {
             switch (method.type) {
                 case PASSWORD:
                     // The discovered username (or the entered email)
@@ -1003,6 +1024,48 @@ public class MainActivity extends Activity {
                 default:
                     // Nothing the app can drive; not offered.
                     break;
+            }
+        }
+    }
+
+    /** Protocol precedence: JMAP over CardDAV over anything proprietary. */
+    private static int serviceRank(String service) {
+        switch (service) {
+            case "jmap":
+                return 0;
+            case "carddav":
+                return 1;
+            default:
+                return 2;
+        }
+    }
+
+    /** Auth precedence: OAuth 2.0 over API token over password. */
+    private static int authRank(AuthMethod.Type type) {
+        switch (type) {
+            case OAUTH_AUTHORIZATION_CODE_GRANT:
+            case OAUTH_DEVICE_AUTHORIZATION_GRANT:
+            case OAUTH_ISSUER:
+                return 0;
+            case BEARER:
+                return 1;
+            default:
+                return 2;
+        }
+    }
+
+    /**
+     * Arms the first offerable option, so the config screen opens with a
+     * sane default already picked (the highest-ranked protocol and auth,
+     * per the sort applied before rendering).
+     */
+    private void selectFirstConfig() {
+        LinearLayout container = findViewById(R.id.config_container);
+        for (int at = 0; at < container.getChildCount(); at++) {
+            View child = container.getChildAt(at);
+            if (child instanceof android.widget.RadioButton && child.isEnabled()) {
+                child.performClick();
+                break;
             }
         }
     }
@@ -1165,12 +1228,12 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Lists the just-connected account's addressbooks. Each book's name
-     * is itself the subscribe toggle (visible and in sync, on by default),
-     * with a single sub-switch under it to mirror the book into the
-     * phone's Contacts app (on by default, and only while subscribed). The
-     * same two axes the drawer's per-book settings expose. Same chrome as
-     * the config panel.
+     * Lists the just-connected account's addressbooks as a plain checkbox
+     * per book, its name the label, subscribed by default. Phone-contacts
+     * mirroring is turned on by default for every subscribed book; the
+     * drawer's per-book settings let the user turn it off later. The
+     * checkbox box sits at the panel's 24dp inset, aligned with the title
+     * and paragraph above. Same chrome as the config panel.
      */
     private void openBooksSelection(String email, List<Addressbook> books) {
         connectedEmail = email;
@@ -1190,58 +1253,26 @@ public class MainActivity extends Activity {
         for (Addressbook book : books) {
             boolean first = container.getChildCount() == 0;
 
-            // The addressbook name IS the subscribe toggle, styled as the
-            // group header; on by default.
-            Switch subscribe = new Switch(this);
+            CheckBox subscribe = new CheckBox(this);
             subscribe.setText(book.name);
             subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-            subscribe.setTypeface(subscribe.getTypeface(), android.graphics.Typeface.BOLD);
             subscribe.setTextColor(resolveColor(android.R.attr.textColorPrimary));
             subscribe.setChecked(true);
-            LinearLayout.LayoutParams headerParams =
+            LinearLayout.LayoutParams params =
                     new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT);
-            headerParams.topMargin = first ? dp(8) : dp(20);
-            subscribe.setLayoutParams(headerParams);
+            params.topMargin = first ? dp(8) : dp(4);
+            subscribe.setLayoutParams(params);
+            subscribe.setOnCheckedChangeListener((view, checked) -> updateBooksContinue());
             container.addView(subscribe);
 
-            // The one sub-toggle: phone-contacts mirror, on by default, off
-            // and disabled while the book itself is off.
-            Switch phone = authSwitch(R.string.book_phone_sync);
-            phone.setChecked(true);
-            container.addView(phone);
-
-            subscribe.setOnCheckedChangeListener(
-                    (view, checked) -> {
-                        phone.setEnabled(checked);
-                        if (!checked) {
-                            phone.setChecked(false);
-                        }
-                        updateBooksContinue();
-                    });
-
-            bookChoices.add(new BookChoice(book.url, subscribe, phone));
+            bookChoices.add(new BookChoice(book.url, subscribe));
         }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, false);
         updateBooksContinue();
         showAuth(STEP_BOOKS);
-    }
-
-    /** A full-width labelled onboarding toggle, indented under its header. */
-    private Switch authSwitch(int label) {
-        Switch toggle = new Switch(this);
-        toggle.setText(label);
-        toggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = dp(8);
-        params.setMarginStart(dp(8));
-        toggle.setLayoutParams(params);
-        return toggle;
     }
 
     /** Continue is enabled only while at least one addressbook is on. */
@@ -1260,8 +1291,8 @@ public class MainActivity extends Activity {
 
     /**
      * The flow's real commit: persists the connected account and its
-     * addressbooks, applies each book's subscribe and phone-sync
-     * switches, then runs the account's first sync.
+     * addressbooks, subscribes the checked ones with phone mirroring on
+     * by default, then runs the account's first sync.
      */
     private void confirmBooks() {
         accounts.removeIf(entry -> entry.email.equals(connectedEmail));
@@ -1270,24 +1301,22 @@ public class MainActivity extends Activity {
         pendingAccount = null;
         base.replaceAddressbooks(connectedEmail, pendingBooks);
         for (BookChoice choice : bookChoices) {
-            base.setBookState(
-                    choice.url, choice.subscribe.isChecked(), choice.phone.isChecked());
+            boolean subscribed = choice.subscribe.isChecked();
+            base.setBookState(choice.url, subscribed, subscribed);
         }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, true);
         syncRemote(true);
     }
 
-    /** One addressbook's onboarding switches (subscribe + phone sync). */
+    /** One addressbook's onboarding subscribe checkbox. */
     private static final class BookChoice {
         final String url;
-        final Switch subscribe;
-        final Switch phone;
+        final CheckBox subscribe;
 
-        BookChoice(String url, Switch subscribe, Switch phone) {
+        BookChoice(String url, CheckBox subscribe) {
             this.url = url;
             this.subscribe = subscribe;
-            this.phone = phone;
         }
     }
 
@@ -1536,14 +1565,49 @@ public class MainActivity extends Activity {
             fields.addView(field);
         }
 
+        // A shipped client (Google, Microsoft) needs no configuration:
+        // fold its endpoint fields behind an advanced-only checkbox, so
+        // the dialog is a one-tap confirm. A custom or discovered grant
+        // (no default flow) shows the fields straight away.
+        boolean shipped = defaultFlow != null;
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        if (shipped) {
+            // The paragraph rides in the content view (not setMessage), so
+            // it, the checkbox box and the fields all sit at the same 24dp
+            // inset rather than the dialog's own message padding.
+            TextView hint = new TextView(this);
+            hint.setText(R.string.oauth_shipped_hint);
+            hint.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+            hint.setPadding(dp(24), dp(8), dp(24), dp(8));
+            content.addView(hint);
+
+            CheckBox advanced = new CheckBox(this);
+            advanced.setText(R.string.oauth_advanced);
+            // A CheckBox's box is not offset by its own left padding the
+            // way a TextView's text is, so the indent comes from a start
+            // margin instead: the box then lines up with the title and
+            // paragraph at 24dp.
+            advanced.setPadding(0, dp(8), dp(24), dp(8));
+            LinearLayout.LayoutParams advancedParams =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            advancedParams.setMarginStart(dp(24));
+            fields.setVisibility(View.GONE);
+            advanced.setOnCheckedChangeListener(
+                    (view, checked) ->
+                            fields.setVisibility(checked ? View.VISIBLE : View.GONE));
+            content.addView(advanced, advancedParams);
+        }
+        content.addView(fields);
+
         ScrollView scroll = new ScrollView(this);
-        scroll.addView(fields);
+        scroll.addView(content);
 
         AlertDialog.Builder builder =
                 new AlertDialog.Builder(this).setTitle(R.string.oauth_custom_title);
-        if (defaultFlow != null) {
-            builder.setMessage(R.string.oauth_defaults_hint);
-        }
 
         builder.setView(scroll)
                 .setPositiveButton(
@@ -1925,7 +1989,7 @@ public class MainActivity extends Activity {
         // The drawer's bottom band: sync, add an account, or open About
         // (its dialog carries the app name and version).
         findViewById(R.id.drawer_sync).setOnClickListener(view -> syncAll());
-        findViewById(R.id.drawer_header_add).setOnClickListener(view -> startAuth());
+        findViewById(R.id.drawer_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
 
         // While a sync runs the button shows its spinner and goes inert.
@@ -2083,14 +2147,14 @@ public class MainActivity extends Activity {
                         LinearLayout.LayoutParams.WRAP_CONTENT);
         switchParams.topMargin = dp(12);
 
-        Switch subscribe = new Switch(this);
+        CheckBox subscribe = new CheckBox(this);
         subscribe.setText(R.string.book_subscribe);
         subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         subscribe.setChecked(local || entry.subscribed);
         subscribe.setEnabled(!local);
         content.addView(subscribe, switchParams);
 
-        Switch phone = new Switch(this);
+        CheckBox phone = new CheckBox(this);
         phone.setText(R.string.book_phone_sync);
         phone.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         phone.setChecked(entry.phoneSynced);
@@ -2131,7 +2195,7 @@ public class MainActivity extends Activity {
 
     private void deleteAccount(String email) {
         store.remove(email);
-        base.removeAccount(email);
+        base.detachAccountToLocal(email);
         accounts.removeIf(entry -> entry.email.equals(email));
         collapsedAccounts.remove(email);
         seenAccounts.remove(email);
@@ -2244,13 +2308,14 @@ public class MainActivity extends Activity {
 
     /**
      * Outcome of a remote sync pass: what was pulled from the server,
-     * pushed to it and left merged (kept local on a conflict), plus the
-     * first failure.
+     * pushed to it, merged on the phone axis, and left conflicted awaiting
+     * the user's manual resolution, plus the first failure.
      */
     private static final class SyncOutcome {
         int pulled;
         int pushed;
         int merged;
+        int conflicts;
         Exception failure;
     }
 
@@ -2373,12 +2438,16 @@ public class MainActivity extends Activity {
         return outcome;
     }
 
-    /** Surfaces a sync outcome: an error dialog, or a pull/push/merge toast. */
+    /** Surfaces a sync outcome: an error dialog, a pending-conflicts
+     *  notice, or a pull/push/merge toast. */
     private void reportSync(SyncOutcome outcome) {
         if (outcome.failure != null) {
             // Offline fallback: the store of the last sync keeps failing
             // addressbooks usable.
             showError(outcome.failure, R.string.sync_failed);
+        } else if (outcome.conflicts > 0) {
+            // Both-sides-edited contacts wait for manual resolution.
+            toast(getString(R.string.sync_conflicts_pending, outcome.conflicts));
         } else {
             toast(
                     getString(
@@ -2408,6 +2477,7 @@ public class MainActivity extends Activity {
             outcome.pulled += report.pulled;
             outcome.pushed += report.pushed;
             outcome.merged += report.merged;
+            outcome.conflicts += report.conflicts;
         }
     }
 
@@ -2481,6 +2551,7 @@ public class MainActivity extends Activity {
                     outcome.pulled += report.pulled;
                     outcome.pushed += report.pushed;
                     outcome.merged += report.merged;
+                    outcome.conflicts += report.conflicts;
                     if (outcome.failure == null) {
                         outcome.failure = failure;
                     }
@@ -2744,7 +2815,91 @@ public class MainActivity extends Activity {
      * form out onto every replica.
      */
     private void openGroup(Group group) {
-        openMerged(group.replicas);
+        if (conflicted(group)) {
+            openConflict(group);
+        } else {
+            openMerged(group.replicas);
+        }
+    }
+
+    /**
+     * Opens the resolution form on a both-sides-edited conflict: the
+     * bridge three-way merges the stored base, the local edit and the
+     * captured remote (the newer side by REV pre-filled, both offered as
+     * chips), and the editor loads it in conflict mode. A conflict with
+     * nothing genuinely colliding (only list edits, which merge cleanly)
+     * resolves straight away without a prompt.
+     */
+    private void openConflict(Group group) {
+        Entry replica = null;
+        for (Entry entry : group.replicas) {
+            if (entry.conflicted) {
+                replica = entry;
+                break;
+            }
+        }
+        if (replica == null) {
+            openMerged(group.replicas);
+            return;
+        }
+
+        String handle =
+                CardStore.rowHandle(replica.book.url, replica.card.uri, replica.card.id);
+        JSONObject bodies;
+        JSONObject resolution;
+        try {
+            bodies = base.loadConflict(replica.book.url, handle);
+            if (bodies == null) {
+                // The conflict was flagged but its remote is not captured
+                // yet (the capturing sync has not run); edit it plainly.
+                openMerged(group.replicas);
+                return;
+            }
+            resolution =
+                    client.mergeConflictForm(
+                            bodies.optString("base"),
+                            bodies.optString("local"),
+                            bodies.optString("remote"));
+        } catch (Exception error) {
+            showError(error, R.string.contact_open_failed);
+            return;
+        }
+
+        JSONObject alternatives = resolution.optJSONObject("alternatives");
+        if (alternatives == null || alternatives.length() == 0) {
+            // Nothing needs the user: stage the clean merge and clear the
+            // conflict.
+            try {
+                new OfflineEngine(base, client, null, null)
+                        .mutateEdit(replica.book.url, handle, resolution.optString("vcard"));
+            } catch (Exception error) {
+                showError(error, R.string.save_failed);
+                return;
+            }
+            reloadContacts();
+            return;
+        }
+
+        editingBook = replica.book;
+        editingAccountEmail = replica.accountEmail;
+        editingCard = replica.card;
+        editingReplicas = new ArrayList<>(java.util.Collections.singletonList(replica));
+        mergeSurvivor = null;
+        pendingBookState = null;
+        advancedVcard = null;
+        advancedDirty = false;
+        resolvingConflict = true;
+        editingVcard = resolution.optString("vcard");
+        editingTitle = displayName(replica);
+        advancedAvailable = false;
+        editingConflict = true;
+
+        org.json.JSONArray changed = resolution.optJSONArray("changed");
+        if (changed == null) {
+            changed = new org.json.JSONArray();
+        }
+        form.load(resolution.optJSONObject("model"), alternatives, changed);
+        show(PANEL_CONTACT);
     }
 
     /** Prompts for a vCard file to import. */
@@ -3242,6 +3397,13 @@ public class MainActivity extends Activity {
                 sortedContacts.add(group);
             }
         }
+
+        // Conflicts float to the top so they cannot be missed; the sort
+        // is stable, so the bridge's display-name order survives within
+        // the conflicted and the settled buckets alike.
+        java.util.Collections.sort(
+                sortedContacts,
+                (left, right) -> Boolean.compare(conflicted(right), conflicted(left)));
         adapter.notifyDataSetChanged();
 
         // One empty state for every cause: a search miss, an empty
@@ -3319,18 +3481,19 @@ public class MainActivity extends Activity {
             links.setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
             links.setText(String.valueOf(cards));
 
-            // The trailing slot: the selection checkbox, or the
-            // divergence flag outside selection.
-            boolean isDiverged = diverged(group);
+            // The trailing slot: the selection checkbox, or (outside
+            // selection) the warning flag for a both-sides-edited conflict
+            // awaiting resolution or a merged-view replica divergence.
+            boolean isFlagged = conflicted(group) || diverged(group);
             CheckBox check = row.findViewById(R.id.contact_check);
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
             check.setChecked(selectedKeys.contains(groupKey(group)));
             android.widget.ImageView danger = row.findViewById(R.id.contact_diverged);
             danger.setImageTintList(
                     android.content.res.ColorStateList.valueOf(dangerColor()));
-            danger.setVisibility(!selectionMode && isDiverged ? View.VISIBLE : View.GONE);
+            danger.setVisibility(!selectionMode && isFlagged ? View.VISIBLE : View.GONE);
             row.findViewById(R.id.contact_end_slot)
-                    .setVisibility(selectionMode || isDiverged ? View.VISIBLE : View.GONE);
+                    .setVisibility(selectionMode || isFlagged ? View.VISIBLE : View.GONE);
 
             // A contact living only in the hidden local book (attached to
             // no addressbook) is shown muted.
@@ -3821,6 +3984,17 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /** True when any replica is a both-sides-edited sync conflict awaiting
+     *  the user's manual resolution. */
+    private static boolean conflicted(Group group) {
+        for (Entry entry : group.replicas) {
+            if (entry.conflicted) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The replica's display name from its index, id fallback. */
     private static String displayName(Entry entry) {
         return entry.name.isEmpty() ? entry.card.id : entry.name;
@@ -3852,6 +4026,7 @@ public class MainActivity extends Activity {
         editingTitle = getString(R.string.contact_new);
         advancedAvailable = true;
         editingConflict = false;
+        resolvingConflict = false;
 
         form.load(null, null, null);
         show(PANEL_CONTACT);
@@ -3873,6 +4048,7 @@ public class MainActivity extends Activity {
         pendingBookState = null;
         advancedVcard = null;
         advancedDirty = false;
+        resolvingConflict = false;
 
         // The distinct documents behind the group: one per normalized
         // content hash. One document means a plain edit; several go
@@ -3937,6 +4113,7 @@ public class MainActivity extends Activity {
         pendingBookState = null;
         advancedVcard = null;
         advancedDirty = false;
+        resolvingConflict = false;
         reloadContacts();
         showBack(PANEL_CONTACTS);
     }
@@ -4593,6 +4770,8 @@ public class MainActivity extends Activity {
                         cardKey(account.account, editingBook.url, id),
                         editingBook.url,
                         new Card(id, null, null, vcard));
+            } else if (resolvingConflict) {
+                saveConflictResolution(model);
             } else if (mergeSurvivor != null) {
                 saveMerge(model);
             } else {
@@ -4641,6 +4820,23 @@ public class MainActivity extends Activity {
                     CardStore.rowHandle(entry.book.url, entry.card.uri, entry.card.id),
                     vcard);
         }
+    }
+
+    /**
+     * The conflict-resolution save: the form's picks apply onto the
+     * captured three-way merge (so remote's non-conflicting changes and
+     * unmanaged data survive), staged onto the one conflicted replica.
+     * Editing the conflicted placement resolves it in the engine, and the
+     * next sync pushes it guarded on the observed remote revision.
+     */
+    private void saveConflictResolution(JSONObject model) throws JSONException {
+        Entry replica = editingReplicas.get(0);
+        String resolved = client.applyCard(editingVcard, model);
+        new OfflineEngine(base, client, null, null)
+                .mutateEdit(
+                        replica.book.url,
+                        CardStore.rowHandle(replica.book.url, replica.card.uri, replica.card.id),
+                        resolved);
     }
 
     /**
@@ -4833,10 +5029,11 @@ public class MainActivity extends Activity {
                 title.setText(editingTitle);
                 findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
                 // Placing the contact in addressbooks needs a real account
-                // to target; with only the local book the button hides.
+                // to target; with only the local book, or while resolving a
+                // conflict, the button hides.
                 findViewById(R.id.contact_books)
                         .setVisibility(
-                                editingCard != null && hasRealAccount()
+                                editingCard != null && hasRealAccount() && !resolvingConflict
                                         ? View.VISIBLE
                                         : View.GONE);
                 // Add-field lives in the bar during a plain edit; conflict

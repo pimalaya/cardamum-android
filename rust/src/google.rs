@@ -632,9 +632,13 @@ fn display_name(person: &PeoplePerson) -> String {
         return String::new();
     };
 
-    if let Some(display) = opt(&name.display_name) {
-        return display.to_string();
-    }
+    // The FN is the free-form unstructured name, the settable field
+    // `to_person` fills from it: it round-trips and stays independent of
+    // the structured parts. People's own `display_name` is OUTPUT_ONLY,
+    // recomputed from the parts on every write, so preferring it would
+    // rebuild the FN whenever a name part changed and read back as a
+    // phantom edit; it is only a last resort when no unstructured name
+    // and no parts exist.
     if let Some(unstructured) = opt(&name.unstructured_name) {
         return unstructured.to_string();
     }
@@ -643,7 +647,11 @@ fn display_name(person: &PeoplePerson) -> String {
         .into_iter()
         .filter_map(opt)
         .collect();
-    composed.join(" ")
+    if !composed.is_empty() {
+        return composed.join(" ");
+    }
+
+    opt(&name.display_name).map(str::to_string).unwrap_or_default()
 }
 
 /// An ADR property from a People address, or None when every component

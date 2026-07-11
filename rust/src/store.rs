@@ -276,7 +276,13 @@ pub fn phone_placement(facts: &Value) -> Result<Option<Value>, String> {
         "conflict"
     } else if !on_phone {
         "created"
-    } else if phone_base.is_some_and(|base| !vcard.is_empty() && base != vcard) {
+    } else if !vcard.is_empty() && phone_base.is_none_or(|base| base != vcard) {
+        // On the phone, but the base body differs from the current card,
+        // or is unknown (a lost base). Either way the phone has not yet
+        // seen this content, so it is dirty and pushes: a lost base is
+        // re-established from the push instead of being assumed clean,
+        // which would let a stale phone value pull back and silently win
+        // over a hub edit the phone never received.
         "dirty"
     } else {
         "clean"

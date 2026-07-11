@@ -228,9 +228,13 @@ final class ContactForm {
             case "anniversary":
                 return !model.optString(key).trim().isEmpty();
             case "gender":
-                return isSet(genderSummary());
-            case "organization":
-                return isSet(organizationSummary());
+                return model.optJSONObject("gender") != null;
+            case "organization.company":
+            case "organization.department":
+                return !organizationPart(key.substring("organization.".length())).isEmpty();
+            case "title":
+            case "role":
+                return !model.optString(key).trim().isEmpty();
             default:
                 JSONArray values = model.optJSONArray(key);
                 return values != null && values.length() > 0;
@@ -250,11 +254,6 @@ final class ContactForm {
         if (shown(key, filled(key)) || conflicted(key)) {
             identity.add(entryItem(getS(hint), value(namePart(part)), () -> namePartDialog(part, hint)));
         }
-    }
-
-    /** Whether a summary holds a value rather than the not-set placeholder. */
-    private boolean isSet(String summary) {
-        return !summary.equals(getS(R.string.value_not_set));
     }
 
     /** The full field catalog with each field's category, chooser label
@@ -283,8 +282,19 @@ final class ContactForm {
         fields.add(new Field("anniversary", identity, R.string.item_anniversary,
                 R.drawable.ic_anniversary, false, () -> pickDate("anniversary")));
 
-        fields.add(new Field("organization", R.string.tab_work, R.string.item_organization,
-                R.drawable.ic_section_work, false, this::organizationDialog));
+        int work = R.string.tab_work;
+        fields.add(new Field("organization.company", work, R.string.hint_company,
+                R.drawable.ic_company, false,
+                () -> organizationPartDialog("company", R.string.hint_company)));
+        fields.add(new Field("organization.department", work, R.string.hint_department,
+                R.drawable.ic_section_work, false,
+                () -> organizationPartDialog("department", R.string.hint_department)));
+        fields.add(new Field("title", work, R.string.hint_job_title,
+                R.drawable.ic_title, false,
+                () -> simpleFieldDialog("title", R.string.hint_job_title)));
+        fields.add(new Field("role", work, R.string.hint_role,
+                R.drawable.ic_role, false,
+                () -> simpleFieldDialog("role", R.string.hint_role)));
 
         fields.add(new Field("nicknames", R.string.section_nicknames, R.string.item_nickname,
                 R.drawable.ic_section_label, true,
@@ -469,15 +479,39 @@ final class ContactForm {
             section(R.string.section_nicknames, R.drawable.ic_section_label, items);
         }
 
+        // Work holds solo fields too, each its own row so a single one
+        // can be edited and (in conflict mode) resolved on its own, like
+        // the identity section.
         List<View> work = new ArrayList<>();
-        if (shown("organization", filled("organization"))
-                || conflicted(
-                        "organization.company", "organization.department", "title", "role")) {
+        if (shown("organization.company", filled("organization.company"))
+                || conflicted("organization.company")) {
             work.add(
                     entryItem(
-                            getS(R.string.item_organization),
-                            organizationSummary(),
-                            this::organizationDialog));
+                            getS(R.string.hint_company),
+                            value(organizationPart("company")),
+                            () -> organizationPartDialog("company", R.string.hint_company)));
+        }
+        if (shown("organization.department", filled("organization.department"))
+                || conflicted("organization.department")) {
+            work.add(
+                    entryItem(
+                            getS(R.string.hint_department),
+                            value(organizationPart("department")),
+                            () -> organizationPartDialog("department", R.string.hint_department)));
+        }
+        if (shown("title", filled("title")) || conflicted("title")) {
+            work.add(
+                    entryItem(
+                            getS(R.string.hint_job_title),
+                            value(model.optString("title")),
+                            () -> simpleFieldDialog("title", R.string.hint_job_title)));
+        }
+        if (shown("role", filled("role")) || conflicted("role")) {
+            work.add(
+                    entryItem(
+                            getS(R.string.hint_role),
+                            value(model.optString("role")),
+                            () -> simpleFieldDialog("role", R.string.hint_role)));
         }
         section(R.string.tab_work, R.drawable.ic_section_work, work);
 
@@ -508,12 +542,9 @@ final class ContactForm {
                                 typeLabel(R.array.phone_types, typeAt("phones", index)),
                                 () -> phoneDialog(at)));
             }
-            // A revealed-but-empty section (a fresh contact) shows one empty
-            // row that opens the new-entry dialog.
-            if (items.isEmpty()) {
-                items.add(entryItem(value(""), null, () -> phoneDialog(-1)));
-            }
-            section(R.string.section_phones, R.drawable.ic_section_call, items);
+            // A fresh contact reveals the section as an empty header (with
+            // its add control), no blank placeholder row.
+            section(R.string.section_phones, R.drawable.ic_section_call, items, true);
         }
 
         if (shown("emails", filled("emails")) || (conflict() && changedLists.contains("emails"))) {
@@ -528,10 +559,7 @@ final class ContactForm {
                                 typeLabel(R.array.email_types, typeAt("emails", index)),
                                 () -> emailDialog(at)));
             }
-            if (items.isEmpty()) {
-                items.add(entryItem(value(""), null, () -> emailDialog(-1)));
-            }
-            section(R.string.section_emails, R.drawable.ic_section_mail, items);
+            section(R.string.section_emails, R.drawable.ic_section_mail, items, true);
         }
 
         if (shown("impps", filled("impps")) || (conflict() && changedLists.contains("impps"))) {
@@ -632,7 +660,11 @@ final class ContactForm {
      * vanishes, and the add icon is hidden in conflict mode.
      */
     private void section(int title, int icon, List<View> items) {
-        if (items.isEmpty()) {
+        section(title, icon, items, false);
+    }
+
+    private void section(int title, int icon, List<View> items, boolean keepEmpty) {
+        if (items.isEmpty() && !keepEmpty) {
             return;
         }
 
@@ -730,8 +762,13 @@ final class ContactForm {
             pending.add(key);
             ImageView warn = new ImageView(activity);
             warn.setImageResource(R.drawable.ic_diverged);
+            // The exact glyph the list shows: same 32dp box, same error
+            // tint, centred against the row (the row is CENTER_VERTICAL).
+            warn.setImageTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            resolveColor(android.R.attr.colorError)));
             LinearLayout.LayoutParams warnParams =
-                    new LinearLayout.LayoutParams(dp(24), dp(24));
+                    new LinearLayout.LayoutParams(dp(32), dp(32));
             warnParams.setMarginStart(dp(12));
             row.addView(warn, warnParams);
         }
@@ -741,19 +778,16 @@ final class ContactForm {
 
     // ---- Item summaries -----------------------------------------------------
 
-    private String organizationSummary() {
-        return value(view.optString("organization"));
-    }
-
-    /** The empty-value placeholder. */
+    /** A field's display value, or empty for an unset field: an empty
+     *  subtitle leaves the row present but blank, no "not set" filler. */
     private String value(String text) {
-        return text.trim().isEmpty() ? getS(R.string.value_not_set) : text.trim();
+        return text.trim();
     }
 
     private String genderSummary() {
         JSONObject gender = view.optJSONObject("gender");
         if (gender == null) {
-            return getS(R.string.value_not_set);
+            return "";
         }
 
         List<String> parts = new ArrayList<>();
@@ -764,9 +798,7 @@ final class ContactForm {
         if (!gender.optString("identity").isEmpty()) {
             parts.add(gender.optString("identity"));
         }
-        return parts.isEmpty()
-                ? getS(R.string.value_not_set)
-                : String.join(" · ", parts);
+        return String.join(" · ", parts);
     }
 
     private String typeLabel(int arrayId, int index) {
@@ -848,46 +880,65 @@ final class ContactForm {
                 });
     }
 
-    private void organizationDialog() {
+    /** A single organization component (company or department), kept
+     *  under the model's {@code organization} object; empty when unset. */
+    private String organizationPart(String part) {
         JSONObject organization = model.optJSONObject("organization");
-        JSONObject safe = organization == null ? new JSONObject() : organization;
+        return organization == null ? "" : organization.optString(part).trim();
+    }
 
+    /** Edits one organization component in place, leaving the other
+     *  (kept under the model's {@code organization} object) untouched. */
+    private void organizationPartDialog(String part, int hint) {
         LinearLayout content = dialogContent();
-        EditText company =
-                dialogField(content, "organization.company", R.string.hint_company,
-                        safe.optString("company"), TEXT_NAME);
-        EditText department =
-                dialogField(content, "organization.department", R.string.hint_department,
-                        safe.optString("department"), TEXT_NAME);
-        EditText jobTitle =
-                dialogField(content, "title", R.string.hint_job_title,
-                        model.optString("title"), TEXT_NAME);
-        EditText role =
-                dialogField(content, "role", R.string.hint_role,
-                        model.optString("role"), TEXT_NAME);
+        EditText field =
+                dialogField(content, "organization." + part, hint, organizationPart(part),
+                        TEXT_NAME);
 
         showDialog(
-                getS(R.string.item_organization),
+                getS(hint),
                 content,
                 () -> {
                     try {
-                        model.put(
-                                "organization",
-                                new JSONObject()
-                                        .put("company", text(company))
-                                        .put("department", text(department)));
-                        model.put("title", text(jobTitle));
-                        model.put("role", text(role));
-                        revealed.add("organization");
+                        JSONObject organization = model.optJSONObject("organization");
+                        if (organization == null) {
+                            organization = new JSONObject();
+                        }
+                        organization.put(part, text(field));
+                        model.put("organization", organization);
+                        revealed.add("organization." + part);
                     } catch (JSONException error) {
                         throw new IllegalStateException(error);
                     }
                 },
                 () -> {
-                    model.remove("organization");
-                    model.remove("title");
-                    model.remove("role");
-                    revealed.remove("organization");
+                    JSONObject organization = model.optJSONObject("organization");
+                    if (organization != null) {
+                        organization.remove(part);
+                    }
+                    revealed.remove("organization." + part);
+                });
+    }
+
+    /** Edits a top-level scalar field (title, role) in place. */
+    private void simpleFieldDialog(String key, int hint) {
+        LinearLayout content = dialogContent();
+        EditText field = dialogField(content, key, hint, model.optString(key), TEXT_NAME);
+
+        showDialog(
+                getS(hint),
+                content,
+                () -> {
+                    try {
+                        model.put(key, text(field));
+                        revealed.add(key);
+                    } catch (JSONException error) {
+                        throw new IllegalStateException(error);
+                    }
+                },
+                () -> {
+                    model.remove(key);
+                    revealed.remove(key);
                 });
     }
 

@@ -38,7 +38,7 @@ public class CardStore extends SQLiteOpenHelper {
     // 12 = the index gained the info fallback line; 11 = the
     // divergence hash covering the extended model fields; index
     // changes rebuild the card tables.
-    private static final int VERSION = 16;
+    private static final int VERSION = 1;
 
     /** Indexes vCards at write time (pure bridge computation). */
     private final org.pimalaya.cardamum.client.CardamumClient client =
@@ -85,6 +85,10 @@ public class CardStore extends SQLiteOpenHelper {
         /** Normalized content hash, the divergence marker. */
         public final String hash;
 
+        /** True when the row is a both-sides-edited conflict awaiting the
+         *  user's manual resolution (a captured remote body is on hand). */
+        public final boolean conflicted;
+
         Indexed(
                 Card card,
                 String name,
@@ -92,7 +96,8 @@ public class CardStore extends SQLiteOpenHelper {
                 String phone,
                 String info,
                 String uid,
-                String hash) {
+                String hash,
+                boolean conflicted) {
             this.card = card;
             this.name = name;
             this.email = email;
@@ -100,6 +105,7 @@ public class CardStore extends SQLiteOpenHelper {
             this.info = info;
             this.uid = uid;
             this.hash = hash;
+            this.conflicted = conflicted;
         }
     }
 
@@ -169,6 +175,10 @@ public class CardStore extends SQLiteOpenHelper {
                         // resolving pushes against it. Null outside
                         // conflicts.
                         + "conflict_revision TEXT, "
+                        // The remote body captured at that moment, so the
+                        // user resolves the divergence by hand offline in
+                        // the conflict form. Null outside conflicts.
+                        + "conflict_remote_vcard TEXT, "
                         // 1 when the remote content changed and the kept
                         // body is a stale display copy awaiting refetch.
                         + "stale INTEGER NOT NULL DEFAULT 0, "
@@ -223,13 +233,6 @@ public class CardStore extends SQLiteOpenHelper {
         db.execSQL("DROP TABLE IF EXISTS membership");
         db.execSQL("DROP TABLE IF EXISTS detached");
         db.execSQL("DROP TABLE IF EXISTS link");
-        if (oldVersion < 14) {
-            db.execSQL("ALTER TABLE addressbook ADD COLUMN checkpoint TEXT");
-        }
-        if (oldVersion < 16) {
-            db.execSQL(
-                    "ALTER TABLE addressbook ADD COLUMN phone_synced INTEGER NOT NULL DEFAULT 0");
-        }
         onCreate(db);
     }
 
@@ -425,17 +428,76 @@ public class CardStore extends SQLiteOpenHelper {
      * subscribed.
      */
     public void setBookState(String url, boolean subscribed, boolean phoneSynced) {
+        boolean phone = subscribed && phoneSynced;
+        SQLiteDatabase db = getWritableDatabase();
+
         ContentValues values = new ContentValues();
         values.put("subscribed", subscribed ? 1 : 0);
-        values.put("phone_synced", subscribed && phoneSynced ? 1 : 0);
-        getWritableDatabase().update("addressbook", values, "url = ?", new String[] {url});
+        values.put("phone_synced", phone ? 1 : 0);
+        db.update("addressbook", values, "url = ?", new String[] {url});
+
+        if (!phone) {
+            // Mirroring off: the reconcile tears down the Android account
+            // and its raw contacts, so the phone axis is now stale. Clear
+            // it, or turning mirroring back on reads the empty phone as
+            // "every contact was deleted" and flushes them. Cleared, the
+            // cards re-project as fresh creations on the next sync instead.
+            String accountEmail = accountEmailOf(db, url);
+            if (accountEmail != null) {
+                ContentValues axis = new ContentValues();
+                axis.putNull("phone_revision");
+                axis.putNull("phone_base");
+                axis.put("phone_stale", 0);
+                axis.putNull("phone_conflict_revision");
+                db.update(
+                        "membership",
+                        axis,
+                        "account_email = ? AND addressbook_url = ?",
+                        new String[] {accountEmail, url});
+            }
+        }
     }
 
     /** Drops an account and everything under it (its addressbooks and cards). */
-    public void removeAccount(String accountEmail) {
+    /**
+     * Removes an account but keeps its contacts: its live cards are
+     * reassigned to the local "On this device" book, cleared of every
+     * sync marker, so they survive as plain on-device contacts. The
+     * account's own addressbooks, tombstones and view-layer links are
+     * dropped. A staged local delete stays a delete (its card is not
+     * carried over).
+     */
+    public void detachAccountToLocal(String accountEmail) {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
+            // Carry the live cards over to the local account, stripped of
+            // etag/base/conflict/dirty state. OR IGNORE steps over a key
+            // that already exists locally.
+            db.execSQL(
+                    "UPDATE OR IGNORE card SET account_email = ?, etag = NULL,"
+                            + " base_vcard = NULL, dirty = 0, conflict_revision = NULL,"
+                            + " conflict_remote_vcard = NULL, stale = 0"
+                            + " WHERE account_email = ? AND deleted = 0",
+                    new String[] {LocalBook.ACCOUNT, accountEmail});
+
+            // Move their live memberships into the local book, dropping the
+            // phone-axis state. A card in several books collapses to one
+            // row (OR IGNORE); tombstones are left behind and swept below.
+            db.execSQL(
+                    "UPDATE OR IGNORE membership SET account_email = ?,"
+                            + " addressbook_url = ?, state = 0, phone_revision = NULL,"
+                            + " phone_base = NULL, phone_stale = 0,"
+                            + " phone_conflict_revision = NULL"
+                            + " WHERE account_email = ? AND state != ?",
+                    new String[] {
+                        LocalBook.ACCOUNT, LocalBook.URL, accountEmail,
+                        String.valueOf(MEMBER_REMOVED)
+                    });
+
+            // Whatever still names the removed account (a tombstone, a
+            // collided or deleted card, its addressbooks, its links) does
+            // not outlive it.
             db.delete("membership", "account_email = ?", new String[] {accountEmail});
             db.delete("card", "account_email = ?", new String[] {accountEmail});
             db.delete("addressbook", "account_email = ?", new String[] {accountEmail});
@@ -743,7 +805,8 @@ public class CardStore extends SQLiteOpenHelper {
         try (Cursor cursor =
                 db.rawQuery(
                         "SELECT c.id, c.uri, c.etag, c.vcard, c.name, c.email, c.phone,"
-                                + " c.info, c.uid, c.hash FROM card c"
+                                + " c.info, c.uid, c.hash, c.conflict_revision,"
+                                + " c.conflict_remote_vcard FROM card c"
                                 + " JOIN membership m ON m.account_email = c.account_email"
                                 + " AND m.card_key = c.key"
                                 + " WHERE m.addressbook_url = ? AND c.deleted = 0"
@@ -751,6 +814,7 @@ public class CardStore extends SQLiteOpenHelper {
                         new String[] {addressbookUrl})) {
             List<Indexed> cards = new ArrayList<>(cursor.getCount());
             while (cursor.moveToNext()) {
+                boolean conflicted = !cursor.isNull(10) && !cursor.isNull(11);
                 cards.add(
                         new Indexed(
                                 new Card(
@@ -763,7 +827,8 @@ public class CardStore extends SQLiteOpenHelper {
                                 cursor.getString(6),
                                 cursor.getString(7),
                                 cursor.getString(8),
-                                cursor.getString(9)));
+                                cursor.getString(9),
+                                conflicted));
             }
             return cards;
         }
@@ -1567,6 +1632,42 @@ public class CardStore extends SQLiteOpenHelper {
         }
     }
 
+    /**
+     * The three documents a conflict resolution needs: the staged local
+     * body, the common base (the local body itself when none was stored,
+     * meaning they agree), and the captured remote body. Null when the row
+     * has no captured remote yet, so it is not resolvable.
+     */
+    public JSONObject loadConflict(String url, String handle) throws JSONException {
+        url = serverUrl(url);
+        SQLiteDatabase db = getReadableDatabase();
+        String accountEmail = accountEmailOf(db, url);
+        if (accountEmail == null) {
+            return null;
+        }
+
+        try (Cursor cursor =
+                db.query(
+                        "card",
+                        new String[] {"vcard", "base_vcard", "conflict_remote_vcard"},
+                        "account_email = ? AND key = ?",
+                        new String[] {accountEmail, handleKey(url, handle)},
+                        null,
+                        null,
+                        null)) {
+            if (!cursor.moveToFirst() || cursor.isNull(2)) {
+                return null;
+            }
+            String local = cursor.getString(0);
+            JSONObject bodies = new JSONObject();
+            bodies.put("local", local);
+            // base_vcard is null when the base equals the current body.
+            bodies.put("base", cursor.isNull(1) ? local : cursor.getString(1));
+            bodies.put("remote", cursor.getString(2));
+            return bodies;
+        }
+    }
+
     /** The handles of one collection still awaiting their full body. */
     public List<String> handlesBelowFull(String url) {
         if (isPhoneCollection(url)) {
@@ -1714,6 +1815,29 @@ public class CardStore extends SQLiteOpenHelper {
 
         ContentValues values = new ContentValues();
         values.put("conflict_revision", revision);
+        db.update(
+                "card",
+                values,
+                "account_email = ? AND key = ?",
+                new String[] {accountEmail, key});
+    }
+
+    /**
+     * Stores the remote body observed when a row was marked conflicted, so
+     * the user resolves the divergence by hand offline (the conflict form
+     * reads it back). Server collections only.
+     */
+    public void setConflictRemote(String url, String handle, String remoteVcard) {
+        SQLiteDatabase db = getWritableDatabase();
+        String serverUrl = serverUrl(url);
+        String accountEmail = accountEmailOf(db, serverUrl);
+        if (accountEmail == null) {
+            return;
+        }
+        String key = handleKey(serverUrl, handle);
+
+        ContentValues values = new ContentValues();
+        values.put("conflict_remote_vcard", remoteVcard);
         db.update(
                 "card",
                 values,

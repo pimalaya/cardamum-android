@@ -28,10 +28,12 @@ import org.pimalaya.cardamum.client.CardamumClient;
  * The ContactsContract half of the io-offline driver: the phone spoke's
  * remote adapter, serving the engine's enumerate, fetch and push yields
  * against an addressbook's raw contacts (one per card, the card id in
- * SOURCE_ID, its raw contact VERSION as the content revision). Every
- * write carries CALLER_IS_SYNCADAPTER so nothing loops back as a local
- * edit; pushes are guarded on the recorded VERSION so a contacts-app
- * edit racing the sync stays for the next round. The rows-to-model
+ * SOURCE_ID, an opaque token in SYNC1 as the sync revision). Every write
+ * carries CALLER_IS_SYNCADAPTER so nothing loops back as a local edit;
+ * the DIRTY flag (set only by a user edit, never by our writes or the
+ * provider's own churn) is what marks a contacts-app change, and pushes
+ * are guarded on that revision so an edit racing the sync stays for the
+ * next round. The rows-to-model
  * mapping itself lives in Mapping, pure and JVM-tested; this class owns
  * everything that needs a device.
  */
@@ -65,13 +67,14 @@ final class PhoneRemote {
 
     /**
      * Services an enumerate yield: the account's raw contacts, each as
-     * (handle = SOURCE_ID, revision = VERSION), always a complete
-     * round. Rows the contacts app deleted (DELETED) are purged and
-     * read as vanished by their absence; rows it created (no
-     * SOURCE_ID) are stamped a fresh handle first, so a crash never
-     * ingests them twice; rows whose card the store no longer holds
-     * are stale projections and are purged too (heals interrupted
-     * deletes and pre-phone-spoke projections in one rule).
+     * (handle = SOURCE_ID, revision = the SYNC1 token). A delta round,
+     * never complete: only rows the contacts app explicitly deleted
+     * (DELETED) vanish, so an emptied or torn-down account never reads
+     * as a mass deletion (the hub re-projects a card the phone lacks).
+     * Rows it created (no SOURCE_ID) are stamped a fresh handle first,
+     * so a crash never ingests them twice; rows whose card the store no
+     * longer holds are stale projections and are purged too (heals
+     * interrupted deletes and pre-phone-spoke projections in one rule).
      */
     JSONObject enumerate(String collection) throws JSONException {
         String url = CardStore.serverUrl(collection);
@@ -83,6 +86,7 @@ final class PhoneRemote {
         rawIds.clear();
 
         JSONArray items = new JSONArray();
+        JSONArray vanished = new JSONArray();
         try (Cursor cursor =
                 resolver.query(
                         rawContactsUri(account),
@@ -101,21 +105,24 @@ final class PhoneRemote {
                 boolean deleted = cursor.getInt(3) == 1;
 
                 if (deleted) {
-                    // A contacts-app delete: finalize it; the absence
-                    // from this round is the vanished signal.
+                    // A genuine contacts-app delete: report it explicitly
+                    // (only a DELETED row propagates), then finalize it. A
+                    // row merely absent from the round is never a delete,
+                    // so a torn-down or empty account cannot flush the
+                    // cards (see the delta round below).
+                    if (sourceId != null && !sourceId.isEmpty()) {
+                        vanished.put(sourceId);
+                    }
                     resolver.delete(rawContactUri(account, rawId), null, null);
                     continue;
                 }
 
                 String handle;
-                String revision;
                 if (sourceId == null || sourceId.isEmpty()) {
                     handle = UUID.randomUUID().toString();
                     ContentValues values = new ContentValues();
                     values.put(RawContacts.SOURCE_ID, handle);
                     resolver.update(rawContactUri(account, rawId), values, null, null);
-                    // The stamp bumps VERSION; record the bumped one.
-                    revision = readVersion(resolver, account, rawId);
                 } else if (base.loadRow(url, sourceId) == null) {
                     // A projection of a card the store no longer holds
                     // (interrupted delete, or a pre-phone-spoke store
@@ -124,8 +131,8 @@ final class PhoneRemote {
                     continue;
                 } else {
                     handle = sourceId;
-                    revision = String.valueOf(cursor.getInt(2));
                 }
+                String revision = phoneRevision(resolver, account, rawId);
 
                 rawIds.put(handle, rawId);
                 JSONObject item = new JSONObject();
@@ -135,10 +142,16 @@ final class PhoneRemote {
             }
         }
 
+        // A delta round, never a complete one: absence from the listing
+        // must not read as a deletion (a removed Android account, a book
+        // whose mirroring was toggled off, or any empty account would
+        // otherwise flush every card). Only the explicit DELETED rows
+        // above vanish; everything else is left to the hub, which
+        // re-projects a card the phone is missing.
         JSONObject reply = new JSONObject();
         reply.put("items", items);
-        reply.put("vanished", new JSONArray());
-        reply.put("complete", true);
+        reply.put("vanished", vanished);
+        reply.put("complete", false);
         return reply;
     }
 
@@ -188,7 +201,7 @@ final class PhoneRemote {
         item.put("meta", index.toString());
         item.put("hash", CardStore.byteHash(body));
         item.put("body", body);
-        item.put("revision", readVersion(resolver, account, rawId));
+        item.put("revision", phoneRevision(resolver, account, rawId));
         return item;
     }
 
@@ -261,7 +274,7 @@ final class PhoneRemote {
             rawIds.put(handle, rawId);
         }
 
-        return result(handle, true, handle, readVersion(resolver, account, rawId));
+        return result(handle, true, handle, stampRevision(resolver, account, rawId, vcard));
     }
 
     /** Pushes a staged content change onto the existing raw contact. */
@@ -277,12 +290,15 @@ final class PhoneRemote {
         if (row == null || rawId == null) {
             return result(handle, false, null, null);
         }
-        if (ifMatch != null && !ifMatch.equals(readVersion(resolver, account, rawId))) {
+        if (ifMatch != null && !ifMatch.equals(phoneRevision(resolver, account, rawId))) {
+            // A contacts-app edit landed since the base: keep it for the
+            // next round rather than clobbering it.
             return result(handle, false, null, null);
         }
 
-        rewrite(resolver, account, rawId, client.projectCard(row.getString("vcard")));
-        return result(handle, true, null, readVersion(resolver, account, rawId));
+        String vcard = row.getString("vcard");
+        rewrite(resolver, account, rawId, client.projectCard(vcard));
+        return result(handle, true, null, stampRevision(resolver, account, rawId, vcard));
     }
 
     /** Pushes a staged removal: the raw contact goes entirely. */
@@ -298,7 +314,7 @@ final class PhoneRemote {
             // Already gone phone-side; the removal converged.
             return result(handle, true, null, null);
         }
-        if (ifMatch != null && !ifMatch.equals(readVersion(resolver, account, rawId))) {
+        if (ifMatch != null && !ifMatch.equals(phoneRevision(resolver, account, rawId))) {
             return result(handle, false, null, null);
         }
 
@@ -460,20 +476,56 @@ final class PhoneRemote {
         return null;
     }
 
-    /** The raw contact's current VERSION, the spoke's revision token. */
-    private static String readVersion(ContentResolver resolver, Account account, long rawId) {
+    /**
+     * The raw contact's sync revision, read from the contacts-app sync
+     * signals rather than a content read. Neither RawContacts.VERSION nor
+     * a hash of the data rows is stable: the provider bumps VERSION and
+     * rewrites rows (aggregation, name display and phonetic fields, phone
+     * normalization) asynchronously after a write, which would read back
+     * as a phantom contacts-app edit and let the stale phone side win.
+     * DIRTY is the real signal: it is set only by a non-sync-adapter
+     * (user) edit, never by our own writes or provider churn. So the
+     * revision is the opaque token we last stamped in SYNC1 while the row
+     * is clean, and a version-tagged sentinel while it is dirty (a user
+     * edit the sync has not yet ingested).
+     */
+    private static String phoneRevision(
+            ContentResolver resolver, Account account, long rawId) {
         try (Cursor cursor =
                 resolver.query(
                         rawContactUri(account, rawId),
-                        new String[] {RawContacts.VERSION},
+                        new String[] {
+                            RawContacts.SYNC1, RawContacts.DIRTY, RawContacts.VERSION
+                        },
                         null,
                         null,
                         null)) {
             if (cursor != null && cursor.moveToFirst()) {
-                return String.valueOf(cursor.getInt(0));
+                String token = cursor.isNull(0) ? null : cursor.getString(0);
+                boolean dirty = cursor.getInt(1) != 0;
+                if (token != null && !dirty) {
+                    return token;
+                }
+                return "dirty:" + cursor.getInt(2);
             }
         }
         return null;
+    }
+
+    /**
+     * Stamps the raw contact as converged: SYNC1 holds the opaque token
+     * the next enumerate reports while clean (the vCard hash, stable
+     * across provider churn), and DIRTY is cleared so a push we just
+     * applied is not read back as a user edit.
+     */
+    private static String stampRevision(
+            ContentResolver resolver, Account account, long rawId, String vcard) {
+        String token = CardStore.byteHash(vcard);
+        ContentValues values = new ContentValues();
+        values.put(RawContacts.SYNC1, token);
+        values.put(RawContacts.DIRTY, 0);
+        resolver.update(rawContactUri(account, rawId), values, null, null);
+        return token;
     }
 
     private Account account(String url) {
