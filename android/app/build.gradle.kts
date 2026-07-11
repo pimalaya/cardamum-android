@@ -91,6 +91,12 @@ dependencies {
     // The app's only door to the native bridge: sockets, JNI and Rust stay inside.
     implementation(project(":client"))
 
+    // The addressbooks drawer. A tiny, standalone AndroidX ViewGroup (no
+    // AppCompat/Material theme needed), the one Jetpack concession the
+    // framework never offered a built-in for; the sibling himalaya-android
+    // uses the same.
+    implementation("androidx.drawerlayout:drawerlayout:1.2.0")
+
     // Google Play Billing, pulled into the google build only, so the
     // FOSS builds carry no Google dependency. Its manifest merge is what
     // adds the com.android.vending.BILLING capability that unlocks

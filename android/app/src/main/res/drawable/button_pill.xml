@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A fully rounded (pill) button background: a ripple over an accent
+     fill whose corner radius exceeds any button height. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="?android:attr/colorControlHighlight">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="?android:attr/colorAccent" />
+            <corners android:radius="1000dp" />
+        </shape>
+    </item>
+</ripple>

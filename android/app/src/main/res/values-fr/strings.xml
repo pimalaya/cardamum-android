@@ -50,6 +50,11 @@
     <string name="subscriptions_save">Enregistrer</string>
     <string name="accounts_failed">Impossible de créer les comptes</string>
     <string name="add_account">Ajouter un compte</string>
+    <string name="sync_accounts">Synchroniser les comptes</string>
+    <string name="about">À propos</string>
+    <string name="about_body">Version %1$s\n\nVos contacts, hors-ligne et multi-comptes.\n\nRéalisé par Pimalaya.</string>
+    <string name="about_website">Site web</string>
+    <string name="report_bug">Signaler un bug</string>
     <string name="local_account">Cette application</string>
     <string name="local_book">Contacts locaux</string>
     <string name="book_subscribe">S\'abonner</string>
@@ -68,8 +73,13 @@
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Synchroniser</string>
+    <string name="contacts_more">Plus</string>
+    <string name="menu_synchronize">Synchroniser</string>
     <string name="sync_done">Synchronisé : %1$d reçus, %2$d envoyés, %3$d fusionnés</string>
     <string name="contacts_add">Ajouter</string>
+    <string name="add_title">Ajouter</string>
+    <string name="add_contact">Ajouter un contact</string>
+    <string name="import_contacts">Importer des contacts</string>
     <string name="contacts_search">Rechercher</string>
     <string name="contact_diverged">Divergent</string>
     <string name="save_target_title">Ajouter au carnet d\'adresses</string>
@@ -78,7 +88,8 @@
     <string name="merge_done">Contacts fusionnés ; les modifications seront envoyées à la prochaine synchronisation</string>
     <string name="manage_books_title">Carnets d\'adresses de ce contact</string>
     <string name="contact_open_failed">Impossible d\'ouvrir le contact</string>
-    <string name="empty_title">Aucun contenu trouvé</string>
+    <string name="empty_title">Aucun contact trouvé</string>
+    <string name="no_account">Aucun compte trouvé</string>
 
     <string name="back">Retour</string>
     <string name="more">Plus</string>

@@ -58,10 +58,15 @@
     <string name="subscriptions_save">Save</string>
     <string name="accounts_failed">Could not create the accounts</string>
     <string name="add_account">Add account</string>
-    <string name="local_account">This app</string>
-    <string name="local_book">Local contacts</string>
-    <string name="book_subscribe">Subscribe</string>
-    <string name="book_phone_sync">Sync to phone contacts</string>
+    <string name="sync_accounts">Synchronize accounts</string>
+    <string name="about">About</string>
+    <string name="about_body">Version %1$s\n\nYour contacts, offline-first and multi-account.\n\nMade by Pimalaya.</string>
+    <string name="about_website">Website</string>
+    <string name="report_bug">Report a bug</string>
+    <string name="local_account">Cardamum</string>
+    <string name="local_book">Local app contacts</string>
+    <string name="book_subscribe">Enable addressbook</string>
+    <string name="book_phone_sync">Enable local phone sync</string>
     <string name="home_empty">No addressbook yet. Add an account to get started.</string>
     <string name="delete_account_confirm">Delete the account %1$s and its local data?</string>
 
@@ -76,8 +81,13 @@
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>
+    <string name="contacts_more">More</string>
+    <string name="menu_synchronize">Synchronize</string>
     <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
     <string name="contacts_add">Add</string>
+    <string name="add_title">Add</string>
+    <string name="add_contact">Add contact</string>
+    <string name="import_contacts">Import contacts</string>
     <string name="contacts_search">Search</string>
     <string name="contact_diverged">Diverged</string>
     <string name="save_target_title">Add to addressbook</string>
@@ -86,7 +96,8 @@
     <string name="merge_done">Contacts merged; changes push on the next sync</string>
     <string name="manage_books_title">Addressbooks of this contact</string>
     <string name="contact_open_failed">Could not open the contact</string>
-    <string name="empty_title">No content found</string>
+    <string name="empty_title">No contact found</string>
+    <string name="no_account">No account found</string>
 
     <string name="back">Back</string>
     <string name="more">More</string>

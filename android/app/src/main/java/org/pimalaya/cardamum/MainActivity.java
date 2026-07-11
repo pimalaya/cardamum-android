@@ -69,7 +69,6 @@ public class MainActivity extends Activity {
     private static final int PANEL_CONTACT = 1;
     private static final int PANEL_ADVANCED = 2;
     private static final int PANEL_SOURCE = 3;
-    private static final int PANEL_HOME = 4;
     private static final int PANEL_AUTH = 5;
 
     /** The auth flow's steps, inside its own flipper under one bar. */
@@ -78,6 +77,7 @@ public class MainActivity extends Activity {
     private static final int STEP_BOOKS = 2;
 
     private static final int REQUEST_CONTACTS = 1;
+    private static final int REQUEST_IMPORT = 2;
 
     /**
      * One replica in the contacts pool: a card, the addressbook it
@@ -163,11 +163,30 @@ public class MainActivity extends Activity {
     /** Addressbook checkboxes of the post-connect selection, tagged with their url. */
     private List<CheckBox> bookBoxes = new ArrayList<>();
 
-    /** Subscribed addressbooks grouped for the home screen. */
+    /** Subscribed addressbooks grouped for the drawer. */
     private List<BookEntry> homeBooks = new ArrayList<>();
 
-    /** Accounts collapsed on the home screen (all expanded by default). */
+    /** The addressbooks drawer, opened by the contacts burger. */
+    private androidx.drawerlayout.widget.DrawerLayout drawer;
+
+    /** Accounts collapsed in the drawer. */
     private final java.util.Set<String> collapsedAccounts = new java.util.HashSet<>();
+
+    /**
+     * Accounts already laid out at least once, so the default fold (local
+     * open, the rest collapsed) applies once and later toggles persist.
+     */
+    private final java.util.Set<String> seenAccounts = new java.util.HashSet<>();
+
+    /**
+     * The shared sync state: true while a sync runs. Every UI element
+     * that reflects it (the app-bar icon, the drawer button) subscribes
+     * through {@link #observeSync}, and {@link #setSyncing} pushes the
+     * flag to all of them at once.
+     */
+    private boolean syncing;
+
+    private final List<java.util.function.Consumer<Boolean>> syncObservers = new ArrayList<>();
 
     /** The replica pool of the contacts screen. */
     private List<Entry> contacts = new ArrayList<>();
@@ -239,6 +258,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        drawer = findViewById(R.id.drawer);
         applyEdgeToEdge();
 
         // Paid-access gate: a no-op on the FOSS build, the Google build's
@@ -288,22 +308,36 @@ public class MainActivity extends Activity {
         // when the process died while the user was in the browser, the
         // redirect recreates the activity from scratch.
         handleOauthRedirect(getIntent());
+
+        // A fresh start with no real account opens the connection flow
+        // straight away (back dismisses it onto the empty contacts list);
+        // skipped while an OAuth redirect is being processed.
+        boolean hasAccount = false;
+        for (AccountEntry entry : accounts) {
+            hasAccount |= !LocalBook.is(entry.email);
+        }
+        if (savedInstanceState == null && getIntent().getData() == null && !hasAccount) {
+            startAuth();
+        }
     }
 
     /**
-     * Enters the connection flow. The sheet always rises over the
-     * addressbooks drawer (opened first when not already there), so
-     * backing out of the flow always lands on the listing, empty or
-     * not; only finishing the flow lands on the contacts root.
+     * Enters the connection flow: the auth sheet slides in from the left
+     * while the drawer it came from slides shut. Cancelling lands on the
+     * contacts root, finishing too.
      */
     private void startAuth() {
-        if (screen != PANEL_HOME) {
-            openBooksManager();
+        openAuthFlow();
+        if (drawer.isDrawerOpen(android.view.Gravity.START)) {
+            drawer.closeDrawer(android.view.Gravity.START);
         }
+    }
+
+    /** Resets the connection flow to its first step and shows it. */
+    private void openAuthFlow() {
         pendingEmail = null;
         searchedConfigs = new ArrayList<>();
         ((EditText) findViewById(R.id.email_input)).setText("");
-
         showAuth(STEP_EMAIL);
     }
 
@@ -377,14 +411,13 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Leaves the auth flow without finishing: the drawer slides back
-     * out to the left onto the addressbooks listing it always opens
-     * over. Only finishing the whole flow lands on the contacts root.
+     * Leaves the auth flow without finishing: the sheet slides out onto
+     * the contacts root (the drawer stays closed).
      */
     private void cancelAuth() {
         closeOverlay(PANEL_AUTH);
-        screen = PANEL_HOME;
-        applyChrome(PANEL_HOME);
+        screen = PANEL_CONTACTS;
+        applyChrome(PANEL_CONTACTS);
     }
 
     /** The account entry matching an email, or null. */
@@ -412,6 +445,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (drawer.isDrawerOpen(android.view.Gravity.START)) {
+            drawer.closeDrawer(android.view.Gravity.START);
+            return;
+        }
         if (screen == PANEL_CONTACTS && selectionMode) {
             exitSelection();
             return;
@@ -438,9 +475,6 @@ public class MainActivity extends Activity {
             case PANEL_SOURCE:
                 showBack(PANEL_ADVANCED);
                 break;
-            case PANEL_HOME:
-                goHome();
-                break;
             default:
                 super.onBackPressed();
         }
@@ -455,23 +489,21 @@ public class MainActivity extends Activity {
         contacts = loadEntries();
         renderContacts();
 
-        // Landing on the root is always a return: both overlays slide
-        // back out to the left, the root staying put underneath.
+        // Landing on the root is always a return: the auth sheet slides
+        // back out, the drawer closes, the root stays put underneath.
         if (screen == PANEL_AUTH) {
-            // The addressbooks listing sits directly beneath the auth
-            // drawer; dropping it first lets the auth slide reveal the
-            // root directly.
-            findViewById(R.id.overlay_home).setVisibility(View.GONE);
             closeOverlay(PANEL_AUTH);
-            screen = PANEL_CONTACTS;
-            applyChrome(PANEL_CONTACTS);
-        } else if (screen == PANEL_HOME) {
-            closeOverlay(PANEL_HOME);
             screen = PANEL_CONTACTS;
             applyChrome(PANEL_CONTACTS);
         } else {
             showBack(PANEL_CONTACTS);
         }
+
+        if (drawer.isDrawerOpen(android.view.Gravity.START)) {
+            drawer.closeDrawer(android.view.Gravity.START);
+        }
+        // A new or removed account shows next time the drawer opens.
+        reloadHome();
     }
 
     /**
@@ -480,7 +512,7 @@ public class MainActivity extends Activity {
      */
     private void openBooksManager() {
         reloadHome();
-        openOverlay(PANEL_HOME);
+        drawer.openDrawer(android.view.Gravity.START);
     }
 
     // ---- Connection screen --------------------------------------------------
@@ -638,12 +670,15 @@ public class MainActivity extends Activity {
      */
     private void setUpFab(int id) {
         android.widget.ImageButton fab = findViewById(id);
+        fab.setImageTintList(android.content.res.ColorStateList.valueOf(accentContrast()));
+    }
+
+    /** Black or white, whichever reads on the accent colour. */
+    private int accentContrast() {
         int accent = resolveColor(android.R.attr.colorAccent);
-        int tint =
-                android.graphics.Color.luminance(accent) > 0.5f
-                        ? android.graphics.Color.BLACK
-                        : android.graphics.Color.WHITE;
-        fab.setImageTintList(android.content.res.ColorStateList.valueOf(tint));
+        return android.graphics.Color.luminance(accent) > 0.5f
+                ? android.graphics.Color.BLACK
+                : android.graphics.Color.WHITE;
     }
 
     /** The config Continue back to idle: enabled once an option is picked. */
@@ -1811,35 +1846,100 @@ public class MainActivity extends Activity {
     // ---- Addressbooks management screen -----------------------------------------
 
     private void setUpHomePanel() {
-        // The arrow and the cross both close the drawer.
-        findViewById(R.id.home_back).setOnClickListener(view -> goHome());
-        findViewById(R.id.home_close).setOnClickListener(view -> goHome());
+        // The drawer's bottom band: sync, add an account, or open About
+        // (its dialog carries the app name and version).
+        findViewById(R.id.drawer_sync).setOnClickListener(view -> syncAll());
+        findViewById(R.id.drawer_header_add).setOnClickListener(view -> startAuth());
+        findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
+
+        // The empty-state pill: its text and plus contrast the accent.
+        Button add = findViewById(R.id.drawer_empty_add);
+        add.setOnClickListener(view -> startAuth());
+        add.setTextColor(accentContrast());
+        add.setCompoundDrawableTintList(
+                android.content.res.ColorStateList.valueOf(accentContrast()));
+
+        // While a sync runs the button shows its spinner and goes inert.
+        observeSync(
+                active -> {
+                    findViewById(R.id.drawer_sync_icon)
+                            .setVisibility(active ? View.GONE : View.VISIBLE);
+                    findViewById(R.id.drawer_sync_progress)
+                            .setVisibility(active ? View.VISIBLE : View.GONE);
+                    View row = findViewById(R.id.drawer_sync);
+                    row.setEnabled(!active);
+                    row.setAlpha(active ? 0.5f : 1f);
+                });
+    }
+
+    /** The app's version name, or empty when the package is unreadable. */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (android.content.pm.PackageManager.NameNotFoundException error) {
+            return "";
+        }
+    }
+
+    /** The About dialog: version and pitch, a Website link and a bug report. */
+    private void showAbout() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.app_name)
+                .setMessage(getString(R.string.about_body, appVersion()))
+                .setPositiveButton(android.R.string.ok, null)
+                .setNeutralButton(
+                        R.string.about_website, (dialog, which) -> openUrl("https://pimalaya.org"))
+                .setNegativeButton(
+                        R.string.report_bug,
+                        (dialog, which) ->
+                                openUrl("https://github.com/pimalaya/cardamum-android/issues"))
+                .show();
+    }
+
+    /** Opens a URL in the browser. */
+    private void openUrl(String url) {
+        startActivity(
+                new android.content.Intent(
+                        android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)));
     }
 
     /**
-     * Rebuilds the addressbooks listing: every addressbook grouped by
-     * account with its subscription checkbox; tapping anywhere on a row
-     * toggles it, instantly and without confirmation (the store and the
-     * phone catch up on the next sync passes). Long-pressing a header
-     * offers to delete the account.
+     * Rebuilds the drawer's addressbooks listing: every addressbook
+     * grouped under its account header; tapping a book row opens its
+     * settings (the two switches). Long-pressing a header offers to
+     * delete the account.
      */
     private void reloadHome() {
-        homeBooks = base.loadAllAddressbooks();
+        // The local book is hidden: only real accounts show in the drawer.
+        homeBooks = new ArrayList<>();
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            if (!LocalBook.is(entry.accountEmail)) {
+                homeBooks.add(entry);
+            }
+        }
+
+        // With no real account the drawer shows an empty state, and its
+        // sync row (which would sync nothing) is hidden.
+        boolean hasAccount = false;
+        for (AccountEntry entry : accounts) {
+            hasAccount |= !LocalBook.is(entry.email);
+        }
+        findViewById(R.id.drawer_sync).setVisibility(hasAccount ? View.VISIBLE : View.GONE);
+        findViewById(R.id.drawer_empty).setVisibility(hasAccount ? View.GONE : View.VISIBLE);
 
         LinearLayout container = findViewById(R.id.home_container);
         container.removeAllViews();
-
-        findViewById(R.id.home_empty)
-                .setVisibility(homeBooks.isEmpty() ? View.VISIBLE : View.GONE);
-        if (homeBooks.isEmpty()) {
-            return;
-        }
 
         String group = null;
         LinearLayout books = null;
         for (BookEntry entry : homeBooks) {
             if (!entry.accountEmail.equals(group)) {
                 group = entry.accountEmail;
+                // Default fold, applied once per account: the local account
+                // open, every other collapsed. Later toggles persist.
+                if (seenAccounts.add(group) && !LocalBook.is(group)) {
+                    collapsedAccounts.add(group);
+                }
                 books = new LinearLayout(this);
                 books.setOrientation(LinearLayout.VERTICAL);
                 books.setVisibility(
@@ -1850,49 +1950,45 @@ public class MainActivity extends Activity {
 
             TextView name = new TextView(this);
             name.setText(entry.book.name);
-            name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+            itemText(name);
             name.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            name.setLayoutParams(
-                    new LinearLayout.LayoutParams(
-                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            name.setSingleLine(true);
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            // The name keeps the standard 16dp left inset (lining up with
-            // the header's chevron); the cog rides in a 48dp slot whose
-            // 4dp end padding lands its glyph the same 16dp from the edge.
-            row.setPadding(dp(16), 0, dp(4), 0);
+            row.setMinimumHeight(dimen(R.dimen.item_height));
+            row.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
+            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
             // An unsubscribed book is dimmed.
             row.setAlpha(entry.subscribed ? 1f : 0.5f);
-            row.addView(name);
 
-            // A phone glyph flags the books mirrored into the Contacts
-            // app, so the two switches read at a glance without opening.
-            if (entry.phoneSynced) {
-                android.widget.ImageView phone = new android.widget.ImageView(this);
-                phone.setImageResource(R.drawable.ic_phone_android);
-                phone.setImageTintList(
-                        android.content.res.ColorStateList.valueOf(
-                                resolveColor(android.R.attr.textColorSecondary)));
-                LinearLayout.LayoutParams phoneParams = new LinearLayout.LayoutParams(dp(20), dp(20));
-                phoneParams.setMarginEnd(dp(8));
-                row.addView(phone, phoneParams);
-            }
-
-            // Only the cog is the tap target: a book's settings are its
-            // only action.
-            android.widget.ImageView cog = new android.widget.ImageView(this);
-            cog.setImageResource(R.drawable.ic_settings);
-            cog.setImageTintList(
+            android.widget.ImageView book = new android.widget.ImageView(this);
+            book.setImageResource(R.drawable.ic_addressbooks);
+            book.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.textColorSecondary)));
-            android.widget.FrameLayout cogSlot = iconSlot(cog);
-            cogSlot.setBackgroundResource(
-                    resolveAttr(android.R.attr.selectableItemBackgroundBorderless));
-            cogSlot.setOnClickListener(view -> showBookSettings(entry));
-            row.addView(cogSlot);
+            LinearLayout.LayoutParams bookParams =
+                    new LinearLayout.LayoutParams(dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
+            bookParams.setMarginEnd(dimen(R.dimen.item_gap));
+            row.addView(book, bookParams);
 
+            row.addView(name);
+
+            // A tiny trailing glyph flags a subscribed book that is not
+            // mirrored to the phone; an unsubscribed book needs none (the
+            // dimmed row already says it).
+            if (entry.subscribed && !entry.phoneSynced) {
+                android.widget.ImageView state = new android.widget.ImageView(this);
+                state.setImageResource(R.drawable.ic_mobile_off);
+                state.setAlpha(0.6f);
+                LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(dp(16), dp(16));
+                stateParams.setMarginStart(dp(8));
+                row.addView(state, stateParams);
+            }
+
+            // Tapping the row opens the book's settings (the two switches).
+            row.setOnClickListener(view -> showBookSettings(entry));
             books.addView(row);
         }
     }
@@ -1921,14 +2017,14 @@ public class MainActivity extends Activity {
 
         android.widget.Switch subscribe = new android.widget.Switch(this);
         subscribe.setText(R.string.book_subscribe);
-        subscribe.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+        subscribe.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
         subscribe.setChecked(local || entry.subscribed);
         subscribe.setEnabled(!local);
         content.addView(subscribe, switchParams);
 
         android.widget.Switch phone = new android.widget.Switch(this);
         phone.setText(R.string.book_phone_sync);
-        phone.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16);
+        phone.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
         phone.setChecked(entry.phoneSynced);
         phone.setEnabled(subscribe.isChecked());
         content.addView(phone, switchParams);
@@ -1970,6 +2066,7 @@ public class MainActivity extends Activity {
         base.removeAccount(email);
         accounts.removeIf(entry -> entry.email.equals(email));
         collapsedAccounts.remove(email);
+        seenAccounts.remove(email);
         reloadHome();
 
         // Reconciling against the remaining subscribed set purges the
@@ -1985,76 +2082,60 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Centres a control in an app-bar-icon-sized slot, so trailing home
-     * controls (the header chevron, the row checkbox) share the size
-     * and centre column of the app bar's action icons.
-     */
-    private android.widget.FrameLayout iconSlot(View child) {
-        android.widget.FrameLayout slot = new android.widget.FrameLayout(this);
-        slot.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
-        slot.addView(
-                child,
-                new android.widget.FrameLayout.LayoutParams(
-                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                        android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                        Gravity.CENTER));
-        return slot;
-    }
-
-    /**
-     * A home account header collapsing its addressbooks on tap: the
-     * email with a state chevron (down when expanded, right when
-     * collapsed), toggling the books container's visibility.
+     * A drawer account header: a leading caret and the email in bold; the
+     * caret rotates as its books collapse on tap. Long-pressing it offers
+     * to delete the account (the local one excepted).
      */
     private View accountHeader(String email, LinearLayout books) {
-        // The chevron takes the account icon's place, as the header's
-        // leading disclosure control (right when collapsed, down when
-        // expanded).
         android.widget.ImageView chevron = new android.widget.ImageView(this);
         chevron.setImageResource(R.drawable.ic_chevron_right);
         chevron.setRotation(collapsedAccounts.contains(email) ? 0 : 90);
         chevron.setImageTintList(
                 android.content.res.ColorStateList.valueOf(
                         resolveColor(android.R.attr.textColorSecondary)));
-        LinearLayout.LayoutParams chevronParams = new LinearLayout.LayoutParams(dp(24), dp(24));
-        chevronParams.setMarginEnd(dp(16));
+        LinearLayout.LayoutParams chevronParams =
+                new LinearLayout.LayoutParams(dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
+        chevronParams.setMarginEnd(dimen(R.dimen.item_gap));
 
         TextView label = new TextView(this);
         label.setText(LocalBook.is(email) ? getString(R.string.local_account) : email);
-        label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
+        itemText(label);
         label.setTypeface(label.getTypeface(), android.graphics.Typeface.BOLD);
         label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        label.setSingleLine(true);
+        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
         label.setLayoutParams(
-                new LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setMinimumHeight(dp(48));
-        header.setPadding(dp(16), 0, dp(16), 0);
+        header.setMinimumHeight(dimen(R.dimen.item_height));
+        header.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
         header.setBackgroundColor(getColor(R.color.surface));
         header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
         header.addView(chevron, chevronParams);
         header.addView(label);
 
-        header.setOnClickListener(view -> {
-            boolean collapse = books.getVisibility() == View.VISIBLE;
-            if (collapse) {
-                collapsedAccounts.add(email);
-            } else {
-                collapsedAccounts.remove(email);
-            }
-            books.setVisibility(collapse ? View.GONE : View.VISIBLE);
-            chevron.setRotation(collapse ? 0 : 90);
-        });
+        header.setOnClickListener(
+                view -> {
+                    boolean collapse = books.getVisibility() == View.VISIBLE;
+                    if (collapse) {
+                        collapsedAccounts.add(email);
+                    } else {
+                        collapsedAccounts.remove(email);
+                    }
+                    books.setVisibility(collapse ? View.GONE : View.VISIBLE);
+                    chevron.setRotation(collapse ? 0 : 90);
+                });
         // The local account is undeletable; every other account can be
         // removed by long-pressing its header.
         if (!LocalBook.is(email)) {
-            header.setOnLongClickListener(view -> {
-                confirmDeleteAccount(email);
-                return true;
-            });
+            header.setOnLongClickListener(
+                    view -> {
+                        confirmDeleteAccount(email);
+                        return true;
+                    });
         }
 
         return header;
@@ -2110,10 +2191,21 @@ public class MainActivity extends Activity {
      * Toggles the contacts app-bar sync icon between the glyph and an
      * in-place spinner while a sync runs.
      */
-    private void setSyncing(boolean syncing) {
-        findViewById(R.id.contacts_sync).setVisibility(syncing ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_sync_progress)
-                .setVisibility(syncing ? View.VISIBLE : View.GONE);
+    /** Pushes the sync flag to every subscribed element. */
+    private void setSyncing(boolean value) {
+        syncing = value;
+        for (java.util.function.Consumer<Boolean> observer : syncObservers) {
+            observer.accept(value);
+        }
+    }
+
+    /**
+     * Subscribes an element to the sync state and hands it the current
+     * value straight away, so it starts consistent.
+     */
+    private void observeSync(java.util.function.Consumer<Boolean> observer) {
+        syncObservers.add(observer);
+        observer.accept(syncing);
     }
 
     /**
@@ -2438,9 +2530,16 @@ public class MainActivity extends Activity {
     // ---- Contacts screen ----------------------------------------------------
 
     private void setUpContactsPanel() {
-        findViewById(R.id.contacts_sync).setOnClickListener(view -> syncAll());
+        findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
+        // The overflow icon gives way to its spinner while a sync runs.
+        observeSync(
+                active -> {
+                    findViewById(R.id.contacts_more)
+                            .setVisibility(active ? View.GONE : View.VISIBLE);
+                    findViewById(R.id.contacts_more_progress)
+                            .setVisibility(active ? View.VISIBLE : View.GONE);
+                });
         findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
-        findViewById(R.id.contacts_duplicates).setOnClickListener(view -> findDuplicates());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
         findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
@@ -2509,6 +2608,53 @@ public class MainActivity extends Activity {
 
     }
 
+    /** The contacts overflow menu: Synchronize, Find duplicates, Import. */
+    private void showMoreMenu(View anchor) {
+        android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
+        menu.getMenu().add(0, 1, 0, R.string.menu_synchronize).setIcon(R.drawable.ic_sync);
+        menu.getMenu().add(0, 2, 1, R.string.dup_find).setIcon(R.drawable.ic_find_duplicates);
+        menu.getMenu().add(0, 3, 2, R.string.import_contacts).setIcon(R.drawable.ic_import);
+        forceMenuIcons(menu);
+        menu.setOnMenuItemClickListener(
+                item -> {
+                    switch (item.getItemId()) {
+                        case 1:
+                            syncAll();
+                            return true;
+                        case 2:
+                            findDuplicates();
+                            return true;
+                        case 3:
+                            importContacts();
+                            return true;
+                        default:
+                            return false;
+                    }
+                });
+        menu.show();
+    }
+
+    /**
+     * Forces a framework PopupMenu to show its item icons: a public call
+     * from API 29, the internal helper via reflection before that.
+     */
+    private static void forceMenuIcons(android.widget.PopupMenu menu) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            menu.setForceShowIcon(true);
+            return;
+        }
+        try {
+            java.lang.reflect.Field field = menu.getClass().getDeclaredField("mPopup");
+            field.setAccessible(true);
+            Object helper = field.get(menu);
+            helper.getClass()
+                    .getMethod("setForceShowIcon", boolean.class)
+                    .invoke(helper, true);
+        } catch (Exception ignored) {
+            // Older builds just show the menu without icons.
+        }
+    }
+
     /**
      * Opens a merged row in the editor: one form for the whole contact
      * (docs/merged-view.md), the union of the replicas' documents with
@@ -2519,16 +2665,48 @@ public class MainActivity extends Activity {
         openMerged(group.replicas);
     }
 
+    /** Prompts for a vCard file to import (parsing lands later). */
+    private void importContacts() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, REQUEST_IMPORT);
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request == REQUEST_IMPORT && result == RESULT_OK && data != null && data.getData() != null) {
+            // TODO: hand the file to the bridge for parsing; for now just
+            // acknowledge the pick.
+            toast(data.getData().getLastPathSegment());
+        }
+    }
+
     /**
      * Starts a new contact, asking for the target addressbook whenever
-     * more than one is subscribed: an explicit choice beats a default
-     * landing cards where the user does not expect them.
+     * more than one real one is subscribed. With no account the contact
+     * is created unattached (the hidden local book); the local book is
+     * never offered as an explicit target.
      */
     private void addContact() {
-        // The local book is always subscribed, so there is always at
-        // least one target: with no account, a new contact lands on the
-        // device; onboarding is reached from the addressbooks screen.
-        List<BookEntry> books = base.loadSubscribedAddressbooks();
+        List<BookEntry> books = new ArrayList<>();
+        BookEntry local = null;
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            if (LocalBook.is(entry.accountEmail)) {
+                local = entry;
+            } else {
+                books.add(entry);
+            }
+        }
+
+        // No real account: born unattached, in the hidden local book.
+        if (books.isEmpty()) {
+            if (local != null) {
+                openNewContact(local.book, local.accountEmail);
+            }
+            return;
+        }
         if (books.size() == 1) {
             openNewContact(books.get(0).book, books.get(0).accountEmail);
             return;
@@ -2546,7 +2724,6 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** Shows the sync menu anchored to the sync button. */
     // ---- Duplicate remover ---------------------------------------------------
 
     /**
@@ -2898,8 +3075,22 @@ public class MainActivity extends Activity {
             row.findViewById(R.id.contact_end_slot)
                     .setVisibility(selectionMode || isDiverged ? View.VISIBLE : View.GONE);
 
+            // A contact living only in the hidden local book (attached to
+            // no addressbook) is shown muted.
+            row.setAlpha(attachedToNoBook(group) ? 0.5f : 1f);
+
             return row;
         }
+    }
+
+    /** True when every replica of the group is in the hidden local book. */
+    private boolean attachedToNoBook(Group group) {
+        for (Entry entry : group.replicas) {
+            if (!LocalBook.is(entry.accountEmail)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The replica's link-layer reference. */
@@ -3170,6 +3361,8 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_more_slot)
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
 
     /**
@@ -3216,11 +3409,10 @@ public class MainActivity extends Activity {
                                 : View.GONE);
         findViewById(R.id.contacts_delete)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // The whole sync slot goes, not just the inner button: an empty
-        // 48dp frame would push the selection icons off the edge.
-        findViewById(R.id.contacts_sync_slot)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_duplicates)
+        // The whole overflow slot goes in selection mode, not just the
+        // inner button: an empty 48dp frame would push the selection icons
+        // off the edge. It stays through search, so the field stops at it.
+        findViewById(R.id.contacts_more_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.fab).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
     }
@@ -3903,15 +4095,14 @@ public class MainActivity extends Activity {
     /**
      * The addressbooks dialog of the open contact, the one placement
      * gesture: checked means the contact exists there, through any of
-     * its cards. The local book ("Local contacts") is listed like any
-     * other and is the guaranteed home: unchecking every book force-
-     * checks it and locks it, so a contact always lives somewhere
-     * without a nagging message (Delete is the explicit removal). The
-     * dialog only records the desired state (reopening shows it);
-     * everything applies on SAVE: a staged membership when the contact
-     * already has a card on that account-level backend, a copied card
-     * sharing the vCard UID anywhere else, a membership removal or the
-     * card's staged delete on uncheck.
+     * its cards. Only real addressbooks are listed; unchecking every one
+     * is allowed and leaves the contact unattached, living in the hidden
+     * local book (it shows muted in the list, Delete is still the way to
+     * remove it). The dialog only records the desired state (reopening
+     * shows it); everything applies on SAVE: a staged membership when the
+     * contact already has a card on that account-level backend, a copied
+     * card sharing the vCard UID anywhere else, a membership removal or
+     * the card's staged delete on uncheck.
      */
     private void manageBooks() {
         if (editingReplicas.isEmpty()) {
@@ -3923,90 +4114,39 @@ public class MainActivity extends Activity {
             replicaByBook.put(entry.book.url, entry);
         }
 
-        List<BookEntry> books = base.loadSubscribedAddressbooks();
-        CharSequence[] labels = bookLabels(books);
-        int localIndex = -1;
-        for (int index = 0; index < books.size(); index++) {
-            if (LocalBook.is(books.get(index).accountEmail)) {
-                localIndex = index;
+        // The hidden local book is not listed; it is the fallback home
+        // when nothing is checked.
+        List<BookEntry> books = new ArrayList<>();
+        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
+            if (!LocalBook.is(entry.accountEmail)) {
+                books.add(entry);
             }
         }
-        final int local = localIndex;
-
-        CheckBox[] boxes = new CheckBox[books.size()];
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(24), dp(8), dp(24), dp(8));
-
-        // The listener re-checks and disables the local book whenever it
-        // is the only one left, and clears it again once another book is
-        // picked; the guard stops those adjustments from re-entering.
-        boolean[] updating = {false};
-        boolean[] localForced = {false};
-        Runnable enforce =
-                () -> {
-                    updating[0] = true;
-                    int count = 0;
-                    for (CheckBox box : boxes) {
-                        count += box.isChecked() ? 1 : 0;
-                    }
-                    if (count == 0 && local >= 0) {
-                        boxes[local].setChecked(true);
-                        localForced[0] = true;
-                        count = 1;
-                    }
-                    if (local >= 0) {
-                        boolean sole = count == 1 && boxes[local].isChecked();
-                        boxes[local].setEnabled(!sole);
-                    }
-                    updating[0] = false;
-                };
-
+        boolean[] checked = new boolean[books.size()];
         for (int index = 0; index < books.size(); index++) {
             String url = books.get(index).book.url;
             Boolean pending = pendingBookState == null ? null : pendingBookState.get(url);
-            boolean start = pending != null ? pending : replicaByBook.containsKey(url);
-
-            final int at = index;
-            CheckBox box = new CheckBox(this);
-            box.setText(labels[index]);
-            box.setChecked(start);
-            box.setPadding(box.getPaddingLeft(), dp(12), box.getPaddingRight(), dp(12));
-            box.setOnCheckedChangeListener(
-                    (view, isChecked) -> {
-                        if (updating[0]) {
-                            return;
-                        }
-                        if (isChecked && at != local && localForced[0]) {
-                            updating[0] = true;
-                            boxes[local].setChecked(false);
-                            localForced[0] = false;
-                            updating[0] = false;
-                        }
-                        if (at == local && isChecked) {
-                            localForced[0] = false;
-                        }
-                        enforce.run();
-                    });
-            boxes[index] = box;
-            list.addView(box);
+            checked[index] = pending != null ? pending : replicaByBook.containsKey(url);
         }
-        enforce.run();
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(list);
 
         new AlertDialog.Builder(this)
                 .setTitle(R.string.manage_books_title)
-                .setView(scroll)
+                .setMultiChoiceItems(
+                        bookLabels(books),
+                        checked,
+                        (dialog, which, isChecked) -> checked[which] = isChecked)
                 .setPositiveButton(
                         android.R.string.ok,
                         (dialog, which) -> {
                             pendingBookState = new HashMap<>();
+                            boolean anyChecked = false;
                             for (int index = 0; index < books.size(); index++) {
-                                pendingBookState.put(
-                                        books.get(index).book.url, boxes[index].isChecked());
+                                pendingBookState.put(books.get(index).book.url, checked[index]);
+                                anyChecked |= checked[index];
                             }
+                            // No addressbook checked: the contact is
+                            // unattached, kept only in the hidden local book.
+                            pendingBookState.put(LocalBook.URL, !anyChecked);
                         })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
@@ -4285,8 +4425,7 @@ public class MainActivity extends Activity {
      */
     private void openOverlay(int panel) {
         hideKeyboard();
-        View overlay =
-                findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
+        View overlay = findViewById(R.id.overlay_auth);
         overlay.setVisibility(View.VISIBLE);
         overlay.startAnimation(
                 android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_in_left));
@@ -4297,8 +4436,7 @@ public class MainActivity extends Activity {
     /** Slides a whole-frame overlay back out to the left, then hides it. */
     private void closeOverlay(int panel) {
         hideKeyboard();
-        View overlay =
-                findViewById(panel == PANEL_HOME ? R.id.overlay_home : R.id.overlay_auth);
+        View overlay = findViewById(R.id.overlay_auth);
         android.view.animation.Animation exit =
                 android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_out_left);
         exit.setAnimationListener(
@@ -4344,13 +4482,6 @@ public class MainActivity extends Activity {
             applyAuthChrome();
             return;
         }
-        if (panel == PANEL_HOME) {
-            fab.setImageResource(R.drawable.ic_add);
-            fab.setContentDescription(getString(R.string.add_account));
-            fab.setVisibility(View.VISIBLE);
-            return;
-        }
-
         for (int id :
                 new int[] {
                     R.id.bar_back,
@@ -4359,10 +4490,9 @@ public class MainActivity extends Activity {
                     R.id.contacts_search_pill,
                     R.id.contacts_search_close,
                     R.id.contacts_search,
-                    R.id.contacts_duplicates,
                     R.id.contacts_merge,
                     R.id.contacts_delete,
-                    R.id.contacts_sync_slot,
+                    R.id.contacts_more_slot,
                     R.id.contact_advanced,
                     R.id.contact_books,
                     R.id.contact_save,
@@ -4375,7 +4505,7 @@ public class MainActivity extends Activity {
         TextView title = findViewById(R.id.bar_title);
         switch (panel) {
             case PANEL_CONTACTS:
-                fab.setImageResource(R.drawable.ic_add);
+                fab.setImageResource(R.drawable.ic_person_add);
                 fab.setContentDescription(getString(R.string.contacts_add));
                 fab.setVisibility(View.VISIBLE);
                 updateSelectionUi();
@@ -4390,7 +4520,8 @@ public class MainActivity extends Activity {
                 // not in conflict mode where added fields cannot show
                 // under the diverging-only filter.
                 findViewById(R.id.contact_save).setVisibility(View.VISIBLE);
-                fab.setImageResource(R.drawable.ic_add);
+                // The FAB reuses the section headers' add-field glyph.
+                fab.setImageResource(R.drawable.ic_add_entry);
                 fab.setContentDescription(getString(R.string.contact_add_field));
                 fab.setVisibility(editingConflict ? View.GONE : View.VISIBLE);
                 break;
@@ -4422,9 +4553,6 @@ public class MainActivity extends Activity {
                 break;
             case PANEL_SOURCE:
                 applySource();
-                break;
-            case PANEL_HOME:
-                startAuth();
                 break;
             case PANEL_AUTH:
                 authContinue();
@@ -4565,6 +4693,18 @@ public class MainActivity extends Activity {
         return (int) (value * getResources().getDisplayMetrics().density);
     }
 
+    /** A dimen resource in pixels (the shared item_* metrics). */
+    private int dimen(int resId) {
+        return getResources().getDimensionPixelSize(resId);
+    }
+
+    /** Applies the shared item text size (scales with the font setting). */
+    private void itemText(TextView view) {
+        view.setTextSize(
+                android.util.TypedValue.COMPLEX_UNIT_PX,
+                getResources().getDimension(R.dimen.item_text));
+    }
+
     /**
      * Draws under the system bars (edge-to-edge is enforced for apps
      * targeting API 35) and pushes the chrome back in with the bar
@@ -4604,9 +4744,10 @@ public class MainActivity extends Activity {
     private void applyBarInsets(View root, Insets bars, int bottom) {
         root.setPadding(bars.left, root.getPaddingTop(), bars.right, root.getPaddingBottom());
 
-        // Only one bar shows at a time, but all three carry the top inset.
+        // Only one bar shows at a time, but all carry the top inset (the
+        // drawer header too, since the drawer runs under the status bar).
         padTop(R.id.app_bar, bars.top);
-        padTop(R.id.home_bar, bars.top);
+        padTop(R.id.drawer_header, bars.top);
         padTop(R.id.auth_bar, bars.top);
 
         // The base is each view's designed FAB clearance, so re-applying
@@ -4614,7 +4755,9 @@ public class MainActivity extends Activity {
         // in the keyboard, so the FAB and the email field ride above it.
         padBottom(R.id.fab_frame, 0, bottom);
         padBottom(R.id.contacts_list, 88, bottom);
-        padBottom(R.id.home_container, 88, bottom);
+        // The drawer's fixed bottom band takes the inset; the scrollable
+        // list above it needs none.
+        padBottom(R.id.drawer_actions, 0, bottom);
         padBottom(R.id.config_container, 88, bottom);
         padBottom(R.id.books_container, 88, bottom);
         padBottom(R.id.advanced_container, 24, bottom);
