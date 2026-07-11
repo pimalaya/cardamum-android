@@ -205,13 +205,33 @@ final class Mapping {
         for (Map<String, Object> row : rows) {
             switch (string(row, Data.MIMETYPE)) {
                 case StructuredName.CONTENT_ITEM_TYPE:
-                    model.put("displayName", string(row, StructuredName.DISPLAY_NAME));
                     JSONObject name = model.getJSONObject("name");
-                    name.put("prefix", string(row, StructuredName.PREFIX));
-                    name.put("given", string(row, StructuredName.GIVEN_NAME));
-                    name.put("middle", string(row, StructuredName.MIDDLE_NAME));
-                    name.put("family", string(row, StructuredName.FAMILY_NAME));
-                    name.put("suffix", string(row, StructuredName.SUFFIX));
+                    String prefix = string(row, StructuredName.PREFIX);
+                    String given = string(row, StructuredName.GIVEN_NAME);
+                    String middle = string(row, StructuredName.MIDDLE_NAME);
+                    String family = string(row, StructuredName.FAMILY_NAME);
+                    String suffix = string(row, StructuredName.SUFFIX);
+                    name.put("prefix", prefix);
+                    name.put("given", given);
+                    name.put("middle", middle);
+                    name.put("family", family);
+                    name.put("suffix", suffix);
+                    // The provider auto-composes DISPLAY_NAME from the
+                    // structured parts, so a contact that carries parts has
+                    // no genuinely explicit display name; keeping the
+                    // composed one would mint it back into FN. Only a
+                    // parts-free contact (an org-style name) has a real
+                    // display name; otherwise the list composes one on the
+                    // fly. Mirrors the FN-authoritative rule in rows().
+                    boolean hasParts =
+                            !prefix.isEmpty()
+                                    || !given.isEmpty()
+                                    || !middle.isEmpty()
+                                    || !family.isEmpty()
+                                    || !suffix.isEmpty();
+                    model.put(
+                            "displayName",
+                            hasParts ? "" : string(row, StructuredName.DISPLAY_NAME));
                     break;
 
                 case Nickname.CONTENT_ITEM_TYPE:
