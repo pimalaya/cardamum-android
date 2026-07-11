@@ -110,6 +110,22 @@ final class ContactForm {
      *  dialog, so their empty section keeps showing. Cleared on load. */
     private final Set<String> revealed = new HashSet<>();
 
+    /** Conflict rows the user has reviewed (opened, then confirmed with
+     *  OK), so their divergence warning clears. Cleared on load. */
+    private final Set<String> resolved = new HashSet<>();
+
+    /** Conflict rows still awaiting review, rebuilt on every render. */
+    private final Set<String> pending = new HashSet<>();
+
+    /** Numbers the conflict rows of a render, so each gets a stable key. */
+    private int conflictRow;
+
+    /** The row a just-opened dialog resolves on OK; null when none. */
+    private String pendingResolveKey;
+
+    /** Notified after every render so the host can re-gate its save. */
+    private Runnable onRender;
+
     ContactForm(Activity activity, CardamumClient client) {
         this.activity = activity;
         this.client = client;
@@ -131,15 +147,21 @@ final class ContactForm {
         this.alternatives = alternatives;
         this.changedLists = null;
         this.revealed.clear();
+        this.resolved.clear();
+        this.pendingResolveKey = null;
         if (changed != null) {
             changedLists = new HashSet<>();
             for (int index = 0; index < changed.length(); index++) {
                 changedLists.add(changed.optString(index));
             }
         } else if (this.model.length() == 0) {
-            // A brand-new contact has nothing to show, so start it on the
-            // display name rather than a blank page under the add button.
-            revealed.add("displayName");
+            // A brand-new contact starts on the common fields rather than a
+            // blank page under the add button: first and last name, plus an
+            // empty phone and email row ready to fill.
+            revealed.add("name.given");
+            revealed.add("name.family");
+            revealed.add("phones");
+            revealed.add("emails");
         }
 
         render();
@@ -149,6 +171,19 @@ final class ContactForm {
     /** The edited field model. */
     JSONObject collect() {
         return model;
+    }
+
+    /** Sets the post-render hook (the host's save-gate refresh). */
+    void setOnRender(Runnable onRender) {
+        this.onRender = onRender;
+    }
+
+    /**
+     * Whether the form may be validated: always in a plain edit, in a
+     * merge only once every diverging row has been reviewed.
+     */
+    boolean conflictResolved() {
+        return !conflict() || pending.isEmpty();
     }
 
     /** The birthday as picked, empty when unset. */
@@ -380,6 +415,8 @@ final class ContactForm {
     private void render() {
         view = client.formView(model);
         container.removeAllViews();
+        conflictRow = 0;
+        pending.clear();
 
         // Identity holds the solo fields: the display name (its own
         // line), the name parts, the dates and the gender. Every
@@ -471,6 +508,11 @@ final class ContactForm {
                                 typeLabel(R.array.phone_types, typeAt("phones", index)),
                                 () -> phoneDialog(at)));
             }
+            // A revealed-but-empty section (a fresh contact) shows one empty
+            // row that opens the new-entry dialog.
+            if (items.isEmpty()) {
+                items.add(entryItem(value(""), null, () -> phoneDialog(-1)));
+            }
             section(R.string.section_phones, R.drawable.ic_section_call, items);
         }
 
@@ -485,6 +527,9 @@ final class ContactForm {
                                 entry.optString("address"),
                                 typeLabel(R.array.email_types, typeAt("emails", index)),
                                 () -> emailDialog(at)));
+            }
+            if (items.isEmpty()) {
+                items.add(entryItem(value(""), null, () -> emailDialog(-1)));
             }
             section(R.string.section_emails, R.drawable.ic_section_mail, items);
         }
@@ -564,6 +609,19 @@ final class ContactForm {
             section(R.string.section_notes, R.drawable.ic_section_notes, items);
         }
 
+        if (onRender != null) {
+            onRender.run();
+        }
+    }
+
+    /** Marks the open conflict row reviewed (its warning clears), then
+     *  re-renders. Cancelling a dialog skips this, so the warning stays. */
+    private void markResolvedAndRender() {
+        if (pendingResolveKey != null) {
+            resolved.add(pendingResolveKey);
+            pendingResolveKey = null;
+        }
+        render();
     }
 
     /**
@@ -603,7 +661,7 @@ final class ContactForm {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(10), dp(16), dp(0));
+        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(10), dp(10), dp(0));
         header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
         header.addView(label, labelParams);
         if (!conflict()) {
@@ -628,26 +686,54 @@ final class ContactForm {
         return icon;
     }
 
-    /** A tappable row: title over a diminished subtitle. */
+    /**
+     * A tappable row: title over a diminished subtitle. In conflict mode
+     * every row diverges, so it carries a trailing warning (the same one
+     * the list shows) until the user opens it and confirms with OK; its
+     * key is positional, stable while rows only get reviewed, not added.
+     */
     private View entryItem(CharSequence title, CharSequence subtitle, Runnable onClick) {
+        String key = conflict() ? "row" + conflictRow++ : null;
+
         TextView titleView = new TextView(activity);
         titleView.setText(title);
         titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
 
-        LinearLayout row = new LinearLayout(activity);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
-        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        row.setOnClickListener(view -> onClick.run());
-        row.addView(titleView);
+        LinearLayout text = new LinearLayout(activity);
+        text.setOrientation(LinearLayout.VERTICAL);
+        text.addView(titleView);
 
         if (subtitle != null && subtitle.length() > 0) {
             TextView subtitleView = new TextView(activity);
             subtitleView.setText(subtitle);
             subtitleView.setTextColor(labelColor);
             subtitleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            row.addView(subtitleView);
+            text.addView(subtitleView);
+        }
+
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
+        row.setOnClickListener(
+                view -> {
+                    pendingResolveKey = key;
+                    onClick.run();
+                });
+        row.addView(
+                text,
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (key != null && !resolved.contains(key)) {
+            pending.add(key);
+            ImageView warn = new ImageView(activity);
+            warn.setImageResource(R.drawable.ic_diverged);
+            LinearLayout.LayoutParams warnParams =
+                    new LinearLayout.LayoutParams(dp(24), dp(24));
+            warnParams.setMarginStart(dp(12));
+            row.addView(warn, warnParams);
         }
 
         return row;
@@ -1106,7 +1192,7 @@ final class ContactForm {
                             } catch (JSONException error) {
                                 throw new IllegalStateException(error);
                             }
-                            render();
+                            markResolvedAndRender();
                         },
                         calendar.get(Calendar.YEAR),
                         calendar.get(Calendar.MONTH),
@@ -1117,7 +1203,7 @@ final class ContactForm {
                 (d, which) -> {
                     model.remove(field);
                     revealed.remove(field);
-                    render();
+                    markResolvedAndRender();
                 });
         dialog.show();
     }
@@ -1149,7 +1235,7 @@ final class ContactForm {
                                 android.R.string.ok,
                                 (dialog, which) -> {
                                     onOk.run();
-                                    render();
+                                    markResolvedAndRender();
                                 })
                         .setNegativeButton(android.R.string.cancel, null);
         if (onRemove != null) {
@@ -1157,7 +1243,7 @@ final class ContactForm {
                     R.string.remove_row,
                     (dialog, which) -> {
                         onRemove.run();
-                        render();
+                        markResolvedAndRender();
                     });
         }
 

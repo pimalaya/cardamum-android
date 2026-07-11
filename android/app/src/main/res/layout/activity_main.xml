@@ -180,8 +180,9 @@
 
         </FrameLayout>
 
-        <!-- Contacts: the overflow menu (Synchronize, Find duplicates);
-             its icon gives way to a spinner while a sync runs. -->
+        <!-- Contacts: the overflow menu (Synchronize, Import, Export, Find
+             duplicates). A running sync shows on the FAB, not here, so the
+             icon stays put. The slot id gates its whole visibility. -->
         <FrameLayout
             android:id="@+id/contacts_more_slot"
             android:layout_width="@dimen/app_bar_button"
@@ -195,15 +196,6 @@
                 android:contentDescription="@string/contacts_more"
                 android:src="@drawable/ic_more_vert"
                 android:tint="?android:attr/textColorPrimary" />
-
-            <ProgressBar
-                android:id="@+id/contacts_more_progress"
-                style="?android:attr/progressBarStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:indeterminateTint="?android:attr/textColorPrimary"
-                android:visibility="gone" />
 
         </FrameLayout>
 
@@ -230,14 +222,15 @@
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
-        <!-- Editor: save the contact; the FAB is the add-field action. -->
+        <!-- Editor: reveal more fields; the FAB is the validate (check)
+             action. Hidden in conflict mode where nothing can be added. -->
         <ImageButton
-            android:id="@+id/contact_save"
+            android:id="@+id/contact_add_field"
             android:layout_width="@dimen/app_bar_button"
             android:layout_height="@dimen/app_bar_button"
             android:background="@drawable/ripple_circle"
-            android:contentDescription="@string/contact_save"
-            android:src="@drawable/ic_check"
+            android:contentDescription="@string/contact_add_field"
+            android:src="@drawable/ic_add_entry"
             android:tint="?android:attr/textColorPrimary"
             android:visibility="gone" />
 
@@ -373,7 +366,8 @@
             </ScrollView>
 
             <!-- The drawer's empty state, shown when no real account is
-                 configured: an icon, a title, and an add-account button. -->
+                 configured: an icon and a title. Adding an account lives
+                 in the title bar's plus. -->
             <LinearLayout
                 android:id="@+id/drawer_empty"
                 android:layout_width="match_parent"
@@ -403,22 +397,6 @@
                     android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
                     android:textColor="?android:attr/textColorSecondary"
                     android:textSize="18sp" />
-
-                <!-- Pill button; its text and plus are tinted in code to
-                     contrast the accent, like the FAB. -->
-                <Button
-                    android:id="@+id/drawer_empty_add"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:background="@drawable/button_pill"
-                    android:drawableStart="@drawable/ic_add"
-                    android:drawablePadding="4dp"
-                    android:minHeight="40dp"
-                    android:paddingStart="12dp"
-                    android:paddingEnd="20dp"
-                    android:stateListAnimator="@null"
-                    android:text="@string/add_account" />
 
             </LinearLayout>
 

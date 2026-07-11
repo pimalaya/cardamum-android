@@ -97,6 +97,10 @@ dependencies {
     // uses the same.
     implementation("androidx.drawerlayout:drawerlayout:1.2.0")
 
+    // Pull-to-refresh over the contacts list (triggers an account sync).
+    // Another small, standalone AndroidX ViewGroup, no theme needed.
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+
     // Google Play Billing, pulled into the google build only, so the
     // FOSS builds carry no Google dependency. Its manifest merge is what
     // adds the com.android.vending.BILLING capability that unlocks

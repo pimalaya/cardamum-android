@@ -12,16 +12,17 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
-import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ViewFlipper;
@@ -78,6 +79,7 @@ public class MainActivity extends Activity {
 
     private static final int REQUEST_CONTACTS = 1;
     private static final int REQUEST_IMPORT = 2;
+    private static final int REQUEST_EXPORT = 3;
 
     /**
      * One replica in the contacts pool: a card, the addressbook it
@@ -160,8 +162,8 @@ public class MainActivity extends Activity {
     /** Email of the just-connected account, awaiting its book selection. */
     private String connectedEmail;
 
-    /** Addressbook checkboxes of the post-connect selection, tagged with their url. */
-    private List<CheckBox> bookBoxes = new ArrayList<>();
+    /** Per-addressbook onboarding choices (subscribe + phone-sync switches). */
+    private List<BookChoice> bookChoices = new ArrayList<>();
 
     /** Subscribed addressbooks grouped for the drawer. */
     private List<BookEntry> homeBooks = new ArrayList<>();
@@ -273,6 +275,9 @@ public class MainActivity extends Activity {
         flipper = findViewById(R.id.flipper);
         authFlipper = findViewById(R.id.auth_flipper);
         form = new ContactForm(this, client);
+        // Re-gate the editor's validate FAB whenever the form re-renders
+        // (a merge enables it only once every conflict is resolved).
+        form.setOnRender(this::updateSaveEnabled);
 
         setUpEmailPanel();
         setUpBooksPanel();
@@ -309,15 +314,13 @@ public class MainActivity extends Activity {
         // redirect recreates the activity from scratch.
         handleOauthRedirect(getIntent());
 
-        // A fresh start with no real account opens the connection flow
-        // straight away (back dismisses it onto the empty contacts list);
-        // skipped while an OAuth redirect is being processed.
-        boolean hasAccount = false;
-        for (AccountEntry entry : accounts) {
-            hasAccount |= !LocalBook.is(entry.email);
-        }
-        if (savedInstanceState == null && getIntent().getData() == null && !hasAccount) {
-            startAuth();
+        // A fresh start with no real account opens the connection flow,
+        // but only after a short beat once the contacts root has painted,
+        // so the flow slides in over a settled screen rather than popping
+        // up before anything shows; back dismisses it onto the empty list.
+        // Skipped while an OAuth redirect is being processed.
+        if (savedInstanceState == null && getIntent().getData() == null && !hasRealAccount()) {
+            findViewById(R.id.flipper).postDelayed(this::startAuth, 1000);
         }
     }
 
@@ -428,6 +431,27 @@ public class MainActivity extends Activity {
             }
         }
         return null;
+    }
+
+    /** Whether any real (non-local) account is configured. */
+    private boolean hasRealAccount() {
+        for (AccountEntry entry : accounts) {
+            if (!LocalBook.is(entry.email)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Gates the editor's validate FAB: always live in a plain edit, live
+     * in a merge only once every diverging field has been reviewed.
+     */
+    private void updateSaveEnabled() {
+        if (screen != PANEL_CONTACT) {
+            return;
+        }
+        setFabEnabled(R.id.fab, form.conflictResolved());
     }
 
     @Override
@@ -1141,13 +1165,16 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Lists the just-connected account's addressbooks with a checkbox
-     * each (all checked), so the user picks which to sync before the
-     * first sync runs. Same chrome as the config panel.
+     * Lists the just-connected account's addressbooks. Each book's name
+     * is itself the subscribe toggle (visible and in sync, on by default),
+     * with a single sub-switch under it to mirror the book into the
+     * phone's Contacts app (on by default, and only while subscribed). The
+     * same two axes the drawer's per-book settings expose. Same chrome as
+     * the config panel.
      */
     private void openBooksSelection(String email, List<Addressbook> books) {
         connectedEmail = email;
-        bookBoxes = new ArrayList<>();
+        bookChoices = new ArrayList<>();
 
         LinearLayout container = findViewById(R.id.books_container);
         container.removeAllViews();
@@ -1161,15 +1188,40 @@ public class MainActivity extends Activity {
         }
 
         for (Addressbook book : books) {
-            CheckBox box = new CheckBox(this);
-            box.setText(book.name);
-            box.setTextSize(16);
-            box.setChecked(true);
-            box.setTag(book.url);
-            box.setPadding(dp(8), dp(12), dp(8), dp(12));
-            box.setOnClickListener(view -> updateBooksContinue());
-            container.addView(box);
-            bookBoxes.add(box);
+            boolean first = container.getChildCount() == 0;
+
+            // The addressbook name IS the subscribe toggle, styled as the
+            // group header; on by default.
+            Switch subscribe = new Switch(this);
+            subscribe.setText(book.name);
+            subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            subscribe.setTypeface(subscribe.getTypeface(), android.graphics.Typeface.BOLD);
+            subscribe.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            subscribe.setChecked(true);
+            LinearLayout.LayoutParams headerParams =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            headerParams.topMargin = first ? dp(8) : dp(20);
+            subscribe.setLayoutParams(headerParams);
+            container.addView(subscribe);
+
+            // The one sub-toggle: phone-contacts mirror, on by default, off
+            // and disabled while the book itself is off.
+            Switch phone = authSwitch(R.string.book_phone_sync);
+            phone.setChecked(true);
+            container.addView(phone);
+
+            subscribe.setOnCheckedChangeListener(
+                    (view, checked) -> {
+                        phone.setEnabled(checked);
+                        if (!checked) {
+                            phone.setChecked(false);
+                        }
+                        updateBooksContinue();
+                    });
+
+            bookChoices.add(new BookChoice(book.url, subscribe, phone));
         }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, false);
@@ -1177,14 +1229,29 @@ public class MainActivity extends Activity {
         showAuth(STEP_BOOKS);
     }
 
-    /** Continue is enabled only while at least one addressbook is checked. */
+    /** A full-width labelled onboarding toggle, indented under its header. */
+    private Switch authSwitch(int label) {
+        Switch toggle = new Switch(this);
+        toggle.setText(label);
+        toggle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.topMargin = dp(8);
+        params.setMarginStart(dp(8));
+        toggle.setLayoutParams(params);
+        return toggle;
+    }
+
+    /** Continue is enabled only while at least one addressbook is on. */
     private void updateBooksContinue() {
         setFabEnabled(R.id.fab, booksAnyChecked());
     }
 
     private boolean booksAnyChecked() {
-        for (CheckBox box : bookBoxes) {
-            if (box.isChecked()) {
+        for (BookChoice choice : bookChoices) {
+            if (choice.subscribe.isChecked()) {
                 return true;
             }
         }
@@ -1193,26 +1260,35 @@ public class MainActivity extends Activity {
 
     /**
      * The flow's real commit: persists the connected account and its
-     * addressbooks, applies the checked subscriptions, then runs the
-     * account's first sync.
+     * addressbooks, applies each book's subscribe and phone-sync
+     * switches, then runs the account's first sync.
      */
     private void confirmBooks() {
-        java.util.Set<String> subscribed = new java.util.HashSet<>();
-        for (CheckBox box : bookBoxes) {
-            if (box.isChecked()) {
-                subscribed.add((String) box.getTag());
-            }
-        }
-
         accounts.removeIf(entry -> entry.email.equals(connectedEmail));
         accounts.add(pendingAccount);
         store.add(pendingAccount);
         pendingAccount = null;
         base.replaceAddressbooks(connectedEmail, pendingBooks);
-        base.setSubscriptions(connectedEmail, subscribed);
+        for (BookChoice choice : bookChoices) {
+            base.setBookState(
+                    choice.url, choice.subscribe.isChecked(), choice.phone.isChecked());
+        }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, true);
         syncRemote(true);
+    }
+
+    /** One addressbook's onboarding switches (subscribe + phone sync). */
+    private static final class BookChoice {
+        final String url;
+        final Switch subscribe;
+        final Switch phone;
+
+        BookChoice(String url, Switch subscribe, Switch phone) {
+            this.url = url;
+            this.subscribe = subscribe;
+            this.phone = phone;
+        }
     }
 
     // ---- OAuth 2.0 sign-in -----------------------------------------------------
@@ -1852,13 +1928,6 @@ public class MainActivity extends Activity {
         findViewById(R.id.drawer_header_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
 
-        // The empty-state pill: its text and plus contrast the accent.
-        Button add = findViewById(R.id.drawer_empty_add);
-        add.setOnClickListener(view -> startAuth());
-        add.setTextColor(accentContrast());
-        add.setCompoundDrawableTintList(
-                android.content.res.ColorStateList.valueOf(accentContrast()));
-
         // While a sync runs the button shows its spinner and goes inert.
         observeSync(
                 active -> {
@@ -1920,10 +1989,7 @@ public class MainActivity extends Activity {
 
         // With no real account the drawer shows an empty state, and its
         // sync row (which would sync nothing) is hidden.
-        boolean hasAccount = false;
-        for (AccountEntry entry : accounts) {
-            hasAccount |= !LocalBook.is(entry.email);
-        }
+        boolean hasAccount = hasRealAccount();
         findViewById(R.id.drawer_sync).setVisibility(hasAccount ? View.VISIBLE : View.GONE);
         findViewById(R.id.drawer_empty).setVisibility(hasAccount ? View.GONE : View.VISIBLE);
 
@@ -1977,11 +2043,12 @@ public class MainActivity extends Activity {
 
             row.addView(name);
 
-            // A tiny trailing glyph flags a book mirrored into the phone's
-            // Contacts app.
-            if (entry.subscribed && entry.phoneSynced) {
+            // A tiny trailing glyph flags a subscribed book that is NOT
+            // mirrored into the phone's Contacts app (the common case is
+            // synced, so the marker calls out the exception).
+            if (entry.subscribed && !entry.phoneSynced) {
                 android.widget.ImageView state = new android.widget.ImageView(this);
-                state.setImageResource(R.drawable.ic_phone_sync);
+                state.setImageResource(R.drawable.ic_phone_off);
                 state.setAlpha(0.6f);
                 LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(dp(16), dp(16));
                 stateParams.setMarginStart(dp(8));
@@ -2016,16 +2083,16 @@ public class MainActivity extends Activity {
                         LinearLayout.LayoutParams.WRAP_CONTENT);
         switchParams.topMargin = dp(12);
 
-        android.widget.Switch subscribe = new android.widget.Switch(this);
+        Switch subscribe = new Switch(this);
         subscribe.setText(R.string.book_subscribe);
-        subscribe.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+        subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         subscribe.setChecked(local || entry.subscribed);
         subscribe.setEnabled(!local);
         content.addView(subscribe, switchParams);
 
-        android.widget.Switch phone = new android.widget.Switch(this);
+        Switch phone = new Switch(this);
         phone.setText(R.string.book_phone_sync);
-        phone.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+        phone.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         phone.setChecked(entry.phoneSynced);
         phone.setEnabled(subscribe.isChecked());
         content.addView(phone, switchParams);
@@ -2101,7 +2168,6 @@ public class MainActivity extends Activity {
         TextView label = new TextView(this);
         label.setText(LocalBook.is(email) ? getString(R.string.local_account) : email);
         itemText(label);
-        label.setTypeface(label.getTypeface(), android.graphics.Typeface.BOLD);
         label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
         label.setSingleLine(true);
         label.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -2532,14 +2598,19 @@ public class MainActivity extends Activity {
 
     private void setUpContactsPanel() {
         findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
-        // The overflow icon gives way to its spinner while a sync runs.
-        observeSync(
-                active -> {
-                    findViewById(R.id.contacts_more)
-                            .setVisibility(active ? View.GONE : View.VISIBLE);
-                    findViewById(R.id.contacts_more_progress)
-                            .setVisibility(active ? View.VISIBLE : View.GONE);
-                });
+        // A running sync shows on the FAB, whose icon gives way to an
+        // on-disc loader (the overflow icon stays put).
+        observeSync(active -> setAuthLoading(R.id.fab, R.id.fab_progress, active));
+        // Pull down on the list to run the very same sync as the overflow
+        // menu and the drawer (syncAll, with its outcome toast); the swipe
+        // spinner tracks the shared sync state, so a menu-triggered sync
+        // shows it too.
+        androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh =
+                findViewById(R.id.contacts_refresh);
+        refresh.setColorSchemeColors(resolveColor(android.R.attr.colorAccent));
+        refresh.setOnRefreshListener(this::syncAll);
+        observeSync(refresh::setRefreshing);
+
         findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
         findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
@@ -2614,12 +2685,14 @@ public class MainActivity extends Activity {
 
     }
 
-    /** The contacts overflow menu: Synchronize, Find duplicates, Import. */
+    /** The contacts overflow menu: Synchronize, Import, Export, Find
+     *  duplicates. */
     private void showMoreMenu(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
         menu.getMenu().add(0, 1, 0, R.string.menu_synchronize).setIcon(R.drawable.ic_sync);
-        menu.getMenu().add(0, 2, 1, R.string.dup_find).setIcon(R.drawable.ic_find_duplicates);
-        menu.getMenu().add(0, 3, 2, R.string.import_contacts).setIcon(R.drawable.ic_import);
+        menu.getMenu().add(0, 3, 1, R.string.import_contacts).setIcon(R.drawable.ic_import);
+        menu.getMenu().add(0, 4, 2, R.string.export_contacts).setIcon(R.drawable.ic_export);
+        menu.getMenu().add(0, 2, 3, R.string.dup_find).setIcon(R.drawable.ic_find_duplicates);
         forceMenuIcons(menu);
         menu.setOnMenuItemClickListener(
                 item -> {
@@ -2632,6 +2705,9 @@ public class MainActivity extends Activity {
                             return true;
                         case 3:
                             importContacts();
+                            return true;
+                        case 4:
+                            exportContacts();
                             return true;
                         default:
                             return false;
@@ -2682,8 +2758,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request == REQUEST_IMPORT && result == RESULT_OK && data != null && data.getData() != null) {
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        if (request == REQUEST_IMPORT) {
             chooseImportTarget(data.getData());
+        } else if (request == REQUEST_EXPORT) {
+            exportFile(data.getData());
         }
     }
 
@@ -2792,6 +2873,70 @@ public class MainActivity extends Activity {
                 out.write(buffer, 0, read);
             }
             return out.toString("UTF-8");
+        }
+    }
+
+    /** Prompts for a destination file, then exports the active view as a
+     *  single vCard file. */
+    private void exportContacts() {
+        if (sortedContacts.isEmpty()) {
+            toast(getString(R.string.export_empty));
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/vcard");
+        intent.putExtra(Intent.EXTRA_TITLE, "contacts.vcf");
+        startActivityForResult(intent, REQUEST_EXPORT);
+    }
+
+    /**
+     * Writes the active contacts view (the currently listed, search-filtered
+     * contacts) to the chosen file as one vCard file, each contact's raw
+     * document appended verbatim, off the main thread behind the FAB loader.
+     */
+    private void exportFile(Uri uri) {
+        List<Group> snapshot = new ArrayList<>(sortedContacts);
+        setAuthLoading(R.id.fab, R.id.fab_progress, true);
+        io.execute(
+                () -> {
+                    Exception failure = null;
+                    try {
+                        writeText(uri, buildVcf(snapshot));
+                    } catch (Exception error) {
+                        failure = error;
+                    }
+                    Exception error = failure;
+                    main.post(
+                            () -> {
+                                setAuthLoading(R.id.fab, R.id.fab_progress, false);
+                                if (error != null) {
+                                    showError(error, R.string.export_failed);
+                                } else {
+                                    toast(getString(R.string.export_done, snapshot.size()));
+                                }
+                            });
+                });
+    }
+
+    /** One vCard per contact (its primary replica's document), appended
+     *  verbatim so the file round-trips through the importer. */
+    private String buildVcf(List<Group> groups) {
+        StringBuilder vcf = new StringBuilder();
+        for (Group group : groups) {
+            vcf.append(group.primary().card.vcard.trim());
+            vcf.append("\r\n");
+        }
+        return vcf.toString();
+    }
+
+    /** Writes text to a content Uri as UTF-8. */
+    private void writeText(Uri uri, String text) throws java.io.IOException {
+        try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "w")) {
+            if (out == null) {
+                throw new java.io.IOException("Could not open the destination file");
+            }
+            out.write(text.getBytes("UTF-8"));
         }
     }
 
@@ -3779,7 +3924,7 @@ public class MainActivity extends Activity {
 
     private void setUpContactPanel() {
         findViewById(R.id.contact_books).setOnClickListener(view -> manageBooks());
-        findViewById(R.id.contact_save).setOnClickListener(view -> saveContact());
+        findViewById(R.id.contact_add_field).setOnClickListener(view -> form.addField());
     }
 
     /**
@@ -3872,7 +4017,7 @@ public class MainActivity extends Activity {
         TextView header = new TextView(this);
         header.setText(R.string.advanced_source);
         header.setTextColor(resolveColor(android.R.attr.colorAccent));
-        header.setTextSize(15);
+        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         header.setPadding(dp(16), dp(24), dp(16), dp(4));
         container.addView(header);
 
@@ -4669,7 +4814,7 @@ public class MainActivity extends Activity {
                     R.id.contacts_more_slot,
                     R.id.contact_advanced,
                     R.id.contact_books,
-                    R.id.contact_save,
+                    R.id.contact_add_field,
                 }) {
             findViewById(id).setVisibility(View.GONE);
         }
@@ -4687,17 +4832,24 @@ public class MainActivity extends Activity {
             case PANEL_CONTACT:
                 title.setText(editingTitle);
                 findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                // The advanced raw-vCard editor is removed for now.
+                // Placing the contact in addressbooks needs a real account
+                // to target; with only the local book the button hides.
                 findViewById(R.id.contact_books)
-                        .setVisibility(editingCard != null ? View.VISIBLE : View.GONE);
-                // Save lives in the bar; the FAB reveals more fields, but
-                // not in conflict mode where added fields cannot show
-                // under the diverging-only filter.
-                findViewById(R.id.contact_save).setVisibility(View.VISIBLE);
-                // The FAB reuses the section headers' add-field glyph.
-                fab.setImageResource(R.drawable.ic_add_entry);
-                fab.setContentDescription(getString(R.string.contact_add_field));
-                fab.setVisibility(editingConflict ? View.GONE : View.VISIBLE);
+                        .setVisibility(
+                                editingCard != null && hasRealAccount()
+                                        ? View.VISIBLE
+                                        : View.GONE);
+                // Add-field lives in the bar during a plain edit; conflict
+                // mode shows only the diverging fields, so nothing new can
+                // be added and the button hides.
+                findViewById(R.id.contact_add_field)
+                        .setVisibility(editingConflict ? View.GONE : View.VISIBLE);
+                // The FAB validates (check); in a merge it stays disabled
+                // until every diverging field has been reviewed.
+                fab.setImageResource(R.drawable.ic_check);
+                fab.setContentDescription(getString(R.string.contact_save));
+                fab.setVisibility(View.VISIBLE);
+                updateSaveEnabled();
                 break;
             case PANEL_ADVANCED:
                 title.setText(R.string.advanced_title);
@@ -4723,7 +4875,7 @@ public class MainActivity extends Activity {
                 addContact();
                 break;
             case PANEL_CONTACT:
-                form.addField();
+                saveContact();
                 break;
             case PANEL_SOURCE:
                 applySource();

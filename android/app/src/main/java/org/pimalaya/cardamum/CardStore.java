@@ -420,33 +420,6 @@ public class CardStore extends SQLiteOpenHelper {
     }
 
     /**
-     * Sets one account's subscribed addressbooks to exactly the given
-     * URLs (other accounts' subscriptions are untouched). Subscription
-     * is a pure view filter: an unsubscribed addressbook's cached cards
-     * stay in the store, hidden and no longer synced, so toggling a
-     * book off and on shows its cards again without a fetch.
-     */
-    public void setSubscriptions(String accountEmail, Set<String> subscribedUrls) {
-        SQLiteDatabase db = getWritableDatabase();
-        db.beginTransaction();
-        try {
-            ContentValues off = new ContentValues();
-            off.put("subscribed", 0);
-            db.update("addressbook", off, "account_email = ?", new String[] {accountEmail});
-
-            ContentValues on = new ContentValues();
-            on.put("subscribed", 1);
-            for (String url : subscribedUrls) {
-                db.update("addressbook", on, "url = ?", new String[] {url});
-            }
-
-            db.setTransactionSuccessful();
-        } finally {
-            db.endTransaction();
-        }
-    }
-
-    /**
      * Sets one addressbook's two switches. Phone sync requires the
      * subscription, so it is forced off whenever the book is not
      * subscribed.

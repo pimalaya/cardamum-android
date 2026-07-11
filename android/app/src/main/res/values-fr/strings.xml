@@ -83,6 +83,10 @@
     <string name="import_done">%1$d contact(s) importé(s)</string>
     <string name="import_failed">Impossible d\'importer le fichier</string>
     <string name="import_target_title">Importer dans le carnet</string>
+    <string name="export_contacts">Exporter des contacts</string>
+    <string name="export_done">%1$d contact(s) exporté(s)</string>
+    <string name="export_failed">Impossible d\'exporter les contacts</string>
+    <string name="export_empty">Aucun contact à exporter</string>
     <string name="contacts_search">Rechercher</string>
     <string name="contact_diverged">Divergent</string>
     <string name="save_target_title">Ajouter au carnet d\'adresses</string>
