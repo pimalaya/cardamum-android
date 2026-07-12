@@ -651,7 +651,9 @@ fn display_name(person: &PeoplePerson) -> String {
         return composed.join(" ");
     }
 
-    opt(&name.display_name).map(str::to_string).unwrap_or_default()
+    opt(&name.display_name)
+        .map(str::to_string)
+        .unwrap_or_default()
 }
 
 /// An ADR property from a People address, or None when every component

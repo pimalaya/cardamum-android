@@ -23,10 +23,15 @@ import org.junit.Test;
  */
 public class MappingTest {
     @Test
-    public void nameComponentsProjectWhenDisplayMatchesTheirJoin() throws Exception {
+    public void displayNameNeverProjectsOnlyComponentsDo() throws Exception {
+        // Regression: FN is hub-only. Projected alone it was re-split
+        // into the wrong parts by the provider's guesswork; written
+        // alongside the parts the provider rewrote it as their join,
+        // which then read back as a phone edit clearing FN. The phone
+        // gets the structured parts, nothing else.
         JSONObject model =
                 new JSONObject()
-                        .put("displayName", "Jane Q. Doe Jr.")
+                        .put("displayName", "Jane Doe Yo")
                         .put(
                                 "name",
                                 new JSONObject()
@@ -37,29 +42,11 @@ public class MappingTest {
                                         .put("suffix", "Jr."));
 
         Map<String, Object> name = firstOfType(model, "vnd.android.cursor.item/name");
-        assertEquals("Jane Q. Doe Jr.", name.get("data1"));
+        assertNull(name.get("data1"));
         assertEquals("Jane", name.get("data2"));
         assertEquals("Doe", name.get("data3"));
         assertEquals("Q.", name.get("data5"));
         assertEquals("Jr.", name.get("data6"));
-    }
-
-    @Test
-    public void divergentDisplayNameDropsComponentsSoItWins() throws Exception {
-        // Regression: ContactsProvider derives the visible name from the
-        // structured components when present, so an FN-only edit must
-        // project without them.
-        JSONObject model =
-                new JSONObject()
-                        .put("displayName", "Jane Doe Yo")
-                        .put(
-                                "name",
-                                new JSONObject().put("given", "Jane").put("family", "Doe"));
-
-        Map<String, Object> name = firstOfType(model, "vnd.android.cursor.item/name");
-        assertEquals("Jane Doe Yo", name.get("data1"));
-        assertNull(name.get("data2"));
-        assertNull(name.get("data3"));
     }
 
     @Test
@@ -203,9 +190,11 @@ public class MappingTest {
 
     @Test
     public void richModelRoundTripsThroughRows() throws Exception {
+        // NOTE: the display name stays empty: FN is hub-only, never
+        // projected to the phone, so it cannot round-trip through rows.
         JSONObject model =
                 new JSONObject()
-                        .put("displayName", "Jane Q. Doe Jr.")
+                        .put("displayName", "")
                         .put(
                                 "name",
                                 new JSONObject()
@@ -334,8 +323,8 @@ public class MappingTest {
         assertEquals(
                 "+332222",
                 merged.getJSONArray("phones").getJSONObject(0).getString("number"));
-        // The divergent-FN name never reached the phone rows, so an
-        // untouched phone must not read as a name clear.
+        // FN never reaches the phone rows, so an untouched phone must
+        // not read as a name clear.
         assertEquals("Doe", merged.getJSONObject("name").getString("family"));
         // Fields outside the phone mapping ride along from the base.
         assertEquals("friends", merged.getJSONArray("categories").getString(0));

@@ -18,7 +18,7 @@
 //! Graph runs io-msgraph's with the msgraph module projecting Graph
 //! contact resources to and from the vCard document of record, JMAP
 //! runs io-jmap's RFC 9610 coroutines with the jmap module converting
-//! ContactCards to and from vCards via calcard (RFC 9555), and Google
+//! ContactCards to and from vCards via vcard-rs (RFC 9555), and Google
 //! runs io-google-people's coroutines with the google module
 //! projecting People person resources to and from vCards. The
 //! `offline*` entry points run io-offline's replica engine

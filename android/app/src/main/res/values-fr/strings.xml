@@ -81,6 +81,7 @@
     <string name="sync_failed">Impossible de synchroniser</string>
     <string name="sync_conflicts">%1$d modification(s) en conflit avec le serveur restent locales</string>
     <string name="sync_conflicts_pending">%1$d contact(s) divergent ; résolvez-les pour synchroniser</string>
+    <string name="conflict_auto_resolved">Conflit résolu automatiquement ; les modifications partent à la prochaine synchronisation</string>
     <string name="sync_local_requested">Synchronisation locale planifiée</string>
     <string name="notif_channel_sync">Synchronisation en arrière-plan</string>
     <string name="notif_conflicts_sub">Conflits détectés ; ouvrez l\'application pour les résoudre</string>
@@ -89,7 +90,8 @@
     <string name="contacts_sync">Synchroniser</string>
     <string name="contacts_more">Plus</string>
     <string name="menu_synchronize">Synchroniser</string>
-    <string name="sync_done">Synchronisé : %1$d reçus, %2$d envoyés, %3$d fusionnés</string>
+    <string name="sync_line_local">Local : %1$d reçu(s), %2$d envoyé(s), %3$d modifié(s)</string>
+    <string name="sync_line_remote">Distant : %1$d reçu(s), %2$d envoyé(s), %3$d modifié(s)</string>
     <string name="contacts_add">Ajouter</string>
     <string name="add_title">Ajouter</string>
     <string name="add_contact">Ajouter un contact</string>

@@ -1,8 +1,13 @@
 //! JMAP ContactCard (RFC 9610) to vCard projection and back, via
-//! calcard's JSContact conversion (RFC 9555). The ContactCard's
-//! JSContact payload (RFC 9553) converts losslessly enough for the
-//! app's purposes: unmapped vCard properties ride in vCardProps, so
-//! the vCard document of record round-trips.
+//! vcard-rs's JSContact conversion (RFC 9555). The ContactCard's
+//! JSContact payload (RFC 9553) converts losslessly: unmapped members
+//! and properties ride the vCardProps / JSPROP escape hatches both
+//! ways, so the vCard document of record round-trips. FN maps only
+//! from the Card's name.full: the RFC 9555 letter derives a
+//! DERIVED=true FN from the name components when full is absent
+//! (vCard formally requires one), but the app never mints a display
+//! name into the document of record, one reason this conversion runs
+//! on vcard-rs rather than calcard.
 //!
 //! JMAP has no per-card ETag; the revision surfaced to the app is a
 //! hash of the card's JSON, which only drives the "unchanged, skip"
@@ -14,8 +19,8 @@ use std::{
     hash::{DefaultHasher, Hash, Hasher},
 };
 
-use calcard::{jscontact::JSContact, vcard::VCard};
 use io_jmap::rfc9610::contact_card::JmapContactCard;
+use vcard::{tree::cst::VcardCst, vcard::Vcard};
 
 use crate::types::Card;
 
@@ -47,12 +52,9 @@ pub fn to_card(card: JmapContactCard) -> Result<Card, String> {
 
 /// Projects the JSContact Card properties onto a vCard document.
 pub fn to_vcard(card: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
-    let json = serde_json::Value::Object(card.clone()).to_string();
-    let jscontact: JSContact<String, String> =
-        JSContact::parse(&json).map_err(|err| format!("Invalid JSContact card: {err}"))?;
-    let vcard = jscontact
-        .into_vcard()
-        .ok_or_else(|| "JSContact card does not convert to a vCard".to_string())?;
+    let json = serde_json::Value::Object(card.clone());
+    let vcard =
+        Vcard::from_jscontact(&json).map_err(|err| format!("Invalid JSContact card: {err}"))?;
 
     Ok(vcard.to_string())
 }
@@ -60,12 +62,9 @@ pub fn to_vcard(card: &serde_json::Map<String, serde_json::Value>) -> Result<Str
 /// Projects a vCard document onto JSContact Card properties, the
 /// create payload of `ContactCard/set`.
 pub fn to_jscontact(vcard: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let vcard = VCard::parse(vcard).map_err(|_| "Invalid vCard".to_string())?;
-    let jscontact: JSContact<String, String> = vcard.into_jscontact();
-    let value = serde_json::to_value(&jscontact.0)
-        .map_err(|err| format!("Unserializable JSContact card: {err}"))?;
+    let cst = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
 
-    match value {
+    match cst.decode().to_jscontact() {
         serde_json::Value::Object(map) => Ok(map),
         _ => Err("JSContact conversion did not produce a card object".to_string()),
     }
@@ -181,5 +180,29 @@ mod tests {
 
         assert_eq!(patch.get("phones"), Some(&serde_json::Value::Null));
         assert!(!patch.contains_key("uid"), "{patch:?}");
+    }
+
+    #[test]
+    fn name_components_without_full_mint_no_display_name() {
+        // A server card with name components but no name.full (a
+        // contact whose display name was never set) must convert
+        // without an FN: the app never mints a display name into the
+        // document of record, the lists compose one on the fly.
+        let card = serde_json::json!({
+            "@type": "Card",
+            "version": "1.0",
+            "uid": "abc",
+            "name": {
+                "components": [
+                    { "kind": "given", "value": "Jane" },
+                    { "kind": "surname", "value": "Doe" },
+                ],
+            },
+        });
+
+        let vcard = to_vcard(card.as_object().unwrap()).unwrap();
+
+        assert!(!vcard.contains("FN"), "{vcard}");
+        assert!(vcard.contains("Jane"), "{vcard}");
     }
 }

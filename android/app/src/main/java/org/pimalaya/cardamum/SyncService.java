@@ -72,8 +72,9 @@ public class SyncService extends Service {
                 engine.syncPhone(url, report);
                 Log.w(
                         "cardamum",
-                        "phone sync done: " + report.pulled + " pulled, " + report.pushed
-                                + " pushed, " + report.merged + " merged");
+                        "phone sync done: " + report.phonePulled + " pulled, "
+                                + report.phonePushed + " pushed, " + report.phoneMerged
+                                + " merged");
             } catch (Exception error) {
                 Log.w("cardamum", "phone sync failed for " + account.name + ": " + error);
                 result.stats.numIoExceptions++;

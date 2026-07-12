@@ -2452,6 +2452,14 @@ public class MainActivity extends Activity {
         int pushed;
         int merged;
         int conflicts;
+        int phonePulled;
+        int phonePushed;
+        int phoneMerged;
+
+        /** Whether any synced book mirrors into the phone's Contacts
+         *  app, which is what earns the report its Local line. */
+        boolean local;
+
         Exception failure;
     }
 
@@ -2574,24 +2582,42 @@ public class MainActivity extends Activity {
         return outcome;
     }
 
-    /** Surfaces a sync outcome: an error dialog, a pending-conflicts
-     *  notice, or a pull/push/merge toast. */
+    /**
+     * Surfaces a sync outcome: an error dialog, or the per-axis report
+     * toast: a Local line (cards in, out and changed against the
+     * phone's Contacts app) when any synced book mirrors there, the
+     * Remote line always, and a pending-conflicts line when contacts
+     * wait for manual resolution.
+     */
     private void reportSync(SyncOutcome outcome) {
         if (outcome.failure != null) {
             // Offline fallback: the store of the last sync keeps failing
             // addressbooks usable.
             showError(outcome.failure, R.string.sync_failed);
-        } else if (outcome.conflicts > 0) {
-            // Both-sides-edited contacts wait for manual resolution.
-            toast(getString(R.string.sync_conflicts_pending, outcome.conflicts));
-        } else {
-            toast(
-                    getString(
-                            R.string.sync_done,
-                            outcome.pulled,
-                            outcome.pushed,
-                            outcome.merged));
+            return;
         }
+
+        StringBuilder message = new StringBuilder();
+        if (outcome.local) {
+            message.append(
+                            getString(
+                                    R.string.sync_line_local,
+                                    outcome.phonePulled,
+                                    outcome.phonePushed,
+                                    outcome.phoneMerged))
+                    .append('\n');
+        }
+        message.append(
+                getString(
+                        R.string.sync_line_remote,
+                        outcome.pulled,
+                        outcome.pushed,
+                        outcome.merged));
+        if (outcome.conflicts > 0) {
+            message.append('\n')
+                    .append(getString(R.string.sync_conflicts_pending, outcome.conflicts));
+        }
+        toast(message.toString());
     }
 
     /**
@@ -2614,6 +2640,10 @@ public class MainActivity extends Activity {
             outcome.pushed += report.pushed;
             outcome.merged += report.merged;
             outcome.conflicts += report.conflicts;
+            outcome.phonePulled += report.phonePulled;
+            outcome.phonePushed += report.phonePushed;
+            outcome.phoneMerged += report.phoneMerged;
+            outcome.local |= entry.phoneSynced;
         }
     }
 
@@ -2688,6 +2718,10 @@ public class MainActivity extends Activity {
                     outcome.pushed += report.pushed;
                     outcome.merged += report.merged;
                     outcome.conflicts += report.conflicts;
+                    outcome.phonePulled += report.phonePulled;
+                    outcome.phonePushed += report.phonePushed;
+                    outcome.phoneMerged += report.phoneMerged;
+                    outcome.local |= !phoneSyncedBooks().isEmpty();
                     if (outcome.failure == null) {
                         outcome.failure = failure;
                     }
@@ -2736,10 +2770,10 @@ public class MainActivity extends Activity {
                                 } else {
                                     toast(
                                             getString(
-                                                    R.string.sync_done,
-                                                    report.pulled,
-                                                    report.pushed,
-                                                    report.merged));
+                                                    R.string.sync_line_local,
+                                                    report.phonePulled,
+                                                    report.phonePushed,
+                                                    report.phoneMerged));
                                     reloadContacts();
                                 }
                             });
@@ -3020,7 +3054,9 @@ public class MainActivity extends Activity {
         JSONObject alternatives = resolution.optJSONObject("alternatives");
         if (alternatives == null || alternatives.length() == 0) {
             // Nothing needs the user: stage the clean merge and clear the
-            // conflict.
+            // conflict. The toast is the tap's only visible outcome (no
+            // form opens), so without it the vanishing flag reads as a
+            // bug.
             try {
                 new OfflineEngine(base, client, null, null)
                         .mutateEdit(replica.book.url, handle, resolution.optString("vcard"));
@@ -3028,6 +3064,7 @@ public class MainActivity extends Activity {
                 showError(error, R.string.save_failed);
                 return;
             }
+            toast(getString(R.string.conflict_auto_resolved));
             reloadContacts();
             return;
         }

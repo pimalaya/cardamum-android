@@ -57,25 +57,18 @@ final class Mapping {
     static List<Map<String, Object>> rows(JSONObject model) {
         List<Map<String, Object>> rows = new ArrayList<>();
 
-        // ContactsProvider derives the visible name from the structured
-        // components whenever they are present, ignoring DISPLAY_NAME.
-        // When the vCard's FN diverges from the natural join of N's
-        // parts, FN is authoritative: project it alone so the provider
-        // has to use it.
-        String display = model.optString("displayName");
-        JSONObject n = model.optJSONObject("name");
-        String joined =
-                n == null
-                        ? ""
-                        : join(
-                                join(
-                                        join(n.optString("prefix"), n.optString("given")),
-                                        join(n.optString("middle"), n.optString("family"))),
-                                n.optString("suffix"));
-
+        // The display name (FN) is hub-only and never reaches the
+        // phone: only the structured parts project, each in its own
+        // column, and the provider composes the visible name from
+        // them. ContactsProvider owns DISPLAY_NAME too tightly for
+        // anything else (it derives the visible name from the parts
+        // whenever present and rewrites DISPLAY_NAME as their join,
+        // proven on-device), so a written FN either vanished or, when
+        // projected alone, was re-split into the wrong parts by
+        // guesswork.
         Map<String, Object> name = row(StructuredName.CONTENT_ITEM_TYPE);
-        name.put(StructuredName.DISPLAY_NAME, display);
-        if (n != null && (display.isEmpty() || display.equals(joined))) {
+        JSONObject n = model.optJSONObject("name");
+        if (n != null) {
             name.put(StructuredName.FAMILY_NAME, n.optString("family"));
             name.put(StructuredName.GIVEN_NAME, n.optString("given"));
             name.put(StructuredName.MIDDLE_NAME, n.optString("middle"));
@@ -216,13 +209,13 @@ final class Mapping {
                     name.put("middle", middle);
                     name.put("family", family);
                     name.put("suffix", suffix);
-                    // The provider auto-composes DISPLAY_NAME from the
-                    // structured parts, so a contact that carries parts has
-                    // no genuinely explicit display name; keeping the
-                    // composed one would mint it back into FN. Only a
-                    // parts-free contact (an org-style name) has a real
-                    // display name; otherwise the list composes one on the
-                    // fly. Mirrors the FN-authoritative rule in rows().
+                    // The hub's FN never projects (rows() above), and the
+                    // provider auto-composes DISPLAY_NAME from the parts,
+                    // so a structured contact carries no genuine display
+                    // name: reading the composed one back would mint it
+                    // into FN. Only a parts-free row's DISPLAY_NAME is
+                    // real phone-authored content (the shape apps write
+                    // when only a full name is typed) and ingests.
                     boolean hasParts =
                             !prefix.isEmpty()
                                     || !given.isEmpty()

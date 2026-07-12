@@ -89,6 +89,7 @@
     <string name="sync_failed">Could not synchronize</string>
     <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
     <string name="sync_conflicts_pending">%1$d contact(s) diverged; resolve them to sync</string>
+    <string name="conflict_auto_resolved">Conflict resolved automatically; changes push on the next sync</string>
     <string name="sync_local_requested">Local sync scheduled</string>
     <string name="notif_channel_sync">Background sync</string>
     <string name="notif_conflicts_sub">Conflicts found; open the app to resolve them</string>
@@ -97,7 +98,8 @@
     <string name="contacts_sync">Sync</string>
     <string name="contacts_more">More</string>
     <string name="menu_synchronize">Synchronize</string>
-    <string name="sync_done">Synced: %1$d pulled, %2$d pushed, %3$d merged</string>
+    <string name="sync_line_local">Local: %1$d in, %2$d out, %3$d changed</string>
+    <string name="sync_line_remote">Remote: %1$d in, %2$d out, %3$d changed</string>
     <string name="contacts_add">Add</string>
     <string name="add_title">Add</string>
     <string name="add_contact">Add contact</string>

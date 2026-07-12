@@ -7,10 +7,13 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.text.TextUtils;
 import android.util.Log;
 import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
+import java.util.ArrayList;
+import java.util.List;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.CardamumClient;
 import org.pimalaya.cardamum.client.OauthTokens;
@@ -74,15 +77,23 @@ public class SyncWorker extends Worker {
             OfflineEngine.Report report = sync(context, base, book);
             Log.w(
                     "cardamum",
-                    "background sync done for " + url + ": " + report.pulled + " pulled, "
-                            + report.pushed + " pushed, " + report.merged + " merged, "
-                            + report.conflicts + " conflicted");
+                    "background sync done for " + url + ": remote " + report.pulled
+                            + " in, " + report.pushed + " out, " + report.merged
+                            + " changed, " + report.conflicts + " conflicted; phone "
+                            + report.phonePulled + " in, " + report.phonePushed + " out, "
+                            + report.phoneMerged + " changed");
 
             // Anything to report gets the notification; pending
             // conflicts count as reportable on every pass (the engine
             // re-counts them each time), so the warning re-raises
             // until the user resolves them in the app.
-            boolean activity = report.pulled > 0 || report.pushed > 0 || report.merged > 0;
+            boolean activity =
+                    report.pulled > 0
+                            || report.pushed > 0
+                            || report.merged > 0
+                            || report.phonePulled > 0
+                            || report.phonePushed > 0
+                            || report.phoneMerged > 0;
             if (activity || report.conflicts > 0) {
                 notifyReport(context, book, report);
             }
@@ -173,14 +184,17 @@ public class SyncWorker extends Worker {
     }
 
     /**
-     * The sync-report notification, shaped like the in-app sync toast:
-     * the book as the title, what the pass pulled, pushed and merged as
-     * the text, and, when conflicts pend, the warning subtitle asking
-     * to resolve them in the app (the diverged glyph replaces the sync
-     * one then). Tagged by book URL so each book carries one, replaced
-     * in place by the next report. On Android 13+ it shows only when
-     * the notifications permission was granted (asked when background
-     * sync gets enabled); without it the pass just runs silently.
+     * The sync-report notification: the account email as the title (the
+     * addressbook name joins it expanded, where there is room), one
+     * line per axis as the text (Local against the phone's Contacts app
+     * when the book mirrors there, Remote for the server), each
+     * counting the cards in, out and changed. When conflicts pend, the
+     * warning subtitle asks to resolve them in the app and the diverged
+     * glyph replaces the sync one. Tagged by book URL so each book
+     * carries one, replaced in place by the next report. On Android 13+
+     * it shows only when the notifications permission was granted
+     * (asked when background sync gets enabled); without it the pass
+     * just runs silently.
      */
     private static void notifyReport(
             Context context, BookEntry book, OfflineEngine.Report report) {
@@ -205,15 +219,36 @@ public class SyncWorker extends Worker {
                         new Intent(context, MainActivity.class),
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
+        boolean localBook = LocalBook.is(book.accountEmail);
+        String owner =
+                localBook ? context.getString(R.string.local_account) : book.accountEmail;
+
+        List<String> lines = new ArrayList<>(2);
+        if (book.phoneSynced || localBook) {
+            lines.add(
+                    context.getString(
+                            R.string.sync_line_local,
+                            report.phonePulled,
+                            report.phonePushed,
+                            report.phoneMerged));
+        }
+        if (!localBook) {
+            lines.add(
+                    context.getString(
+                            R.string.sync_line_remote,
+                            report.pulled,
+                            report.pushed,
+                            report.merged));
+        }
+
         boolean conflicts = report.conflicts > 0;
         builder.setSmallIcon(conflicts ? R.drawable.ic_diverged : R.drawable.ic_sync)
-                .setContentTitle(book.book.name)
-                .setContentText(
-                        context.getString(
-                                R.string.sync_done,
-                                report.pulled,
-                                report.pushed,
-                                report.merged))
+                .setContentTitle(owner)
+                .setContentText(lines.isEmpty() ? "" : lines.get(lines.size() - 1))
+                .setStyle(
+                        new Notification.BigTextStyle()
+                                .setBigContentTitle(owner + " · " + book.book.name)
+                                .bigText(TextUtils.join("\n", lines)))
                 .setContentIntent(open)
                 .setAutoCancel(true);
         if (conflicts) {

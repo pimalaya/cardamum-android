@@ -37,6 +37,16 @@ One-time, pay-what-you-want, cumulative. Each tier includes everything below it.
 
 The Sponsor and Benefactor extras are goodwill, explicitly not consulting, a support contract, or any paid service. Fast support is best-effort: the promise is to look at a paying supporter's issues first (Sponsor on Cardamum, Benefactor across all Pimalaya repositories), never a response-time guarantee or an SLA, and "first" naturally dilutes as supporters multiply, which is acceptable at these rarely-hit tiers. The video call is a 15-minute cup of tea over video: on request, subject to availability, capped, fulfilled outside Play, and most Benefactors will not book it. All of these must stay clearly separate from, and cheaper than, paid consulting and paid support, so they never train people to buy expert time for 100 EUR.
 
+### Play listing copy
+
+Customer-facing store descriptions, each under 200 characters, cumulative, in the earnest register. The "option of" and "looked at first" wording keeps the best-effort framing so the copy never over-promises a guarantee.
+
+- Supporter, 5 EUR: Directly funds Cardamum's development, maintenance and releases, all by one person on unpaid time. Silences the support prompt for good and adds a discreet Supporter badge in the app.
+- Backer, 10 EUR: Everything in Supporter, plus your name (or alias) listed among Cardamum's backers, in the app and in the project's GitHub repository. Keeps an independent, open-source contacts app going.
+- Patron, 25 EUR: Everything in Backer, plus early beta access, and a share of this tier funds NLnet each year. Real backing for open, privacy-first software you fully own.
+- Sponsor, 50 EUR: Everything in Patron, plus your name on pimalaya.org and the Pimalaya GitHub, and first-class attention on Cardamum's GitHub: your issues looked at first.
+- Benefactor, 100 EUR: Everything in Sponsor, plus first-class attention across all Pimalaya repositories, and the option of a 15-minute one-to-one thank-you video call. The fullest way to back the project.
+
 ## Cross-cutting rules
 
 - No core feature is ever gated. Paid tiers buy recognition, a cause, and a thank-you, never functionality.

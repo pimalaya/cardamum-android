@@ -62,12 +62,19 @@ final class OfflineEngine implements OfflineDriver {
     private final Map<String, Map<String, String>> listedEtags = new HashMap<>();
     private final Map<String, Boolean> listedComplete = new HashMap<>();
 
-    /** What one collection's sync pass did, for the outcome toast. */
+    /**
+     * What one collection's sync pass did, for the outcome report, the
+     * server axis and the phone axis tallied apart (the report shows
+     * one line per axis).
+     */
     static final class Report {
         int pulled;
         int pushed;
         int merged;
         int conflicts;
+        int phonePulled;
+        int phonePushed;
+        int phoneMerged;
     }
 
     /**
@@ -98,10 +105,13 @@ final class OfflineEngine implements OfflineDriver {
 
     /**
      * The server collection's engine pass: reconcile with the remote,
-     * fetch the bodies the spine still misses, then capture the remote
-     * side of any both-sides-edited row so the user can resolve the
-     * divergence by hand. Conflicts are not auto-merged or pushed; they
-     * stay conflicted until an in-app resolution stages an edit.
+     * fetch the bodies the spine still misses, then triage every
+     * both-sides-edited row right here: a divergence whose three-way
+     * merge needs no user choice resolves on the spot and pushes in a
+     * second reconcile, and only genuine same-field collisions stay
+     * conflicted (remote body captured) for the in-app resolution
+     * form. So a conflict the user sees is always one the form has
+     * something to ask about; the rest self-heals during the sync.
      */
     private void syncServer(String url, Report report) throws JSONException {
         JSONObject sync = client.offlineSync(this, url, false);
@@ -110,10 +120,20 @@ final class OfflineEngine implements OfflineDriver {
         hydrate(url);
 
         List<JSONObject> conflicts = base.loadConflicts(url);
+        int resolved = 0;
         for (JSONObject conflict : conflicts) {
-            captureConflict(url, conflict);
+            if (resolveCleanConflict(url, conflict)) {
+                resolved += 1;
+            }
         }
-        report.conflicts += conflicts.size();
+        report.merged += resolved;
+        report.conflicts += conflicts.size() - resolved;
+
+        if (resolved > 0) {
+            JSONObject retry = client.offlineSync(this, url, false);
+            report.pushed += retry.optInt("pushed");
+            hydrate(url);
+        }
     }
 
     /**
@@ -131,8 +151,8 @@ final class OfflineEngine implements OfflineDriver {
         String collection = CardStore.phoneCollection(url);
 
         JSONObject sync = client.offlineSync(this, collection, false);
-        report.pulled += sync.optInt("pulled");
-        report.pushed += sync.optInt("pushed");
+        report.phonePulled += sync.optInt("pulled");
+        report.phonePushed += sync.optInt("pushed");
         hydrate(collection);
 
         List<JSONObject> conflicts = base.loadConflicts(collection);
@@ -140,10 +160,10 @@ final class OfflineEngine implements OfflineDriver {
             for (JSONObject conflict : conflicts) {
                 resolvePhoneConflict(collection, conflict);
             }
-            report.merged += conflicts.size();
+            report.phoneMerged += conflicts.size();
 
             JSONObject retry = client.offlineSync(this, collection, false);
-            report.pushed += retry.optInt("pushed");
+            report.phonePushed += retry.optInt("pushed");
             hydrate(collection);
         }
     }
@@ -157,12 +177,15 @@ final class OfflineEngine implements OfflineDriver {
     }
 
     /**
-     * Resolves one conflicted row: both sides three-way merge against
-     * the staged base (the local side wins same-field collisions, as
-     * before the engine), and the merged card is staged as the
-     * resolution, conditioned on the remote state it reconciled.
+     * Captures one conflicted row's remote side and resolves it on the
+     * spot when the three-way merge needs no user choice: lists merge
+     * as sets and one-sided scalar changes flow in, so only a field
+     * both sides edited, differently, is the user's to settle. A clean
+     * merge stages as the resolution (the caller's second reconcile
+     * pushes it) and reports true; a genuine collision leaves the row
+     * conflicted, its remote body persisted for the resolution form.
      */
-    private void captureConflict(String url, JSONObject conflict) throws JSONException {
+    private boolean resolveCleanConflict(String url, JSONObject conflict) throws JSONException {
         String handle = conflict.getString("handle");
         Card remote = client.readCard(account, url, handle);
 
@@ -171,9 +194,25 @@ final class OfflineEngine implements OfflineDriver {
         // recorded from the enumerate (its own axis): overriding it with
         // this read's etag breaks backends whose read etag differs from the
         // list etag (Google People API), so the push guards on a foreign
-        // revision and the server rejects it. The row stays conflicted
-        // until the user resolves it in the conflict form.
+        // revision and the server rejects it.
         base.setConflictRemote(url, handle, remote.vcard);
+
+        // The base falls back to the local body when it was never
+        // captured (a create collision): the local side then reads as
+        // unchanged and the remote changes flow in cleanly, like the
+        // resolution form would.
+        String local = conflict.getString("vcard");
+        String baseVcard =
+                conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
+        JSONObject resolution = client.mergeConflictForm(baseVcard, local, remote.vcard);
+
+        JSONObject alternatives = resolution.optJSONObject("alternatives");
+        if (alternatives != null && alternatives.length() > 0) {
+            return false;
+        }
+
+        mutateEdit(url, handle, resolution.optString("vcard"));
+        return true;
     }
 
     /**
