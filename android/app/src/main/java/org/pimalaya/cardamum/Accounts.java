@@ -53,11 +53,17 @@ final class Accounts {
                 data.putString(DATA_URL, book.book.url);
                 manager.addAccountExplicitly(account, null, data);
 
-                // Automatic sync starts off; this is only the default:
-                // the user's later choice in the system settings is
-                // theirs and is never reset by a reconcile.
+                // Content-triggered upload syncs default to the book's
+                // background sync choice: a background-synced book
+                // pushes contacts-app edits into the hub as they happen
+                // (through SyncService), and the next periodic pass
+                // sends them upstream. Only the default: the user's
+                // later choice in the system settings is theirs and is
+                // never reset by a reconcile.
                 ContentResolver.setSyncAutomatically(
-                        account, ContactsContract.AUTHORITY, false);
+                        account,
+                        ContactsContract.AUTHORITY,
+                        BackgroundSync.enabled(context, book.book.url));
             }
 
             // Contacts apps only list accounts that are syncable for

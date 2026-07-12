@@ -1,5 +1,7 @@
 # Subscription entitlement and the offline gate
 
+> Superseded by monetization.md. The whole-app subscription paywall described here is replaced by a free, ungated Play build funded by an optional support prompt and one-time pay-what-you-want tiers. This document is kept for history and for the offline entitlement-cache technique, which may be reused for one-time-purchase checks.
+
 The Google Play build holds the whole app behind an active subscription; the FOSS builds (GitHub CI, F-Droid) are ungated and carry none of this. The gate must not fight the offline-first premise: a paying subscriber has to be able to open the app on a plane. This describes the entitlement model.
 
 ## Where it lives

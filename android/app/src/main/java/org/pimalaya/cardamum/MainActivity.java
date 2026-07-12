@@ -16,12 +16,14 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.ViewFlipper;
@@ -79,6 +81,7 @@ public class MainActivity extends Activity {
     private static final int REQUEST_CONTACTS = 1;
     private static final int REQUEST_IMPORT = 2;
     private static final int REQUEST_EXPORT = 3;
+    private static final int REQUEST_NOTIFICATIONS = 4;
 
     /**
      * One replica in the contacts pool: a card, the addressbook it
@@ -165,6 +168,9 @@ public class MainActivity extends Activity {
 
     /** Per-addressbook onboarding choices (subscribe + phone-sync switches). */
     private List<BookChoice> bookChoices = new ArrayList<>();
+
+    /** The onboarding background-sync cadence, one choice for the step. */
+    private Spinner booksInterval;
 
     /** Subscribed addressbooks grouped for the drawer. */
     private List<BookEntry> homeBooks = new ArrayList<>();
@@ -302,6 +308,11 @@ public class MainActivity extends Activity {
                 LocalBook.URL, LocalBook.ACCOUNT, LocalBook.ID, getString(R.string.local_book));
         accounts.add(LocalBook.account());
         accounts.addAll(store.loadAll());
+
+        // Self-heal the background sync schedules: an app update or a
+        // wiped WorkManager database silently drops periodic work, and
+        // reconciling on launch converges it back onto the stored books.
+        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
 
         // Offline first: the merged contacts root renders instantly from
         // the store, syncs are manual (the Sync menu).
@@ -1231,13 +1242,16 @@ public class MainActivity extends Activity {
      * Lists the just-connected account's addressbooks as a plain checkbox
      * per book, its name the label, subscribed by default. Phone-contacts
      * mirroring is turned on by default for every subscribed book; the
-     * drawer's per-book settings let the user turn it off later. The
-     * checkbox box sits at the panel's 24dp inset, aligned with the title
-     * and paragraph above. Same chrome as the config panel.
+     * drawer's per-book settings let the user turn it off later. Below
+     * the list, one cadence dropdown seeds the background sync of every
+     * selected book (never by default). The checkbox box sits at the
+     * panel's 24dp inset, aligned with the title and paragraph above.
+     * Same chrome as the config panel.
      */
     private void openBooksSelection(String email, List<Addressbook> books) {
         connectedEmail = email;
         bookChoices = new ArrayList<>();
+        booksInterval = null;
 
         LinearLayout container = findViewById(R.id.books_container);
         container.removeAllViews();
@@ -1270,9 +1284,48 @@ public class MainActivity extends Activity {
             bookChoices.add(new BookChoice(book.url, subscribe));
         }
 
+        // The background sync cadence of the selected books, one choice
+        // for the whole step; the drawer's per-book settings tune it
+        // later, book by book.
+        if (!books.isEmpty()) {
+            TextView cadence = new TextView(this);
+            cadence.setText(R.string.book_background_sync);
+            cadence.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+            cadence.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            LinearLayout.LayoutParams cadenceParams =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            cadenceParams.topMargin = dp(24);
+            container.addView(cadence, cadenceParams);
+
+            booksInterval = intervalSpinner();
+            LinearLayout.LayoutParams intervalParams =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            intervalParams.topMargin = dp(8);
+            container.addView(booksInterval, intervalParams);
+        }
+
         setAuthLoading(R.id.fab, R.id.fab_progress, false);
         updateBooksContinue();
         showAuth(STEP_BOOKS);
+    }
+
+    /**
+     * A background-sync interval spinner over the shared labels, flush
+     * with the surrounding text like the contact form's type spinners.
+     */
+    private Spinner intervalSpinner() {
+        Spinner spinner = new Spinner(this);
+        ArrayAdapter<CharSequence> intervals =
+                ArrayAdapter.createFromResource(
+                        this, R.array.background_sync_intervals, R.layout.spinner_form_item);
+        intervals.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(intervals);
+        spinner.setPadding(0, 0, 0, 0);
+        return spinner;
     }
 
     /** Continue is enabled only while at least one addressbook is on. */
@@ -1292,7 +1345,8 @@ public class MainActivity extends Activity {
     /**
      * The flow's real commit: persists the connected account and its
      * addressbooks, subscribes the checked ones with phone mirroring on
-     * by default, then runs the account's first sync.
+     * by default and the chosen background sync cadence, then runs the
+     * account's first sync.
      */
     private void confirmBooks() {
         accounts.removeIf(entry -> entry.email.equals(connectedEmail));
@@ -1300,9 +1354,19 @@ public class MainActivity extends Activity {
         store.add(pendingAccount);
         pendingAccount = null;
         base.replaceAddressbooks(connectedEmail, pendingBooks);
+
+        long minutes =
+                booksInterval == null
+                        ? 0
+                        : BackgroundSync.INTERVAL_MINUTES[booksInterval.getSelectedItemPosition()];
         for (BookChoice choice : bookChoices) {
             boolean subscribed = choice.subscribe.isChecked();
             base.setBookState(choice.url, subscribed, subscribed);
+            BackgroundSync.setInterval(this, choice.url, subscribed ? minutes : 0);
+        }
+        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
+        if (minutes > 0) {
+            ensureNotificationsPermission();
         }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, true);
@@ -2128,10 +2192,11 @@ public class MainActivity extends Activity {
     /**
      * The per-addressbook settings (its name is the dialog title): a
      * switch to subscribe (its contacts are visible and take part in
-     * sync) and a switch to mirror it into the phone's Contacts app.
-     * Phone sync needs the subscription, so it is disabled while the
-     * book is off. The local book is always subscribed, so its subscribe
-     * switch is locked on.
+     * sync), a switch to mirror it into the phone's Contacts app, and
+     * the background sync cadence dropdown (never by default). Phone
+     * sync and background sync need the subscription, so both are
+     * disabled while the book is off. The local book is always
+     * subscribed, so its subscribe switch is locked on.
      */
     private void showBookSettings(BookEntry entry) {
         boolean local = LocalBook.is(entry.accountEmail);
@@ -2161,12 +2226,36 @@ public class MainActivity extends Activity {
         phone.setEnabled(subscribe.isChecked());
         content.addView(phone, switchParams);
 
-        // Phone sync only makes sense for a subscribed book.
+        TextView cadence = new TextView(this);
+        cadence.setText(R.string.book_background_sync);
+        cadence.setTextColor(resolveColor(android.R.attr.textColorSecondary));
+        cadence.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        LinearLayout.LayoutParams cadenceParams =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        cadenceParams.topMargin = dp(16);
+        content.addView(cadence, cadenceParams);
+
+        Spinner interval = intervalSpinner();
+        interval.setSelection(BackgroundSync.intervalIndex(this, entry.book.url));
+        interval.setEnabled(subscribe.isChecked());
+        LinearLayout.LayoutParams intervalParams =
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+        intervalParams.topMargin = dp(4);
+        content.addView(interval, intervalParams);
+
+        // Phone sync and background sync only make sense for a
+        // subscribed book.
         subscribe.setOnCheckedChangeListener(
                 (view, checked) -> {
                     phone.setEnabled(checked);
+                    interval.setEnabled(checked);
                     if (!checked) {
                         phone.setChecked(false);
+                        interval.setSelection(0);
                     }
                 });
 
@@ -2178,6 +2267,18 @@ public class MainActivity extends Activity {
                         (dialog, which) -> {
                             base.setBookState(
                                     entry.book.url, subscribe.isChecked(), phone.isChecked());
+
+                            long minutes =
+                                    subscribe.isChecked()
+                                            ? BackgroundSync.INTERVAL_MINUTES[
+                                                    interval.getSelectedItemPosition()]
+                                            : 0;
+                            BackgroundSync.setInterval(this, entry.book.url, minutes);
+                            BackgroundSync.reconcile(this, base.loadAllAddressbooks());
+                            if (minutes > 0) {
+                                ensureNotificationsPermission();
+                            }
+
                             reloadHome();
                         })
                 .setNegativeButton(android.R.string.cancel, null)
@@ -2194,6 +2295,16 @@ public class MainActivity extends Activity {
     }
 
     private void deleteAccount(String email) {
+        // The account's books leave with it, so their background sync
+        // goes first: zero the intervals, then reconcile while the
+        // books are still listed, so their periodic work cancels.
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            if (entry.accountEmail.equals(email)) {
+                BackgroundSync.setInterval(this, entry.book.url, 0);
+            }
+        }
+        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
+
         store.remove(email);
         base.detachAccountToLocal(email);
         accounts.removeIf(entry -> entry.email.equals(email));
@@ -2578,7 +2689,7 @@ public class MainActivity extends Activity {
      * Android accounts, then runs the two-way phone engine pass per
      * subscribed book right here, behind the same spinner as the remote
      * sync (SyncService keeps serving the syncs the OS schedules on its
-     * own). Automatic periodic sync stays off. Needs the contacts
+     * own, SyncWorker the scheduled background ones). Needs the contacts
      * permission, requested on first use; the full sync's own phone
      * passes stay silently off until this ran once.
      */
@@ -2645,6 +2756,22 @@ public class MainActivity extends Activity {
             }
         }
         return phone;
+    }
+
+    /**
+     * Asks for the notifications permission (Android 13+) when
+     * background sync gets enabled, so the sync-report notification
+     * (and its pending-conflicts warning) can show. Denying keeps
+     * background sync working, just silent.
+     */
+    private void ensureNotificationsPermission() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[] {Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_NOTIFICATIONS);
+        }
     }
 
     /**

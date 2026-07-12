@@ -60,6 +60,16 @@
     <string name="local_book">Contacts locaux</string>
     <string name="book_subscribe">S\'abonner</string>
     <string name="book_phone_sync">Synchroniser avec les contacts du téléphone</string>
+    <string name="book_background_sync">Synchroniser en arrière-plan</string>
+    <string-array name="background_sync_intervals">
+        <item>Jamais</item>
+        <item>Toutes les 15 minutes</item>
+        <item>Toutes les 30 minutes</item>
+        <item>Toutes les heures</item>
+        <item>Toutes les 4 heures</item>
+        <item>Toutes les 12 heures</item>
+        <item>Tous les jours</item>
+    </string-array>
     <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
     <string name="delete_account_confirm">Retirer le compte %1$s ? Ses contacts restent sur cet appareil.</string>
 
@@ -72,6 +82,8 @@
     <string name="sync_conflicts">%1$d modification(s) en conflit avec le serveur restent locales</string>
     <string name="sync_conflicts_pending">%1$d contact(s) divergent ; résolvez-les pour synchroniser</string>
     <string name="sync_local_requested">Synchronisation locale planifiée</string>
+    <string name="notif_channel_sync">Synchronisation en arrière-plan</string>
+    <string name="notif_conflicts_sub">Conflits détectés ; ouvrez l\'application pour les résoudre</string>
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Synchroniser</string>

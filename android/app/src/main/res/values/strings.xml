@@ -68,6 +68,16 @@
     <string name="local_book">Local app contacts</string>
     <string name="book_subscribe">Enable addressbook</string>
     <string name="book_phone_sync">Enable local phone sync</string>
+    <string name="book_background_sync">Synchronize in background</string>
+    <string-array name="background_sync_intervals">
+        <item>Never</item>
+        <item>Every 15 minutes</item>
+        <item>Every 30 minutes</item>
+        <item>Every hour</item>
+        <item>Every 4 hours</item>
+        <item>Every 12 hours</item>
+        <item>Every day</item>
+    </string-array>
     <string name="home_empty">No addressbook yet. Add an account to get started.</string>
     <string name="delete_account_confirm">Remove the account %1$s? Its contacts stay on this device.</string>
 
@@ -80,6 +90,8 @@
     <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
     <string name="sync_conflicts_pending">%1$d contact(s) diverged; resolve them to sync</string>
     <string name="sync_local_requested">Local sync scheduled</string>
+    <string name="notif_channel_sync">Background sync</string>
+    <string name="notif_conflicts_sub">Conflicts found; open the app to resolve them</string>
 
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>

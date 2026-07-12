@@ -9,10 +9,15 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!-- Mark the per-addressbook accounts syncable for the contacts
-         authority (how contacts apps decide to list them) while keeping
-         automatic sync off. -->
+         authority (how contacts apps decide to list them) and mirror the
+         background sync choice onto their content trigger. -->
     <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
     <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
+
+    <!-- Report what a background sync pass did, and warn on pending
+         conflicts (Android 13+; asked when background sync gets
+         enabled). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"
@@ -77,7 +82,8 @@
         <!-- Associates the account type with the contacts authority and
              declares the edit schema contacts apps read to list the
              accounts and edit their raw contacts. The adapter runs the
-             store-to-phone projection; scheduling stays manual. -->
+             store-to-phone projection for the syncs the OS schedules;
+             the periodic background syncs run through SyncWorker. -->
         <service
             android:name=".SyncService"
             android:exported="true">

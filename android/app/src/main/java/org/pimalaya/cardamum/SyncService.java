@@ -23,8 +23,8 @@ import org.pimalaya.cardamum.client.CardamumClient;
  * contacts. Serves only the syncs the OS schedules on its own: the
  * per-account "sync now" of the system settings and the upload syncs
  * Android requests after edits on our raw contacts; the in-app actions
- * run the same engine pass directly, behind their own spinner.
- * Automatic periodic sync stays off.
+ * run the same engine pass directly, behind their own spinner, and the
+ * scheduled background syncs go through SyncWorker, not through here.
  */
 public class SyncService extends Service {
     private static final Object LOCK = new Object();

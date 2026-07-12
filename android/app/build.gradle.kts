@@ -101,6 +101,11 @@ dependencies {
     // Another small, standalone AndroidX ViewGroup, no theme needed.
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 
+    // Scheduled background sync: one periodic worker per addressbook
+    // (BackgroundSync schedules, SyncWorker runs the pass). The plain
+    // Java runtime, no KTX.
+    implementation("androidx.work:work-runtime:2.10.0")
+
     // Google Play Billing, pulled into the google build only, so the
     // FOSS builds carry no Google dependency. Its manifest merge is what
     // adds the com.android.vending.BILLING capability that unlocks
