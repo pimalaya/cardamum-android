@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Google build's support panel: a loading spinner while Play is
+     queried (an already-paid tier closes it unseen), then the ask
+     framed as the app's price list, not a donation banner: a scrolling
+     close cross, the logo, a statement of fact, the pay-once deal
+     line, one list-item block per tier (radio + name + price, the
+     description always visible, the cheapest checked by default, the
+     whole block selecting on tap), and the fixed bottom bar on the
+     app-bar tone: LATER and the accent pay button, whose label follows
+     the selected tier's amount. The scroll content is top-aligned on
+     purpose: a centred child taller than the viewport clips its top
+     beyond the scroll range. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground">
+
+    <ScrollView
+        android:id="@+id/support_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingTop="8dp"
+            android:paddingBottom="96dp">
+
+            <!-- Scrolls away with the page, unlike the bottom bar. -->
+            <ImageButton
+                android:id="@+id/support_close"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="end"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/ripple_circle"
+                android:contentDescription="@string/support_close"
+                android:padding="12dp"
+                android:src="@drawable/ic_close" />
+
+            <ImageView
+                android:layout_width="96dp"
+                android:layout_height="96dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="24dp"
+                android:background="@drawable/logo_circle"
+                android:contentDescription="@string/app_name"
+                android:padding="16dp"
+                android:src="@drawable/ic_launcher" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="@string/support_title"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="24sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:lineSpacingExtra="4dp"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="@string/support_description"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="16sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="@string/support_deal"
+                android:textColor="?android:attr/textColorPrimary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <!-- One list-item block per tier (full-bleed ripple rows);
+                 the side inset lives on the blocks themselves. -->
+            <LinearLayout
+                android:id="@+id/support_tiers"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical" />
+
+        </LinearLayout>
+
+    </ScrollView>
+
+    <!-- The action bar sits on the app-bar tone so it reads as chrome,
+         distinct from the page: the LATER dismiss left, the pay button
+         right. -->
+    <LinearLayout
+        android:id="@+id/support_actions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="?android:attr/colorPrimary"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/support_later"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/support_later"
+            android:textAllCaps="true"
+            android:textColor="?android:attr/textColorPrimary" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/support_pay"
+            style="@android:style/Widget.DeviceDefault.Button.Colored"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="15sp" />
+
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/support_progress"
+        style="?android:attr/progressBarStyleLarge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:indeterminateTint="?android:attr/colorAccent" />
+
+</FrameLayout>

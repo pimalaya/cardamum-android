@@ -275,11 +275,17 @@ public class MainActivity extends Activity {
         drawer = findViewById(R.id.drawer);
         applyEdgeToEdge();
 
-        // Paid-access gate: a no-op on the FOSS build, the Google build's
-        // paywall on that build. Only on a fresh start, so a rotation
-        // does not re-open it.
-        if (savedInstanceState == null) {
-            BillingFactory.create(this).enforce(this);
+        // Support prompt (docs/monetization.md): a no-op on the FOSS
+        // build; on the Google build, a dismissable ask shown at most
+        // once per rolling 3 days until any tier was paid. Only on a
+        // genuine user-initiated open: a fresh start (a rotation does
+        // not re-fire) that is neither an OAuth redirect nor a headless
+        // adb sync hook.
+        boolean headless =
+                getIntent().getBooleanExtra("syncRemote", false)
+                        || getIntent().getBooleanExtra("syncLocal", false);
+        if (savedInstanceState == null && getIntent().getData() == null && !headless) {
+            BillingFactory.create(this).prompt(this);
         }
 
         store = new SecureStore(this);
@@ -1345,8 +1351,9 @@ public class MainActivity extends Activity {
     /**
      * The flow's real commit: persists the connected account and its
      * addressbooks, subscribes the checked ones with phone mirroring on
-     * by default and the chosen background sync cadence, then runs the
-     * account's first sync.
+     * by default and the chosen background sync cadence, asks the
+     * permissions that setup needs (contacts, plus notifications when a
+     * cadence is on), then runs the account's first sync.
      */
     private void confirmBooks() {
         accounts.removeIf(entry -> entry.email.equals(connectedEmail));
@@ -1365,8 +1372,26 @@ public class MainActivity extends Activity {
             BackgroundSync.setInterval(this, choice.url, subscribed ? minutes : 0);
         }
         BackgroundSync.reconcile(this, base.loadAllAddressbooks());
-        if (minutes > 0) {
-            ensureNotificationsPermission();
+
+        // The permissions the chosen setup needs, asked up front in one
+        // grouped request (two requestPermissions calls would cancel
+        // each other): contacts because the subscribed books mirror
+        // into the phone's Contacts app by default, sparing the ask at
+        // the first phone-touching sync; notifications (Android 13+)
+        // when a background cadence is on, for its sync report.
+        List<String> permissions = new ArrayList<>();
+        if (!hasContactsPermission()) {
+            permissions.add(Manifest.permission.READ_CONTACTS);
+            permissions.add(Manifest.permission.WRITE_CONTACTS);
+        }
+        if (minutes > 0
+                && Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (!permissions.isEmpty()) {
+            requestPermissions(permissions.toArray(new String[0]), REQUEST_CONTACTS);
         }
 
         setAuthLoading(R.id.fab, R.id.fab_progress, true);

@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Google build only: the paywall activity, launched over MainActivity
-     to hold the app behind an active subscription. -->
+<!-- Google build only: the dismissable support panel, launched over
+     MainActivity at most once per rolling 3 days until any tier was
+     paid (docs/monetization.md). Never blocks the app. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application>
         <activity
-            android:name=".billing.PaywallActivity"
+            android:name=".billing.SupportActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
     </application>

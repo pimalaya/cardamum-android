@@ -3,10 +3,10 @@ package org.pimalaya.cardamum.billing;
 import com.android.billingclient.api.Purchase;
 import java.util.List;
 
-/** Shared helpers over a Google Play subscription purchase list. */
-final class Subscriptions {
-    /** Whether any subscription in the list is in the purchased state. */
-    static boolean isActive(List<Purchase> purchases) {
+/** Shared helpers over a Google Play one-time purchase list. */
+final class Purchases {
+    /** Whether any purchase in the list is in the purchased state. */
+    static boolean isPaid(List<Purchase> purchases) {
         if (purchases == null) {
             return false;
         }
@@ -18,5 +18,5 @@ final class Subscriptions {
         return false;
     }
 
-    private Subscriptions() {}
+    private Purchases() {}
 }

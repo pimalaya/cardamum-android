@@ -1,8 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Strings for the Google build's paywall; absent from the FOSS build. -->
+<!-- Strings for the Google build's support panel; absent from the FOSS
+     build. The copy frames paying as how the app is funded, a statement
+     of fact rather than a donation plea (docs/monetization.md): direct
+     and honest, never manufactured urgency. The tier fallback labels
+     show when Play's live product names and prices are unreachable. -->
 <resources>
-    <string name="paywall_title">Subscribe to use Cardamum</string>
-    <string name="paywall_description">Cardamum is a subscription app. Start your free trial to unlock it; cancel anytime in Google Play.</string>
-    <string name="paywall_subscribe">Start free trial</string>
-    <string name="paywall_unavailable">Subscriptions are unavailable right now</string>
+    <string name="support_title">Cardamum is paid by the people who use it</string>
+    <string name="support_description">No company, no ads, no subscription: one person builds and maintains Cardamum, and it exists only as long as its users fund it. If Cardamum is useful to you, this is where it counts.</string>
+    <string name="support_deal">Pay once, whatever feels right. This screen never shows again.</string>
+    <string name="support_later">Later</string>
+    <string name="support_close">Close</string>
+    <string name="support_tier_5">Supporter</string>
+    <string name="support_tier_10">Backer</string>
+    <string name="support_tier_25">Patron</string>
+    <string name="support_tier_50">Sponsor</string>
+    <string name="support_tier_100">Benefactor</string>
+    <string name="support_tier_5_desc">Removes this screen for good, and funds Cardamum\'s development, maintenance and releases.</string>
+    <string name="support_tier_10_desc">Everything above, plus your name among the backers, in the app and in the Cardamum repository (pseudonym or anonymous welcome).</string>
+    <string name="support_tier_25_desc">Everything above, plus beta access on Google Play; a share of this tier is given to NLnet.</string>
+    <string name="support_tier_50_desc">Everything above, plus your name on pimalaya.org and in the Pimalaya organization, and your Cardamum issues looked at first.</string>
+    <string name="support_tier_100_desc">Everything above, plus first-class attention across all Pimalaya repositories, and the option of a 15-minute thank-you call.</string>
+    <string-array name="support_tier_amounts">
+        <item>€5</item>
+        <item>€10</item>
+        <item>€25</item>
+        <item>€50</item>
+        <item>€100</item>
+    </string-array>
+    <string name="support_unavailable">The support tiers are unavailable right now</string>
+    <string name="support_thanks">Thank you for supporting Cardamum!</string>
 </resources>

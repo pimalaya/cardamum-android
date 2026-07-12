@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- French strings of the Google build's support panel. -->
+<resources>
+    <string name="support_title">Cardamum est financé par celles et ceux qui l\'utilisent</string>
+    <string name="support_description">Pas d\'entreprise, pas de publicité, pas d\'abonnement : une seule personne développe et maintient Cardamum, qui n\'existe que tant que ses utilisateurs le financent. Si Cardamum vous est utile, c\'est ici que ça compte.</string>
+    <string name="support_deal">Payez une fois, le montant de votre choix. Cet écran ne s\'affichera plus jamais.</string>
+    <string name="support_later">Plus tard</string>
+    <string name="support_close">Fermer</string>
+    <string name="support_tier_5">Soutien</string>
+    <string name="support_tier_10">Contributeur</string>
+    <string name="support_tier_25">Mécène</string>
+    <string name="support_tier_50">Sponsor</string>
+    <string name="support_tier_100">Bienfaiteur</string>
+    <string name="support_tier_5_desc">Retire cet écran définitivement et finance le développement, la maintenance et les publications de Cardamum.</string>
+    <string name="support_tier_10_desc">Tout ce qui précède, plus votre nom parmi les contributeurs, dans l\'application et dans le dépôt de Cardamum (pseudonyme ou anonymat bienvenus).</string>
+    <string name="support_tier_25_desc">Tout ce qui précède, plus l\'accès aux bêtas sur Google Play ; une part de ce palier est reversée à NLnet.</string>
+    <string name="support_tier_50_desc">Tout ce qui précède, plus votre nom sur pimalaya.org et dans l\'organisation Pimalaya, et vos tickets Cardamum examinés en premier.</string>
+    <string name="support_tier_100_desc">Tout ce qui précède, plus une attention prioritaire sur tous les dépôts Pimalaya, et la possibilité d\'un appel de remerciement de 15 minutes.</string>
+    <string-array name="support_tier_amounts">
+        <item>5 €</item>
+        <item>10 €</item>
+        <item>25 €</item>
+        <item>50 €</item>
+        <item>100 €</item>
+    </string-array>
+    <string name="support_unavailable">Les paliers de soutien sont indisponibles pour le moment</string>
+    <string name="support_thanks">Merci de soutenir Cardamum !</string>
+</resources>

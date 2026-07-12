@@ -5,14 +5,13 @@ import android.content.Context;
 import android.content.Intent;
 
 /**
- * Google Play Billing gate. The whole app is behind an active
- * subscription. {@link #enforce} gates on the cached {@link Entitlement}
- * so an entitled subscriber opens the app offline with no startup network
- * wait: within the grace window it lets the app through and refreshes the
- * cache from Play in the background; otherwise it opens the paywall, which
- * queries Play live, lets an active subscriber (trial included) straight
- * through, and otherwise offers the subscription. See
- * docs/subscription-entitlement.md.
+ * Google Play binding of the support prompt (docs/monetization.md):
+ * {@link #prompt} opens the dismissable support panel when it is due
+ * (nothing paid yet and the last showing 3 days old or more, per the
+ * cached {@link SupportStore}), and does nothing otherwise. The panel
+ * itself re-checks the purchases against Play, so a payment made on
+ * another device or before a reinstall silences the prompt without any
+ * startup network wait.
  */
 final class GoogleBilling implements Billing {
     private final Context context;
@@ -22,15 +21,13 @@ final class GoogleBilling implements Billing {
     }
 
     @Override
-    public void enforce(Activity host) {
-        Entitlement entitlement = new Entitlement(context);
-        if (entitlement.isValid()) {
-            // Trusted offline within the grace window: open the app now
-            // and re-verify against Play in the background. A lapse
-            // surfaces at the next launch, not mid-session.
-            new PlayVerifier(context, entitlement).verify();
-        } else {
-            host.startActivity(new Intent(host, PaywallActivity.class));
+    public void prompt(Activity host) {
+        if (new SupportStore(context).due()) {
+            host.startActivity(new Intent(host, SupportActivity.class));
+            // A plain cross-fade in place of the default activity
+            // transition; the panel's finish() mirrors it on the way
+            // out.
+            host.overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
         }
     }
 }
