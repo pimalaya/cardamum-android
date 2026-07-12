@@ -370,6 +370,11 @@ final class ContactForm {
             return;
         }
 
+        // Alphabetical by localized label (locale-aware), so a field is
+        // found by its name rather than by the catalog's layout order.
+        java.text.Collator collator = java.text.Collator.getInstance();
+        fields.sort((left, right) -> collator.compare(getS(left.label), getS(right.label)));
+
         LinearLayout list = new LinearLayout(activity);
         list.setOrientation(LinearLayout.VERTICAL);
         // Match the framework title's top padding at the bottom so the

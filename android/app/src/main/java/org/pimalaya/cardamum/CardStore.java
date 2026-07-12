@@ -1087,14 +1087,20 @@ public class CardStore extends SQLiteOpenHelper {
      * the end of the batch and cancelled by an upsert of the same
      * placement, so an accepted create's rekey (drop the placeholder,
      * upsert the assigned handle) never deletes what it just renamed.
+     *
+     * <p>Returns what the batch did to the cards, for the sync report:
+     * one {collection, handle, kind} entry per row created, changed
+     * (its body differs) or removed; bookkeeping upserts (flags, bases,
+     * checkpoints) report nothing.
      */
-    public void applyWrites(JSONArray writes) throws JSONException {
+    public JSONArray applyWrites(JSONArray writes) throws JSONException {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
             Map<String, String> bodies = new HashMap<>();
             List<JSONObject> drops = new ArrayList<>();
             Set<String> upserted = new java.util.HashSet<>();
+            JSONArray effects = new JSONArray();
 
             for (int index = 0; index < writes.length(); index++) {
                 JSONObject op = writes.getJSONObject(index);
@@ -1104,7 +1110,14 @@ public class CardStore extends SQLiteOpenHelper {
                         break;
                     case "upsert":
                         JSONObject placement = op.getJSONObject("placement");
-                        applyUpsert(db, placement, bodies);
+                        String kind = applyUpsert(db, placement, bodies);
+                        if (kind != null) {
+                            effects.put(
+                                    effect(
+                                            placement.getString("collection"),
+                                            placement.getString("handle"),
+                                            kind));
+                        }
                         upserted.add(
                                 placement.getString("collection")
                                         + "\n"
@@ -1126,30 +1139,43 @@ public class CardStore extends SQLiteOpenHelper {
                 String handle = drop.getString("handle");
                 if (!upserted.contains(collection + "\n" + handle)) {
                     applyDrop(db, collection, handle);
+                    effects.put(effect(collection, handle, "removed"));
                 }
             }
 
             db.setTransactionSuccessful();
+            return effects;
         } finally {
             db.endTransaction();
         }
+    }
+
+    /** One card effect of a write batch, for the sync report. */
+    private static JSONObject effect(String collection, String handle, String kind)
+            throws JSONException {
+        JSONObject effect = new JSONObject();
+        effect.put("collection", collection);
+        effect.put("handle", handle);
+        effect.put("kind", kind);
+        return effect;
     }
 
     /**
      * Maps one engine placement back onto its card and membership
      * rows: the store gathers the row facts and resolves bodies, the
      * bridge plans the writes, and the SQL below executes them.
+     * Returns the card effect for the sync report (created, changed or
+     * removed), null for pure bookkeeping.
      */
-    private void applyUpsert(SQLiteDatabase db, JSONObject placement, Map<String, String> bodies)
+    private String applyUpsert(SQLiteDatabase db, JSONObject placement, Map<String, String> bodies)
             throws JSONException {
         String url = placement.getString("collection");
         if (isPhoneCollection(url)) {
-            applyPhoneUpsert(db, placement, bodies);
-            return;
+            return applyPhoneUpsert(db, placement, bodies);
         }
         String accountEmail = accountEmailOf(db, url);
         if (accountEmail == null) {
-            return;
+            return null;
         }
         String handle = placement.getString("handle");
         String key = handleKey(url, handle);
@@ -1205,7 +1231,7 @@ public class CardStore extends SQLiteOpenHelper {
             case "removeMembership":
                 // Only this book's membership goes; the card stays.
                 setMembership(db, accountEmail, key, url, MEMBER_REMOVED);
-                return;
+                return null;
             case "deleteCard":
                 ContentValues deletion = new ContentValues();
                 deletion.put("deleted", 1);
@@ -1214,11 +1240,11 @@ public class CardStore extends SQLiteOpenHelper {
                         deletion,
                         "account_email = ? AND key = ?",
                         new String[] {accountEmail, key});
-                return;
+                return "removed";
             case "addMembership":
                 // A staged membership addition: the row itself is untouched.
                 setMembership(db, accountEmail, key, url, MEMBER_ADDED);
-                return;
+                return null;
             default:
                 break;
         }
@@ -1261,6 +1287,11 @@ public class CardStore extends SQLiteOpenHelper {
                 key,
                 url,
                 "added".equals(plan.getString("memberState")) ? MEMBER_ADDED : MEMBER_SYNCED);
+
+        if (!exists) {
+            return "created";
+        }
+        return vcard.equals(existingVcard) ? null : "changed";
     }
 
     /**
@@ -1268,15 +1299,16 @@ public class CardStore extends SQLiteOpenHelper {
      * gathers the row facts and resolves bodies, the bridge plans the
      * writes (a phone-won change stages the server push, a
      * phone-created card lands as a hub row the server has never
-     * seen), and the SQL below executes them.
+     * seen), and the SQL below executes them. Returns the card effect
+     * for the sync report, like the server-axis path.
      */
-    private void applyPhoneUpsert(
+    private String applyPhoneUpsert(
             SQLiteDatabase db, JSONObject placement, Map<String, String> bodies)
             throws JSONException {
         String url = serverUrl(placement.getString("collection"));
         String accountEmail = accountEmailOf(db, url);
         if (accountEmail == null) {
-            return;
+            return null;
         }
         String handle = placement.getString("handle");
         String key = handleKey(url, handle);
@@ -1327,11 +1359,13 @@ public class CardStore extends SQLiteOpenHelper {
         JSONObject plan = client.offlinePhoneUpsertPlan(facts);
         String action = plan.getString("action");
         if ("skip".equals(action)) {
-            return;
+            return null;
         }
 
+        String kind = null;
         if ("insert".equals(action)) {
             String vcard = plan.getJSONObject("row").getString("vcard");
+            kind = "created";
             ContentValues values = new ContentValues();
             values.put("account_email", accountEmail);
             values.put("key", key);
@@ -1353,6 +1387,7 @@ public class CardStore extends SQLiteOpenHelper {
         } else if ("update".equals(action)) {
             JSONObject row = plan.getJSONObject("row");
             String vcard = row.getString("vcard");
+            kind = vcard.equals(existingVcard) ? null : "changed";
             ContentValues values = new ContentValues();
             values.put("vcard", vcard);
             values.putAll(indexValues(vcard));
@@ -1402,6 +1437,8 @@ public class CardStore extends SQLiteOpenHelper {
                 axis,
                 "account_email = ? AND card_key = ? AND addressbook_url = ?",
                 new String[] {accountEmail, key, url});
+
+        return kind;
     }
 
     /**

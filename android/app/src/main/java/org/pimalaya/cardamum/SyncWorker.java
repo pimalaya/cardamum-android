@@ -77,23 +77,24 @@ public class SyncWorker extends Worker {
             OfflineEngine.Report report = sync(context, base, book);
             Log.w(
                     "cardamum",
-                    "background sync done for " + url + ": remote " + report.pulled
-                            + " in, " + report.pushed + " out, " + report.merged
-                            + " changed, " + report.conflicts + " conflicted; phone "
-                            + report.phonePulled + " in, " + report.phonePushed + " out, "
-                            + report.phoneMerged + " changed");
+                    "background sync done for " + url + ": remote " + report.remoteIn.size()
+                            + " in, " + report.remoteOut.size() + " out, "
+                            + report.remoteChanged.size() + " changed, " + report.conflicts
+                            + " conflicted; local " + report.localIn.size() + " in, "
+                            + report.localOut.size() + " out, " + report.localChanged.size()
+                            + " changed");
 
             // Anything to report gets the notification; pending
             // conflicts count as reportable on every pass (the engine
             // re-counts them each time), so the warning re-raises
             // until the user resolves them in the app.
             boolean activity =
-                    report.pulled > 0
-                            || report.pushed > 0
-                            || report.merged > 0
-                            || report.phonePulled > 0
-                            || report.phonePushed > 0
-                            || report.phoneMerged > 0;
+                    !report.remoteIn.isEmpty()
+                            || !report.remoteOut.isEmpty()
+                            || !report.remoteChanged.isEmpty()
+                            || !report.localIn.isEmpty()
+                            || !report.localOut.isEmpty()
+                            || !report.localChanged.isEmpty();
             if (activity || report.conflicts > 0) {
                 notifyReport(context, book, report);
             }
@@ -228,17 +229,17 @@ public class SyncWorker extends Worker {
             lines.add(
                     context.getString(
                             R.string.sync_line_local,
-                            report.phonePulled,
-                            report.phonePushed,
-                            report.phoneMerged));
+                            report.localIn.size(),
+                            report.localOut.size(),
+                            report.localChanged.size()));
         }
         if (!localBook) {
             lines.add(
                     context.getString(
                             R.string.sync_line_remote,
-                            report.pulled,
-                            report.pushed,
-                            report.merged));
+                            report.remoteIn.size(),
+                            report.remoteOut.size(),
+                            report.remoteChanged.size()));
         }
 
         boolean conflicts = report.conflicts > 0;

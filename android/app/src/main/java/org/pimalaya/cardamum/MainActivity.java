@@ -2448,19 +2448,30 @@ public class MainActivity extends Activity {
      * the user's manual resolution, plus the first failure.
      */
     private static final class SyncOutcome {
-        int pulled;
-        int pushed;
-        int merged;
+        final java.util.Set<String> localIn = new java.util.HashSet<>();
+        final java.util.Set<String> localOut = new java.util.HashSet<>();
+        final java.util.Set<String> localChanged = new java.util.HashSet<>();
+        final java.util.Set<String> remoteIn = new java.util.HashSet<>();
+        final java.util.Set<String> remoteOut = new java.util.HashSet<>();
+        final java.util.Set<String> remoteChanged = new java.util.HashSet<>();
         int conflicts;
-        int phonePulled;
-        int phonePushed;
-        int phoneMerged;
 
         /** Whether any synced book mirrors into the phone's Contacts
          *  app, which is what earns the report its Local line. */
         boolean local;
 
         Exception failure;
+
+        /** Folds one book's report in; the sets dedupe across passes. */
+        void absorb(OfflineEngine.Report report) {
+            localIn.addAll(report.localIn);
+            localOut.addAll(report.localOut);
+            localChanged.addAll(report.localChanged);
+            remoteIn.addAll(report.remoteIn);
+            remoteOut.addAll(report.remoteOut);
+            remoteChanged.addAll(report.remoteChanged);
+            conflicts += report.conflicts;
+        }
     }
 
     /**
@@ -2602,17 +2613,17 @@ public class MainActivity extends Activity {
             message.append(
                             getString(
                                     R.string.sync_line_local,
-                                    outcome.phonePulled,
-                                    outcome.phonePushed,
-                                    outcome.phoneMerged))
+                                    outcome.localIn.size(),
+                                    outcome.localOut.size(),
+                                    outcome.localChanged.size()))
                     .append('\n');
         }
         message.append(
                 getString(
                         R.string.sync_line_remote,
-                        outcome.pulled,
-                        outcome.pushed,
-                        outcome.merged));
+                        outcome.remoteIn.size(),
+                        outcome.remoteOut.size(),
+                        outcome.remoteChanged.size()));
         if (outcome.conflicts > 0) {
             message.append('\n')
                     .append(getString(R.string.sync_conflicts_pending, outcome.conflicts));
@@ -2636,13 +2647,7 @@ public class MainActivity extends Activity {
             } catch (org.json.JSONException error) {
                 throw new IllegalStateException(error);
             }
-            outcome.pulled += report.pulled;
-            outcome.pushed += report.pushed;
-            outcome.merged += report.merged;
-            outcome.conflicts += report.conflicts;
-            outcome.phonePulled += report.phonePulled;
-            outcome.phonePushed += report.phonePushed;
-            outcome.phoneMerged += report.phoneMerged;
+            outcome.absorb(report);
             outcome.local |= entry.phoneSynced;
         }
     }
@@ -2714,13 +2719,7 @@ public class MainActivity extends Activity {
                     SyncOutcome outcome = runRemoteSync();
                     OfflineEngine.Report report = new OfflineEngine.Report();
                     Exception failure = runLocalSync(report);
-                    outcome.pulled += report.pulled;
-                    outcome.pushed += report.pushed;
-                    outcome.merged += report.merged;
-                    outcome.conflicts += report.conflicts;
-                    outcome.phonePulled += report.phonePulled;
-                    outcome.phonePushed += report.phonePushed;
-                    outcome.phoneMerged += report.phoneMerged;
+                    outcome.absorb(report);
                     outcome.local |= !phoneSyncedBooks().isEmpty();
                     if (outcome.failure == null) {
                         outcome.failure = failure;
@@ -2771,9 +2770,9 @@ public class MainActivity extends Activity {
                                     toast(
                                             getString(
                                                     R.string.sync_line_local,
-                                                    report.phonePulled,
-                                                    report.phonePushed,
-                                                    report.phoneMerged));
+                                                    report.localIn.size(),
+                                                    report.localOut.size(),
+                                                    report.localChanged.size()));
                                     reloadContacts();
                                 }
                             });

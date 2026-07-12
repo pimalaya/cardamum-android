@@ -183,6 +183,29 @@ mod tests {
     }
 
     #[test]
+    fn middle_name_rides_given2_and_round_trips() {
+        // RFC 9553 carries the middle name as the given2 component
+        // kind; a codec folding it into given (or dropping it) would
+        // destroy N's third component through every JMAP round-trip.
+        let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nN:BB;Aa;g;;\r\nEND:VCARD\r\n";
+        let card = to_jscontact(vcard).unwrap();
+
+        let components = card
+            .get("name")
+            .and_then(|name| name.get("components"))
+            .and_then(|components| components.as_array())
+            .expect("name components");
+        let given2 = components.iter().any(|component| {
+            component.get("kind").and_then(|kind| kind.as_str()) == Some("given2")
+                && component.get("value").and_then(|value| value.as_str()) == Some("g")
+        });
+        assert!(given2, "{card:?}");
+
+        let round = to_vcard(&card).unwrap();
+        assert!(round.contains("N:BB;Aa;g;;"), "{round}");
+    }
+
+    #[test]
     fn name_components_without_full_mint_no_display_name() {
         // A server card with name components but no name.full (a
         // contact whose display name was never set) must convert

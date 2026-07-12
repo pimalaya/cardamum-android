@@ -5,8 +5,10 @@ import android.util.Log;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -41,6 +43,13 @@ final class OfflineEngine implements OfflineDriver {
     /** The phone spoke's adapter; null on context-less (mutate) drivers. */
     private final PhoneRemote phone;
 
+    /**
+     * The report the running sync flows tally into (the driver seam
+     * feeds it as pushes are accepted and writes land); null outside
+     * syncs, so app-side mutations count nothing.
+     */
+    private Report tally;
+
     /** Book ids by collection URL (account-level membership mapping). */
     private Map<String, String> idByUrl;
 
@@ -63,18 +72,49 @@ final class OfflineEngine implements OfflineDriver {
     private final Map<String, Boolean> listedComplete = new HashMap<>();
 
     /**
-     * What one collection's sync pass did, for the outcome report, the
-     * server axis and the phone axis tallied apart (the report shows
-     * one line per axis).
+     * What a sync did to the cards, for the outcome report: distinct
+     * affected cards per axis (the phone and the server tallied
+     * apart), regardless of direction. A card counts once however many
+     * passes touched it: in = cards that appeared, out = cards that
+     * were deleted, changed = cards whose content changed; plus the
+     * conflicts left for the user.
      */
     static final class Report {
-        int pulled;
-        int pushed;
-        int merged;
+        final Set<String> localIn = new HashSet<>();
+        final Set<String> localOut = new HashSet<>();
+        final Set<String> localChanged = new HashSet<>();
+        final Set<String> remoteIn = new HashSet<>();
+        final Set<String> remoteOut = new HashSet<>();
+        final Set<String> remoteChanged = new HashSet<>();
         int conflicts;
-        int phonePulled;
-        int phonePushed;
-        int phoneMerged;
+
+        /** Tallies one effect on one card, deduped per card and axis. */
+        void tally(String collection, String handle, String kind) {
+            boolean phone = CardStore.isPhoneCollection(collection);
+            Set<String> in = phone ? localIn : remoteIn;
+            Set<String> out = phone ? localOut : remoteOut;
+            Set<String> changed = phone ? localChanged : remoteChanged;
+            String key = collection + "\n" + handle;
+
+            switch (kind) {
+                case "created":
+                    in.add(key);
+                    // A new card's follow-up writes (hydration, base
+                    // captures) stay part of its appearance.
+                    changed.remove(key);
+                    break;
+                case "removed":
+                    out.add(key);
+                    break;
+                case "changed":
+                    if (!in.contains(key)) {
+                        changed.add(key);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 
     /**
@@ -114,9 +154,8 @@ final class OfflineEngine implements OfflineDriver {
      * something to ask about; the rest self-heals during the sync.
      */
     private void syncServer(String url, Report report) throws JSONException {
-        JSONObject sync = client.offlineSync(this, url, false);
-        report.pulled += sync.optInt("pulled");
-        report.pushed += sync.optInt("pushed");
+        tally = report;
+        client.offlineSync(this, url, false);
         hydrate(url);
 
         List<JSONObject> conflicts = base.loadConflicts(url);
@@ -126,12 +165,10 @@ final class OfflineEngine implements OfflineDriver {
                 resolved += 1;
             }
         }
-        report.merged += resolved;
         report.conflicts += conflicts.size() - resolved;
 
         if (resolved > 0) {
-            JSONObject retry = client.offlineSync(this, url, false);
-            report.pushed += retry.optInt("pushed");
+            client.offlineSync(this, url, false);
             hydrate(url);
         }
     }
@@ -148,11 +185,10 @@ final class OfflineEngine implements OfflineDriver {
         if (phone == null || !phone.available(url)) {
             return;
         }
+        tally = report;
         String collection = CardStore.phoneCollection(url);
 
-        JSONObject sync = client.offlineSync(this, collection, false);
-        report.phonePulled += sync.optInt("pulled");
-        report.phonePushed += sync.optInt("pushed");
+        client.offlineSync(this, collection, false);
         hydrate(collection);
 
         List<JSONObject> conflicts = base.loadConflicts(collection);
@@ -160,10 +196,8 @@ final class OfflineEngine implements OfflineDriver {
             for (JSONObject conflict : conflicts) {
                 resolvePhoneConflict(collection, conflict);
             }
-            report.phoneMerged += conflicts.size();
 
-            JSONObject retry = client.offlineSync(this, collection, false);
-            report.phonePushed += retry.optInt("pushed");
+            client.offlineSync(this, collection, false);
             hydrate(collection);
         }
     }
@@ -268,7 +302,14 @@ final class OfflineEngine implements OfflineDriver {
                 case "lookup":
                     return base.lookupObjects(yielded.getJSONArray("links")).toString();
                 case "write":
-                    base.applyWrites(yielded.getJSONArray("writes"));
+                    JSONArray effects = base.applyWrites(yielded.getJSONArray("writes"));
+                    for (int index = 0; tally != null && index < effects.length(); index++) {
+                        JSONObject effect = effects.getJSONObject(index);
+                        tally.tally(
+                                effect.getString("collection"),
+                                effect.getString("handle"),
+                                effect.getString("kind"));
+                    }
                     return "{}";
                 case "enumerate":
                     return enumerate(yielded).toString();
@@ -478,7 +519,9 @@ final class OfflineEngine implements OfflineDriver {
         String url = yielded.getString("collection");
         JSONArray changes = yielded.getJSONArray("changes");
         if (CardStore.isPhoneCollection(url)) {
-            return phone.push(url, changes);
+            JSONObject reply = phone.push(url, changes);
+            tallyPushes(url, changes, reply.getJSONArray("results"));
+            return reply;
         }
 
         JSONArray results = new JSONArray();
@@ -500,10 +543,44 @@ final class OfflineEngine implements OfflineDriver {
                     break;
             }
         }
+        tallyPushes(url, changes, results);
 
         JSONObject reply = new JSONObject();
         reply.put("results", results);
         return reply;
+    }
+
+    /**
+     * Tallies the accepted pushes into the sync report: an accepted
+     * add is a card in, a remove a card out, an update a card changed.
+     */
+    private void tallyPushes(String url, JSONArray changes, JSONArray results)
+            throws JSONException {
+        if (tally == null) {
+            return;
+        }
+
+        for (int index = 0; index < changes.length() && index < results.length(); index++) {
+            if (!results.getJSONObject(index).optBoolean("accepted")) {
+                continue;
+            }
+            JSONObject change = changes.getJSONObject(index);
+            String kind;
+            switch (change.getString("op")) {
+                case "add":
+                    kind = "created";
+                    break;
+                case "update":
+                    kind = "changed";
+                    break;
+                case "remove":
+                    kind = "removed";
+                    break;
+                default:
+                    continue;
+            }
+            tally.tally(url, change.getString("handle"), kind);
+        }
     }
 
     /**
