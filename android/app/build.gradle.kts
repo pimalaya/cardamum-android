@@ -19,7 +19,7 @@ android {
         applicationId = "org.pimalaya.cardamum"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
+        versionCode = 4
         versionName = "0.1.0"
     }
 
