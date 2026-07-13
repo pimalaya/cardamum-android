@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The auth flow, a whole-frame overlay sliding in over the
-     addressbooks drawer from the left, its own bar included, over an
+<!-- The auth flow, a whole-frame overlay fading in (with a slight
+     zoom) over the current screen, its own bar included, over an
      inner flipper holding the steps (email, config, books): navigating
      the flow slides only the step content. The shared FAB is the
      step's continue action. The arrow steps back (leaving from the

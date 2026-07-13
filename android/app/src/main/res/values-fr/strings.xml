@@ -13,6 +13,10 @@
     <string name="email_submit">Continuer</string>
     <string name="email_invalid">Saisissez une adresse e-mail valide</string>
     <string name="discover_failed">Impossible de trouver les paramètres de votre serveur de contacts</string>
+    <string name="setup_choice_title">Configuration du compte</string>
+    <string name="setup_choice_message">Cardamum peut tout configurer avec les réglages recommandés, ou vous laisser vérifier chaque étape.</string>
+    <string name="setup_simple">Standard</string>
+    <string name="setup_advanced">Avancé</string>
 
     <string name="config_title">Choisissez une configuration</string>
     <string name="config_soon">Bientôt disponible</string>
@@ -58,8 +62,8 @@
     <string name="report_bug">Signaler un bug</string>
     <string name="local_account">Cette application</string>
     <string name="local_book">Contacts locaux</string>
-    <string name="book_subscribe">Prendre les contacts de ce carnet d\'adresses</string>
-    <string name="book_phone_sync">Synchroniser avec les contacts du téléphone</string>
+    <string name="book_subscribe">Synchroniser les contacts avec ce carnet d\'adresses distant</string>
+    <string name="book_phone_sync">Synchroniser les contacts avec le carnet d\'adresses du téléphone</string>
     <string name="book_background_sync">Synchroniser en arrière-plan</string>
     <string-array name="background_sync_intervals">
         <item>Désactiver la synchronisation en arrière-plan</item>

@@ -85,6 +85,17 @@ final class Accounts {
         return findByUrl(context, book.url);
     }
 
+    /**
+     * Removes the Android account backing the addressbook URL, when one
+     * exists; ContactsProvider purges its raw contacts with it.
+     */
+    static void remove(Context context, String url) {
+        Account account = findByUrl(context, url);
+        if (account != null) {
+            AccountManager.get(context).removeAccountExplicitly(account);
+        }
+    }
+
     /** The account backing the addressbook URL, or null before reconcile. */
     static Account findByUrl(Context context, String url) {
         AccountManager manager = AccountManager.get(context);

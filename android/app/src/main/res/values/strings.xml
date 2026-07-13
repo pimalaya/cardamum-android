@@ -16,6 +16,10 @@
     <string name="email_submit">Continue</string>
     <string name="email_invalid">Enter a valid email address</string>
     <string name="discover_failed">Could not find your contacts server settings</string>
+    <string name="setup_choice_title">Account setup</string>
+    <string name="setup_choice_message">Cardamum can set everything up automatically with the recommended settings, or let you review each step.</string>
+    <string name="setup_simple">Recommended</string>
+    <string name="setup_advanced">Advanced</string>
 
     <string name="config_title">Choose a configuration</string>
     <string name="config_carddav" translatable="false">CardDAV</string>
@@ -27,7 +31,7 @@
     <string name="config_token">API token</string>
     <string name="config_oauth2" translatable="false">OAuth 2.0</string>
     <string name="config_oauth">Sign in with your browser</string>
-    <string name="custom_login">Login (empty for an API token)</string>
+    <string name="custom_login">Login</string>
 
     <string name="oauth_custom_title">OAuth 2.0 client</string>
     <string name="oauth_shipped_hint">Signs in with the app\'s built-in client. Turn on advanced configuration only to use your own OAuth client.</string>

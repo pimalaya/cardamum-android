@@ -152,6 +152,16 @@ public class MainActivity extends Activity {
     /** Action of the config option currently picked (null until one is). */
     private Runnable selectedConfig;
 
+    /**
+     * The standard-or-advanced choice of the setup dialog: null while
+     * the dialog is still open, TRUE for the standard one-tap setup,
+     * FALSE for the advanced step-by-step flow.
+     */
+    private Boolean setupMode;
+
+    /** A config step that completed while the setup dialog was open. */
+    private Runnable pendingConfigStep;
+
     /** OAuth grant in flight, between the browser redirect and its redemption. */
     private OauthSession pendingOauth;
     private String pendingTokenEndpoint;
@@ -331,20 +341,19 @@ public class MainActivity extends Activity {
         // redirect recreates the activity from scratch.
         handleOauthRedirect(getIntent());
 
-        // A fresh start with no real account opens the connection flow,
-        // but only after a short beat once the contacts root has painted,
-        // so the flow slides in over a settled screen rather than popping
-        // up before anything shows; back dismisses it onto the empty list.
-        // Skipped while an OAuth redirect is being processed.
+        // A fresh start with no real account opens the connection flow
+        // right away: with nothing to show underneath, the flow is the
+        // first screen; back dismisses it onto the empty list. Skipped
+        // while an OAuth redirect is being processed.
         if (savedInstanceState == null && getIntent().getData() == null && !hasRealAccount()) {
-            findViewById(R.id.flipper).postDelayed(this::startAuth, 500);
+            startAuth();
         }
     }
 
     /**
-     * Enters the connection flow: the auth sheet slides in from the left
-     * while the drawer it came from slides shut. Cancelling lands on the
-     * contacts root, finishing too.
+     * Enters the connection flow: the auth sheet fades in over the
+     * current screen while the drawer it came from slides shut.
+     * Cancelling lands on the contacts root, finishing too.
      */
     private void startAuth() {
         openAuthFlow();
@@ -374,7 +383,7 @@ public class MainActivity extends Activity {
     /**
      * Shows an auth step under the persistent bar: only the inner step
      * view transitions. Entering the flow from outside jumps the inner
-     * flipper without animation (the outer panel slide is the
+     * flipper without animation (the outer panel fade is the
      * transition).
      */
     private void showAuth(int step, boolean back) {
@@ -393,26 +402,27 @@ public class MainActivity extends Activity {
         if (inside) {
             applyChrome(PANEL_AUTH);
         } else {
-            // The flow slides in over the current screen like a drawer.
+            // The flow fades in over the current screen.
             openOverlay(PANEL_AUTH);
         }
     }
 
     /**
-     * The auth bar per step: the step's title, no back arrow on the
-     * welcome step when no account is stored (nothing to go back to),
-     * and the cross only when one is (the flow is escape-free
-     * otherwise).
+     * The auth bar per step: the step's title (the first step greets
+     * with Welcome on a fresh install and reads Add account once an
+     * account already exists), no back arrow on the welcome step when
+     * no account is stored (nothing to go back to), and the cross only
+     * when one is (the flow is escape-free otherwise).
      */
     private void applyAuthChrome() {
         int step = authFlipper.getDisplayedChild();
-        ((TextView) findViewById(R.id.auth_title))
-                .setText(
-                        step == STEP_EMAIL
-                                ? R.string.auth_step_email
-                                : step == STEP_CONFIG
-                                        ? R.string.auth_step_config
-                                        : R.string.auth_step_books);
+        int title =
+                step == STEP_EMAIL
+                        ? (hasRealAccount() ? R.string.add_account : R.string.auth_step_email)
+                        : step == STEP_CONFIG
+                                ? R.string.auth_step_config
+                                : R.string.auth_step_books;
+        ((TextView) findViewById(R.id.auth_title)).setText(title);
     }
 
     /** The auth bar's back arrow, per step. */
@@ -604,11 +614,55 @@ public class MainActivity extends Activity {
         // configure by hand.
         String address = ((EditText) findViewById(R.id.email_input)).getText().toString().trim();
         pendingEmail = address;
+        askSetupMode();
         if (address.contains("://")) {
-            showManualConfigs(address);
+            deliverConfigs(() -> showManualConfigs(address));
         } else {
             search();
         }
+    }
+
+    /**
+     * Asks whether to set the account up the standard way (the first
+     * proposal, every addressbook, phone mirroring, background sync
+     * every 15 minutes) or step by step, while the discovery already
+     * runs behind; the flow proceeds once both the choice and the
+     * discovery are in.
+     */
+    private void askSetupMode() {
+        setupMode = null;
+        pendingConfigStep = null;
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.setup_choice_title)
+                .setMessage(R.string.setup_choice_message)
+                .setCancelable(false)
+                .setPositiveButton(R.string.setup_simple, (dialog, which) -> chooseSetup(true))
+                .setNegativeButton(R.string.setup_advanced, (dialog, which) -> chooseSetup(false))
+                .show();
+    }
+
+    private void chooseSetup(boolean simple) {
+        setupMode = simple;
+        if (pendingConfigStep != null) {
+            Runnable step = pendingConfigStep;
+            pendingConfigStep = null;
+            step.run();
+        }
+    }
+
+    /** Runs a config step now, or once the setup choice is made. */
+    private void deliverConfigs(Runnable step) {
+        if (setupMode == null) {
+            pendingConfigStep = step;
+        } else {
+            step.run();
+        }
+    }
+
+    /** True inside a standard (one-tap) account setup. */
+    private boolean simpleSetup() {
+        return setupMode == Boolean.TRUE;
     }
 
     /**
@@ -648,7 +702,7 @@ public class MainActivity extends Activity {
                                     () -> {
                                         setAuthLoading(
                                                 R.id.fab, R.id.fab_progress, false);
-                                        showProviderConfigs(matched);
+                                        deliverConfigs(() -> showProviderConfigs(matched));
                                     });
                             return;
                         }
@@ -671,18 +725,22 @@ public class MainActivity extends Activity {
                             () -> {
                                 setAuthLoading(R.id.fab, R.id.fab_progress, false);
                                 if (searchFailure != null) {
-                                    showError(searchFailure, R.string.discover_failed);
+                                    deliverConfigs(
+                                            () ->
+                                                    showError(
+                                                            searchFailure,
+                                                            R.string.discover_failed));
                                     return;
                                 }
                                 if (found.isEmpty() && !pendingEmail.contains("@")) {
                                     // A domain nothing was discovered
                                     // for still names a server to try
                                     // by hand.
-                                    showManualConfigs(pendingEmail);
+                                    deliverConfigs(() -> showManualConfigs(pendingEmail));
                                     return;
                                 }
                                 searchedConfigs = found;
-                                showConfigs();
+                                deliverConfigs(this::showConfigs);
                             });
                 });
     }
@@ -754,6 +812,7 @@ public class MainActivity extends Activity {
         for (ServiceConfig config : searchedConfigs) {
             addConfigItems(container, config);
         }
+        boolean discovered = container.getChildCount() > 0;
 
         // Nothing discovered, or nothing the app can drive: say so,
         // and offer the big-provider sign-ins as a fallback chooser
@@ -761,7 +820,7 @@ public class MainActivity extends Activity {
         // where someone's contacts live (Google publishes no CardDAV
         // SRV, no well-known, nothing); only the user knows, and the
         // sign-in itself is the real test.
-        if (container.getChildCount() == 0) {
+        if (!discovered) {
             container.addView(configItem(getString(R.string.discover_failed), null, null, null));
             if (!emailLogin().isEmpty()) {
                 addGoogleItems(container);
@@ -770,6 +829,14 @@ public class MainActivity extends Activity {
         }
 
         selectFirstConfig();
+        // The standard setup skips the config screen and runs the armed
+        // first proposal as if Continue was tapped; a discovery that
+        // found nothing still shows the fallback chooser, since
+        // auto-signing into a guessed provider would be wrong.
+        if (simpleSetup() && discovered && selectedConfig != null) {
+            selectedConfig.run();
+            return;
+        }
         showAuth(STEP_CONFIG);
     }
 
@@ -795,6 +862,10 @@ public class MainActivity extends Activity {
         }
 
         selectFirstConfig();
+        if (simpleSetup() && selectedConfig != null) {
+            selectedConfig.run();
+            return;
+        }
         showAuth(STEP_CONFIG);
     }
 
@@ -896,6 +967,10 @@ public class MainActivity extends Activity {
                         () -> promptCredentials(url, host, emailLogin())));
 
         selectFirstConfig();
+        if (simpleSetup() && selectedConfig != null) {
+            selectedConfig.run();
+            return;
+        }
         showAuth(STEP_CONFIG);
     }
 
@@ -1219,7 +1294,11 @@ public class MainActivity extends Activity {
                                                     clientId,
                                                     clientSecret);
                                     pendingBooks = fetched;
-                                    openBooksSelection(email, fetched);
+                                    if (simpleSetup()) {
+                                        confirmAllBooks(email);
+                                    } else {
+                                        openBooksSelection(email, fetched);
+                                    }
                                 });
                     } catch (Exception error) {
                         Log.w("cardamum", "connect failed", error);
@@ -1345,28 +1424,54 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /** The books step's Continue: commits the checked selection. */
+    private void confirmBooks() {
+        java.util.Set<String> subscribed = new java.util.HashSet<>();
+        for (BookChoice choice : bookChoices) {
+            if (choice.subscribe.isChecked()) {
+                subscribed.add(choice.url);
+            }
+        }
+        long minutes =
+                booksInterval == null
+                        ? 0
+                        : BackgroundSync.INTERVAL_MINUTES[booksInterval.getSelectedItemPosition()];
+        commitBooks(subscribed, minutes);
+    }
+
     /**
-     * The flow's real commit: persists the connected account and its
-     * addressbooks, subscribes the checked ones with phone mirroring on
-     * by default and the chosen background sync cadence, asks the
+     * The standard setup's commit, selection-free: every addressbook
+     * subscribed with phone mirroring and a 15-minute background sync,
+     * then the first sync straight to the contacts list.
+     */
+    private void confirmAllBooks(String email) {
+        connectedEmail = email;
+        java.util.Set<String> subscribed = new java.util.HashSet<>();
+        for (Addressbook book : pendingBooks) {
+            subscribed.add(book.url);
+        }
+        commitBooks(subscribed, 15);
+    }
+
+    /**
+     * The flow's real commit, shared by the books step's Continue and
+     * the standard setup: persists the connected account and its
+     * addressbooks, subscribes the given ones with phone mirroring on
+     * by default and the given background sync cadence, asks the
      * permissions that setup needs (contacts, plus notifications when a
      * cadence is on), then runs the account's first sync.
      */
-    private void confirmBooks() {
+    private void commitBooks(java.util.Set<String> subscribed, long minutes) {
         accounts.removeIf(entry -> entry.email.equals(connectedEmail));
         accounts.add(pendingAccount);
         store.add(pendingAccount);
         pendingAccount = null;
         base.replaceAddressbooks(connectedEmail, pendingBooks);
 
-        long minutes =
-                booksInterval == null
-                        ? 0
-                        : BackgroundSync.INTERVAL_MINUTES[booksInterval.getSelectedItemPosition()];
-        for (BookChoice choice : bookChoices) {
-            boolean subscribed = choice.subscribe.isChecked();
-            base.setBookState(choice.url, subscribed, subscribed);
-            BackgroundSync.setInterval(this, choice.url, subscribed ? minutes : 0);
+        for (Addressbook book : pendingBooks) {
+            boolean on = subscribed.contains(book.url);
+            base.setBookState(book.url, on, on);
+            BackgroundSync.setInterval(this, book.url, on ? minutes : 0);
         }
         BackgroundSync.reconcile(this, base.loadAllAddressbooks());
 
@@ -1630,6 +1735,13 @@ public class MainActivity extends Activity {
             String defaultClientId,
             String defaultRedirect,
             Runnable defaultFlow) {
+        // The standard setup skips the one-tap confirm: the shipped
+        // client is the recommended path, so its flow runs directly.
+        if (simpleSetup() && defaultFlow != null) {
+            defaultFlow.run();
+            return;
+        }
+
         String prefilledRedirect =
                 defaultRedirect != null ? defaultRedirect : "http://127.0.0.1:" + freePort();
 
@@ -2177,10 +2289,15 @@ public class MainActivity extends Activity {
             // An unsubscribed book is dimmed.
             row.setAlpha(entry.subscribed ? 1f : 0.5f);
 
-            // One circle glyph whatever the book's state; the row's
-            // dimming alone flags a disabled one.
+            // The leading glyph tells the book's sync reach: disabled,
+            // remote-only, or remote plus the phone's addressbook.
             android.widget.ImageView book = new android.widget.ImageView(this);
-            book.setImageResource(R.drawable.ic_circle);
+            book.setImageResource(
+                    !entry.subscribed
+                            ? R.drawable.ic_sync_disabled
+                            : entry.phoneSynced
+                                    ? R.drawable.ic_sync
+                                    : R.drawable.ic_cloud_sync);
             book.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.textColorSecondary)));
@@ -2190,18 +2307,6 @@ public class MainActivity extends Activity {
             row.addView(book, bookParams);
 
             row.addView(name);
-
-            // A tiny trailing glyph flags a subscribed book that is NOT
-            // mirrored into the phone's Contacts app (the common case is
-            // synced, so the marker calls out the exception).
-            if (entry.subscribed && !entry.phoneSynced) {
-                android.widget.ImageView state = new android.widget.ImageView(this);
-                state.setImageResource(R.drawable.ic_phone_off);
-                state.setAlpha(0.6f);
-                LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(dp(16), dp(16));
-                stateParams.setMarginStart(dp(8));
-                row.addView(state, stateParams);
-            }
 
             // Tapping the row opens the book's settings (the two switches).
             row.setOnClickListener(view -> showBookSettings(entry));
@@ -2257,11 +2362,11 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
-        // The framework caret renders 19dp in from the spinner's end
-        // (12dp layer offset plus a 7dp glyph inset) while the checkbox
-        // glyph sits 7dp in from its own edge, so the spinner bleeds
-        // the 12dp difference past the content edge to line the caret
-        // up with the boxes above.
+        // The framework caret renders further in from the spinner's end
+        // (a 12dp layer offset plus its glyph inset) than the checkbox
+        // glyph sits from its own edge, so the spinner bleeds past the
+        // content edge to line the caret up with the boxes above (the
+        // margin is tuned on device).
         intervalParams.setMarginEnd(-dp(8));
         content.addView(interval, intervalParams);
 
@@ -2345,11 +2450,14 @@ public class MainActivity extends Activity {
     }
 
     private void deleteAccount(String email) {
-        // The account's books leave with it, so their background sync
-        // goes first: zero the intervals, then reconcile while the
-        // books are still listed, so their periodic work cancels.
+        // The account's books leave with it: zero their background sync
+        // intervals and reconcile while the books are still listed, so
+        // their periodic work cancels, and remember their URLs so the
+        // phone accounts that mirrored them can be removed below.
+        List<String> urls = new ArrayList<>();
         for (BookEntry entry : base.loadAllAddressbooks()) {
             if (entry.accountEmail.equals(email)) {
+                urls.add(entry.book.url);
                 BackgroundSync.setInterval(this, entry.book.url, 0);
             }
         }
@@ -2361,12 +2469,18 @@ public class MainActivity extends Activity {
         collapsedAccounts.remove(email);
         reloadHome();
 
-        // Reconciling against the remaining subscribed set purges the
-        // deleted account's Android accounts (and their raw contacts).
-        List<BookEntry> subscribed = base.loadSubscribedAddressbooks();
+        // The deleted books' phone accounts go explicitly (their rows
+        // are already gone, so a reconcile could not name them), each
+        // taking its raw contacts along; reconciling the remaining
+        // phone-synced set (the one the sync path maintains) then
+        // sweeps any straggler.
+        List<BookEntry> phoneBooks = phoneSyncedBooks();
         io.execute(() -> {
             try {
-                Accounts.reconcile(this, subscribed);
+                for (String url : urls) {
+                    Accounts.remove(this, url);
+                }
+                Accounts.reconcile(this, phoneBooks);
             } catch (Exception error) {
                 Log.w("cardamum", "account purge failed for " + email + ": " + error);
             }
@@ -5125,9 +5239,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Slides a whole-frame overlay (its own bar included) over the
-     * current screen from the left, like a drawer; the addressbooks
-     * listing and the auth flow share the gesture. What is underneath
+     * Raises a whole-frame overlay (its own bar included) over the
+     * current screen with a fade and a slight zoom. What is underneath
      * stays put.
      */
     private void openOverlay(int panel) {
@@ -5135,17 +5248,17 @@ public class MainActivity extends Activity {
         View overlay = findViewById(R.id.overlay_auth);
         overlay.setVisibility(View.VISIBLE);
         overlay.startAnimation(
-                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_in_left));
+                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_in));
         screen = panel;
         applyChrome(panel);
     }
 
-    /** Slides a whole-frame overlay back out to the left, then hides it. */
+    /** Fades the overlay back out (zooming slightly away), then hides it. */
     private void closeOverlay(int panel) {
         hideKeyboard();
         View overlay = findViewById(R.id.overlay_auth);
         android.view.animation.Animation exit =
-                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.slide_out_left);
+                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_out);
         exit.setAnimationListener(
                 new android.view.animation.Animation.AnimationListener() {
                     @Override

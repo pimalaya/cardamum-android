@@ -254,8 +254,8 @@
 
     </LinearLayout>
 
-    <!-- The auth sheet: a whole-frame overlay with its own bar, rising
-         over the content (the drawer is closed while it runs). -->
+    <!-- The auth sheet: a whole-frame overlay with its own bar, fading
+         in over the content (the drawer is closed while it runs). -->
     <include layout="@layout/panel_auth" />
 
     <!-- The screens' primary action, fixed above everything: add on
