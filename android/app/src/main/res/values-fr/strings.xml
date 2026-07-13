@@ -58,17 +58,17 @@
     <string name="report_bug">Signaler un bug</string>
     <string name="local_account">Cette application</string>
     <string name="local_book">Contacts locaux</string>
-    <string name="book_subscribe">S\'abonner</string>
+    <string name="book_subscribe">Prendre les contacts de ce carnet d\'adresses</string>
     <string name="book_phone_sync">Synchroniser avec les contacts du téléphone</string>
     <string name="book_background_sync">Synchroniser en arrière-plan</string>
     <string-array name="background_sync_intervals">
-        <item>Jamais</item>
-        <item>Toutes les 15 minutes</item>
-        <item>Toutes les 30 minutes</item>
-        <item>Toutes les heures</item>
-        <item>Toutes les 4 heures</item>
-        <item>Toutes les 12 heures</item>
-        <item>Tous les jours</item>
+        <item>Désactiver la synchronisation en arrière-plan</item>
+        <item>Synchroniser toutes les 15 minutes</item>
+        <item>Synchroniser toutes les 30 minutes</item>
+        <item>Synchroniser toutes les heures</item>
+        <item>Synchroniser toutes les 4 heures</item>
+        <item>Synchroniser toutes les 12 heures</item>
+        <item>Synchroniser tous les jours</item>
     </string-array>
     <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
     <string name="delete_account_confirm">Retirer le compte %1$s ? Ses contacts restent sur cet appareil.</string>

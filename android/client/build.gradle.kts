@@ -8,7 +8,8 @@ android {
     buildToolsVersion = "36.1.0"
 
     defaultConfig {
-        minSdk = 24
+        // Same floor as :app, which carries the rationale.
+        minSdk = 26
 
         ndk {
             // The four ABIs Android ships on; the Rust .so is built per ABI.

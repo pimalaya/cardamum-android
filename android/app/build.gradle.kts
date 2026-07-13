@@ -17,7 +17,11 @@ android {
 
     defaultConfig {
         applicationId = "org.pimalaya.cardamum"
-        minSdk = 24
+        // Android 8.0, the first release whose trust store ships ISRG
+        // Root X1: below it Let's Encrypt certificates (most self-hosted
+        // servers) fail the platform TLS validation the transport relies
+        // on.
+        minSdk = 26
         targetSdk = 35
         versionCode = 4
         versionName = "0.1.0"

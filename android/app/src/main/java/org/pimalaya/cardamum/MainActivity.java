@@ -178,14 +178,8 @@ public class MainActivity extends Activity {
     /** The addressbooks drawer, opened by the contacts burger. */
     private androidx.drawerlayout.widget.DrawerLayout drawer;
 
-    /** Accounts collapsed in the drawer. */
+    /** Accounts collapsed in the drawer; every account starts unfolded. */
     private final java.util.Set<String> collapsedAccounts = new java.util.HashSet<>();
-
-    /**
-     * Accounts already laid out at least once, so the default fold (local
-     * open, the rest collapsed) applies once and later toggles persist.
-     */
-    private final java.util.Set<String> seenAccounts = new java.util.HashSet<>();
 
     /**
      * The shared sync state: true while a sync runs. Every UI element
@@ -1330,7 +1324,10 @@ public class MainActivity extends Activity {
                         this, R.array.background_sync_intervals, R.layout.spinner_form_item);
         intervals.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(intervals);
-        spinner.setPadding(0, 0, 0, 0);
+        // Only the start goes flush; the background's own end padding
+        // (the caret zone) stays, so a long entry ellipsizes before
+        // running under the caret.
+        spinner.setPadding(0, 0, spinner.getPaddingRight(), 0);
         return spinner;
     }
 
@@ -2154,11 +2151,6 @@ public class MainActivity extends Activity {
         for (BookEntry entry : homeBooks) {
             if (!entry.accountEmail.equals(group)) {
                 group = entry.accountEmail;
-                // Default fold, applied once per account: the local account
-                // open, every other collapsed. Later toggles persist.
-                if (seenAccounts.add(group) && !LocalBook.is(group)) {
-                    collapsedAccounts.add(group);
-                }
                 books = new LinearLayout(this);
                 books.setOrientation(LinearLayout.VERTICAL);
                 books.setVisibility(
@@ -2177,15 +2169,18 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setMinimumHeight(dimen(R.dimen.item_height));
-            row.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
+            // The extra start padding indents the books under their
+            // account header, reading as members of the group.
+            row.setPadding(
+                    dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
             row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
             // An unsubscribed book is dimmed.
             row.setAlpha(entry.subscribed ? 1f : 0.5f);
 
-            // The leading icon reflects the book's state: pinned when
-            // enabled, crossed-out when disabled.
+            // One circle glyph whatever the book's state; the row's
+            // dimming alone flags a disabled one.
             android.widget.ImageView book = new android.widget.ImageView(this);
-            book.setImageResource(entry.subscribed ? R.drawable.ic_pin : R.drawable.ic_pin_off);
+            book.setImageResource(R.drawable.ic_circle);
             book.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.textColorSecondary)));
@@ -2215,13 +2210,15 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * The per-addressbook settings (its name is the dialog title): a
-     * switch to subscribe (its contacts are visible and take part in
-     * sync), a switch to mirror it into the phone's Contacts app, and
-     * the background sync cadence dropdown (never by default). Phone
-     * sync and background sync need the subscription, so both are
-     * disabled while the book is off. The local book is always
-     * subscribed, so its subscribe switch is locked on.
+     * The per-addressbook settings (its name is the dialog title), three
+     * uniform rows: a checkbox row to use the addressbook (its contacts
+     * are visible and take part in sync), a checkbox row to mirror it
+     * into the phone's Contacts app (label left, box at the end, the
+     * whole row toggles), and the full-width background sync cadence
+     * dropdown, whose entries carry the whole meaning (disabled by
+     * default). Phone sync and background sync need the subscription, so
+     * both are disabled while the book is off. The local book is always
+     * subscribed, so its checkbox is locked on.
      */
     private void showBookSettings(BookEntry entry) {
         boolean local = LocalBook.is(entry.accountEmail);
@@ -2231,53 +2228,53 @@ public class MainActivity extends Activity {
         int pad = dp(24);
         content.setPadding(pad, dp(8), pad, 0);
 
-        LinearLayout.LayoutParams switchParams =
+        LinearLayout.LayoutParams rowParams =
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
-        switchParams.topMargin = dp(12);
 
         CheckBox subscribe = new CheckBox(this);
-        subscribe.setText(R.string.book_subscribe);
-        subscribe.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         subscribe.setChecked(local || entry.subscribed);
         subscribe.setEnabled(!local);
-        content.addView(subscribe, switchParams);
+        View subscribeRow = optionRow(R.string.book_subscribe, subscribe);
+        subscribeRow.setAlpha(local ? 0.5f : 1f);
+        content.addView(subscribeRow, rowParams);
 
         CheckBox phone = new CheckBox(this);
-        phone.setText(R.string.book_phone_sync);
-        phone.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         phone.setChecked(entry.phoneSynced);
         phone.setEnabled(subscribe.isChecked());
-        content.addView(phone, switchParams);
+        View phoneRow = optionRow(R.string.book_phone_sync, phone);
+        content.addView(phoneRow, rowParams);
 
-        TextView cadence = new TextView(this);
-        cadence.setText(R.string.book_background_sync);
-        cadence.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-        cadence.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        LinearLayout.LayoutParams cadenceParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        cadenceParams.topMargin = dp(16);
-        content.addView(cadence, cadenceParams);
-
+        // The cadence dropdown spans its row alone; the shared minimum
+        // height keeps the three rows consistent (the spinner centres
+        // its selected view vertically).
         Spinner interval = intervalSpinner();
+        interval.setMinimumHeight(dp(48));
         interval.setSelection(BackgroundSync.intervalIndex(this, entry.book.url));
         interval.setEnabled(subscribe.isChecked());
         LinearLayout.LayoutParams intervalParams =
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
-        intervalParams.topMargin = dp(4);
+        // The framework caret renders 19dp in from the spinner's end
+        // (12dp layer offset plus a 7dp glyph inset) while the checkbox
+        // glyph sits 7dp in from its own edge, so the spinner bleeds
+        // the 12dp difference past the content edge to line the caret
+        // up with the boxes above.
+        intervalParams.setMarginEnd(-dp(8));
         content.addView(interval, intervalParams);
 
         // Phone sync and background sync only make sense for a
-        // subscribed book.
+        // subscribed book; their rows dim with them.
+        phoneRow.setAlpha(subscribe.isChecked() ? 1f : 0.5f);
+        interval.setAlpha(subscribe.isChecked() ? 1f : 0.5f);
         subscribe.setOnCheckedChangeListener(
                 (view, checked) -> {
                     phone.setEnabled(checked);
                     interval.setEnabled(checked);
+                    phoneRow.setAlpha(checked ? 1f : 0.5f);
+                    interval.setAlpha(checked ? 1f : 0.5f);
                     if (!checked) {
                         phone.setChecked(false);
                         interval.setSelection(0);
@@ -2310,6 +2307,34 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /**
+     * One settings row: the label on the left, the checkbox at the end,
+     * vertically centred on a shared height; tapping anywhere on the row
+     * toggles the box (while it is enabled).
+     */
+    private View optionRow(int label, CheckBox box) {
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        text.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+        text.setLayoutParams(
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(48));
+        row.addView(text);
+        row.addView(box);
+        row.setOnClickListener(
+                view -> {
+                    if (box.isEnabled()) {
+                        box.toggle();
+                    }
+                });
+        return row;
+    }
+
     /** Confirms, then removes the account and everything under it. */
     private void confirmDeleteAccount(String email) {
         new AlertDialog.Builder(this)
@@ -2334,7 +2359,6 @@ public class MainActivity extends Activity {
         base.detachAccountToLocal(email);
         accounts.removeIf(entry -> entry.email.equals(email));
         collapsedAccounts.remove(email);
-        seenAccounts.remove(email);
         reloadHome();
 
         // Reconciling against the remaining subscribed set purges the
@@ -2350,9 +2374,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * A drawer account header: a leading caret and the email in bold; the
-     * caret rotates as its books collapse on tap. Long-pressing it offers
-     * to delete the account (the local one excepted).
+     * A drawer account header: the email with a trailing chevron that
+     * rotates as its books collapse or expand on tap. Long-pressing it
+     * offers to delete the account (the local one excepted).
      */
     private View accountHeader(String email, LinearLayout books) {
         android.widget.ImageView chevron = new android.widget.ImageView(this);
@@ -2363,7 +2387,6 @@ public class MainActivity extends Activity {
                         resolveColor(android.R.attr.textColorSecondary)));
         LinearLayout.LayoutParams chevronParams =
                 new LinearLayout.LayoutParams(dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
-        chevronParams.setMarginEnd(dimen(R.dimen.item_gap));
 
         TextView label = new TextView(this);
         label.setText(LocalBook.is(email) ? getString(R.string.local_account) : email);
@@ -2379,10 +2402,9 @@ public class MainActivity extends Activity {
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setMinimumHeight(dimen(R.dimen.item_height));
         header.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
-        header.setBackgroundColor(getColor(R.color.surface));
-        header.setForeground(getDrawable(resolveAttr(android.R.attr.selectableItemBackground)));
-        header.addView(chevron, chevronParams);
+        header.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
         header.addView(label);
+        header.addView(chevron, chevronParams);
 
         header.setOnClickListener(
                 view -> {
@@ -2594,11 +2616,12 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Surfaces a sync outcome: an error dialog, or the per-axis report
-     * toast: a Local line (cards in, out and changed against the
-     * phone's Contacts app) when any synced book mirrors there, the
-     * Remote line always, and a pending-conflicts line when contacts
-     * wait for manual resolution.
+     * Surfaces a sync outcome: an error dialog, or one report toast per
+     * axis: a Local toast (cards in, out and changed against the phone's
+     * Contacts app) first when any synced book mirrors there, then the
+     * Remote toast, carrying the pending-conflicts line when contacts
+     * wait for manual resolution. The background notification keeps both
+     * axes on one card (SyncWorker.notifyReport).
      */
     private void reportSync(SyncOutcome outcome) {
         if (outcome.failure != null) {
@@ -2608,22 +2631,24 @@ public class MainActivity extends Activity {
             return;
         }
 
-        StringBuilder message = new StringBuilder();
+        // Toasts queue, so the local report shows first and the remote
+        // one takes its place.
         if (outcome.local) {
-            message.append(
-                            getString(
-                                    R.string.sync_line_local,
-                                    outcome.localIn.size(),
-                                    outcome.localOut.size(),
-                                    outcome.localChanged.size()))
-                    .append('\n');
+            toast(
+                    getString(
+                            R.string.sync_line_local,
+                            outcome.localIn.size(),
+                            outcome.localOut.size(),
+                            outcome.localChanged.size()));
         }
-        message.append(
-                getString(
-                        R.string.sync_line_remote,
-                        outcome.remoteIn.size(),
-                        outcome.remoteOut.size(),
-                        outcome.remoteChanged.size()));
+
+        StringBuilder message =
+                new StringBuilder(
+                        getString(
+                                R.string.sync_line_remote,
+                                outcome.remoteIn.size(),
+                                outcome.remoteOut.size(),
+                                outcome.remoteChanged.size()));
         if (outcome.conflicts > 0) {
             message.append('\n')
                     .append(getString(R.string.sync_conflicts_pending, outcome.conflicts));
@@ -2941,15 +2966,15 @@ public class MainActivity extends Activity {
 
     }
 
-    /** The contacts overflow menu: Synchronize, Import, Export, Find
-     *  duplicates. */
+    /** The contacts overflow menu: Synchronize, Find duplicates, Import,
+     *  Export. Text-only: the framework popup renders forced icons flush
+     *  against their labels on some Android releases. */
     private void showMoreMenu(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, R.string.menu_synchronize).setIcon(R.drawable.ic_sync);
-        menu.getMenu().add(0, 3, 1, R.string.import_contacts).setIcon(R.drawable.ic_import);
-        menu.getMenu().add(0, 4, 2, R.string.export_contacts).setIcon(R.drawable.ic_export);
-        menu.getMenu().add(0, 2, 3, R.string.dup_find).setIcon(R.drawable.ic_find_duplicates);
-        forceMenuIcons(menu);
+        menu.getMenu().add(0, 1, 0, R.string.menu_synchronize);
+        menu.getMenu().add(0, 2, 1, R.string.dup_find);
+        menu.getMenu().add(0, 3, 2, R.string.import_contacts);
+        menu.getMenu().add(0, 4, 3, R.string.export_contacts);
         menu.setOnMenuItemClickListener(
                 item -> {
                     switch (item.getItemId()) {
@@ -2970,27 +2995,6 @@ public class MainActivity extends Activity {
                     }
                 });
         menu.show();
-    }
-
-    /**
-     * Forces a framework PopupMenu to show its item icons: a public call
-     * from API 29, the internal helper via reflection before that.
-     */
-    private static void forceMenuIcons(android.widget.PopupMenu menu) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            menu.setForceShowIcon(true);
-            return;
-        }
-        try {
-            java.lang.reflect.Field field = menu.getClass().getDeclaredField("mPopup");
-            field.setAccessible(true);
-            Object helper = field.get(menu);
-            helper.getClass()
-                    .getMethod("setForceShowIcon", boolean.class)
-                    .invoke(helper, true);
-        } catch (Exception ignored) {
-            // Older builds just show the menu without icons.
-        }
     }
 
     /**
@@ -3678,7 +3682,8 @@ public class MainActivity extends Activity {
             check.setChecked(selectedKeys.contains(groupKey(group)));
             android.widget.ImageView danger = row.findViewById(R.id.contact_diverged);
             danger.setImageTintList(
-                    android.content.res.ColorStateList.valueOf(dangerColor()));
+                    android.content.res.ColorStateList.valueOf(
+                            resolveColor(android.R.attr.colorError)));
             danger.setVisibility(!selectionMode && isFlagged ? View.VISIBLE : View.GONE);
             row.findViewById(R.id.contact_end_slot)
                     .setVisibility(selectionMode || isFlagged ? View.VISIBLE : View.GONE);
@@ -5330,21 +5335,6 @@ public class MainActivity extends Activity {
         return value.resourceId;
     }
 
-    /**
-     * The theme's standard error colour (colorError, API 26+), falling
-     * back to the secondary text tone on older devices.
-     */
-    private int dangerColor() {
-        android.util.TypedValue value = new android.util.TypedValue();
-        if (getTheme().resolveAttribute(android.R.attr.colorError, value, true)) {
-            if (value.resourceId != 0) {
-                return getResources().getColor(value.resourceId, getTheme());
-            }
-            return value.data;
-        }
-        return resolveColor(android.R.attr.textColorSecondary);
-    }
-
     /** Resolves a theme colour attribute to an ARGB int. */
     private int resolveColor(int attr) {
         android.util.TypedValue value = new android.util.TypedValue();
@@ -5419,7 +5409,7 @@ public class MainActivity extends Activity {
     /**
      * Draws under the system bars (edge-to-edge is enforced for apps
      * targeting API 35) and pushes the chrome back in with the bar
-     * insets: the top inset pads the colorPrimary app bars, so the status
+     * insets: the top inset pads the surface app bars, so the status
      * bar area takes their colour as one bar; the bottom inset lifts the
      * FAB and adds to each list's FAB clearance, so nothing hides under
      * the navigation bar or the keyboard; the side insets pad the window

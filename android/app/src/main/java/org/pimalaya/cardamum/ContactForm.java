@@ -90,7 +90,7 @@ final class ContactForm {
     private final CardamumClient client;
     private final int accentColor;
     private final int labelColor;
-    private final int primaryColor;
+    private final int surfaceColor;
     private final ScrollView scroll;
     private final LinearLayout container;
 
@@ -131,7 +131,7 @@ final class ContactForm {
         this.client = client;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
-        this.primaryColor = resolveColor(android.R.attr.colorPrimary);
+        this.surfaceColor = activity.getColor(R.color.surface);
         this.scroll = activity.findViewById(R.id.contact_scroll);
         this.container = activity.findViewById(R.id.contact_form);
     }
@@ -673,14 +673,17 @@ final class ContactForm {
             return;
         }
 
+        // The line sits flush: the previous section's last item already
+        // ends with its own 12dp row padding (an item-less revealed
+        // section pads its header instead, below), so a margin here
+        // would double the gap.
         if (container.getChildCount() > 0) {
             View line = new View(activity);
-            line.setBackgroundColor(primaryColor);
-            LinearLayout.LayoutParams params =
+            line.setBackgroundColor(surfaceColor);
+            container.addView(
+                    line,
                     new LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, dp(4));
-            params.topMargin = dp(12);
-            container.addView(line, params);
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
         }
 
         ImageView iconView = new ImageView(activity);
@@ -698,7 +701,11 @@ final class ContactForm {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(16), container.getChildCount() <= 1 ? dp(16) : dp(10), dp(10), dp(0));
+        header.setPadding(
+                dp(16),
+                container.getChildCount() <= 1 ? dp(16) : dp(10),
+                dp(10),
+                items.isEmpty() ? dp(12) : dp(0));
         header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
         header.addView(label, labelParams);
         if (!conflict()) {

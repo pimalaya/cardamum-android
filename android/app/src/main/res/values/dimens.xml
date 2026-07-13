@@ -17,5 +17,5 @@
     <dimen name="item_padding">16dp</dimen>
     <dimen name="item_icon">24dp</dimen>
     <dimen name="item_gap">16dp</dimen>
-    <dimen name="item_text">15sp</dimen>
+    <dimen name="item_text">14sp</dimen>
 </resources>

@@ -6,7 +6,6 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
 import androidx.work.WorkManager;
@@ -201,17 +200,12 @@ public class SyncWorker extends Worker {
             Context context, BookEntry book, OfflineEngine.Report report) {
         NotificationManager manager = context.getSystemService(NotificationManager.class);
 
-        Notification.Builder builder;
-        if (Build.VERSION.SDK_INT >= 26) {
-            manager.createNotificationChannel(
-                    new NotificationChannel(
-                            CHANNEL_SYNC,
-                            context.getString(R.string.notif_channel_sync),
-                            NotificationManager.IMPORTANCE_DEFAULT));
-            builder = new Notification.Builder(context, CHANNEL_SYNC);
-        } else {
-            builder = new Notification.Builder(context);
-        }
+        manager.createNotificationChannel(
+                new NotificationChannel(
+                        CHANNEL_SYNC,
+                        context.getString(R.string.notif_channel_sync),
+                        NotificationManager.IMPORTANCE_DEFAULT));
+        Notification.Builder builder = new Notification.Builder(context, CHANNEL_SYNC);
 
         PendingIntent open =
                 PendingIntent.getActivity(

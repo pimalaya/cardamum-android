@@ -29,7 +29,7 @@
         android:id="@+id/app_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?android:attr/colorPrimary"
+        android:background="@color/surface"
         android:gravity="center_vertical"
         android:minHeight="@dimen/app_bar_height"
         android:orientation="horizontal"
@@ -287,7 +287,7 @@
             android:layout_height="24dp"
             android:layout_gravity="center"
             android:elevation="@dimen/fab_elevation"
-            android:indeterminateTint="?android:attr/colorPrimary"
+            android:indeterminateTint="?android:attr/colorAccent"
             android:visibility="gone" />
 
     </FrameLayout>
@@ -313,7 +313,7 @@
             android:id="@+id/drawer_header"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="?android:attr/colorPrimary"
+            android:background="@color/surface"
             android:gravity="center_vertical"
             android:minHeight="@dimen/app_bar_height"
             android:orientation="horizontal"
@@ -393,13 +393,18 @@
 
         </FrameLayout>
 
-        <!-- Bottom band on the same primary colour: add account, then
-             sync, then About (its dialog carries the app version). -->
+        <!-- Bottom actions behind a thin app-bar-tone delimiter: add
+             account, then sync, then About (its dialog carries the app
+             version). -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/surface" />
+
         <LinearLayout
             android:id="@+id/drawer_actions"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="?android:attr/colorPrimary"
             android:orientation="vertical">
 
             <LinearLayout

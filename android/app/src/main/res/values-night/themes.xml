@@ -2,6 +2,11 @@
 <resources>
 
     <!-- Dark base, selected automatically when the system is in dark mode. -->
-    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <!-- The night surface; light status icons stay, the dark default. -->
+        <item name="android:statusBarColor">@color/surface</item>
+
+    </style>
 
 </resources>
