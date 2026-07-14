@@ -338,6 +338,7 @@ dependencies = [
 [[package]]
 name = "io-google-people"
 version = "0.0.1"
+source = "git+https://github.com/pimalaya/io-google-people#981d46066b594a2b78c1c1d6fad23afebf7ac509"
 dependencies = [
  "base64",
  "io-http",
@@ -366,6 +367,7 @@ dependencies = [
 [[package]]
 name = "io-jmap"
 version = "0.1.0"
+source = "git+https://github.com/pimalaya/io-jmap#405171f4e3a4730e298b461805f28af25b167a53"
 dependencies = [
  "io-http",
  "log",
@@ -379,6 +381,7 @@ dependencies = [
 [[package]]
 name = "io-msgraph"
 version = "0.0.1"
+source = "git+https://github.com/pimalaya/io-msgraph#1178a91976cf2b94dc5dc08fdbdd5428db2cd595"
 dependencies = [
  "base64",
  "io-http",
@@ -418,6 +421,7 @@ dependencies = [
 [[package]]
 name = "io-pim-discovery"
 version = "0.2.0"
+source = "git+https://github.com/pimalaya/io-pim-discovery#7ec816eafdc6bad8a44c24a504408c447ddf0495"
 dependencies = [
  "base64",
  "domain",
@@ -435,6 +439,7 @@ dependencies = [
 [[package]]
 name = "io-webdav"
 version = "0.0.1"
+source = "git+https://github.com/pimalaya/io-webdav#fe94b8fd7e7ff458d87d49262b195d567a1d1414"
 dependencies = [
  "io-http",
  "log",
