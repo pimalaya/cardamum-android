@@ -193,7 +193,7 @@ public final class SupportActivity extends Activity {
             TextView desc = new TextView(this);
             desc.setText(TIER_DESCS[at]);
             desc.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
             desc.setPaddingRelative(glyph + gap, 0, 0, 0);
 
             LinearLayout block = new LinearLayout(this);

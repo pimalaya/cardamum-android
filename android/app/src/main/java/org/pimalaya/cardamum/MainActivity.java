@@ -38,7 +38,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.pimalaya.cardamum.billing.Billing;
 import org.pimalaya.cardamum.billing.BillingFactory;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Addressbook;
@@ -73,6 +72,7 @@ public class MainActivity extends Activity {
     private static final int PANEL_ADVANCED = 2;
     private static final int PANEL_SOURCE = 3;
     private static final int PANEL_AUTH = 5;
+    private static final int PANEL_ACCOUNT = 6;
 
     /** The auth flow's steps, inside its own flipper under one bar. */
     private static final int STEP_EMAIL = 0;
@@ -183,24 +183,41 @@ public class MainActivity extends Activity {
     /** The onboarding background-sync cadence, one choice for the step. */
     private Spinner booksInterval;
 
-    /** Subscribed addressbooks grouped for the drawer. */
-    private List<BookEntry> homeBooks = new ArrayList<>();
-
-    /** The addressbooks drawer, opened by the contacts burger. */
+    /** The accounts drawer, opened by the contacts burger. */
     private androidx.drawerlayout.widget.DrawerLayout drawer;
 
-    /** Accounts collapsed in the drawer; every account starts unfolded. */
-    private final java.util.Set<String> collapsedAccounts = new java.util.HashSet<>();
+    /** The account whose settings screen is open (null outside it). */
+    private String settingsEmail;
+
+    /** The open settings screen's addressbooks, in store order. */
+    private List<BookEntry> settingsBooks = new ArrayList<>();
+
+    /** Staged switches per addressbook URL; the FAB commits them. */
+    private final Map<String, BookSettings> bookSettings = new java.util.LinkedHashMap<>();
+
+    /** Whether the settings screen's advanced sections are unfolded. */
+    private boolean settingsAdvancedOpen;
+
+    /** One addressbook's staged switches on the account settings screen. */
+    private static final class BookSettings {
+        boolean enabled;
+        boolean remote;
+        boolean local;
+        int interval;
+    }
 
     /**
      * The shared sync state: true while a sync runs. Every UI element
-     * that reflects it (the app-bar icon, the drawer button) subscribes
-     * through {@link #observeSync}, and {@link #setSyncing} pushes the
-     * flag to all of them at once.
+     * that reflects it (the modal loader, the drawer's sync row)
+     * subscribes through {@link #observeSync}, and {@link #setSyncing}
+     * pushes the flag to all of them at once.
      */
     private boolean syncing;
 
     private final List<java.util.function.Consumer<Boolean>> syncObservers = new ArrayList<>();
+
+    /** The modal sync dialog, up while the syncing flag is (showSyncDialog). */
+    private AlertDialog syncDialog;
 
     /** The replica pool of the contacts screen. */
     private List<Entry> contacts = new ArrayList<>();
@@ -313,8 +330,8 @@ public class MainActivity extends Activity {
 
         // Every sync entry point (drawer, pull-down, Sync local,
         // post-onboarding) drives the one syncing flag, so the modal
-        // loader binds here once and covers them all.
-        observeSync(this::showSyncOverlay);
+        // dialog binds here once and covers them all.
+        observeSync(this::showSyncDialog);
 
         // The built-in local book is always present and subscribed, so
         // the app opens usable with no account: onboarding is never
@@ -527,6 +544,12 @@ public class MainActivity extends Activity {
         // The sync loader is modal: the sync cannot be interrupted
         // mid-pass, so back waits with the rest of the screen.
         if (syncing) {
+            return;
+        }
+        // The account settings overlay sits above the open drawer: back
+        // peels it off first, landing on the drawer it came from.
+        if (screen == PANEL_ACCOUNT) {
+            leaveAccountSettings();
             return;
         }
         if (drawer.isDrawerOpen(android.view.Gravity.START)) {
@@ -1231,7 +1254,7 @@ public class MainActivity extends Activity {
             option.setText(text);
         }
 
-        option.setTextSize(16);
+        option.setTextSize(15);
         option.setPadding(dp(8), dp(12), dp(8), dp(12));
 
         if (action == null) {
@@ -1403,7 +1426,7 @@ public class MainActivity extends Activity {
             TextView cadence = new TextView(this);
             cadence.setText(R.string.book_background_sync);
             cadence.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            cadence.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            cadence.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
             LinearLayout.LayoutParams cadenceParams =
                     new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1503,7 +1526,7 @@ public class MainActivity extends Activity {
 
         for (Addressbook book : pendingBooks) {
             boolean on = subscribed.contains(book.url);
-            base.setBookState(book.url, on, on);
+            base.setBookState(book.url, on, on, on);
             BackgroundSync.setInterval(this, book.url, on ? minutes : 0);
         }
         BackgroundSync.reconcile(this, base.loadAllAddressbooks());
@@ -2217,28 +2240,40 @@ public class MainActivity extends Activity {
     // ---- Addressbooks management screen -----------------------------------------
 
     private void setUpHomePanel() {
-        // The drawer's bottom band: sync, add an account, support the
-        // app, or open About (its dialog carries the app name and
-        // version).
-        findViewById(R.id.drawer_sync).setOnClickListener(view -> syncAll());
+        // The drawer: the title bar's closing cross, then the bottom
+        // band: sync, add an account, or open About (its dialog carries
+        // the app name and version). Sync slides the drawer shut on its
+        // way in, so the modal dialog runs over the contacts list and
+        // the outcome toasts land on the refreshed list.
+        findViewById(R.id.drawer_close)
+                .setOnClickListener(view -> drawer.closeDrawer(Gravity.START));
+        findViewById(R.id.drawer_sync)
+                .setOnClickListener(
+                        view -> {
+                            drawer.closeDrawer(Gravity.START);
+                            syncAll();
+                        });
         findViewById(R.id.drawer_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
 
-        // The support row opens the same panel the Google build prompts
-        // with, on demand this time; the FOSS build carries no billing,
-        // so the row stays hidden there.
-        Billing billing = BillingFactory.create(this);
-        View support = findViewById(R.id.drawer_support);
-        support.setVisibility(billing.supported() ? View.VISIBLE : View.GONE);
-        support.setOnClickListener(view -> billing.open(this));
+        // The account settings screen's own bar: back returns to the
+        // contacts root, the trash deletes the account after
+        // confirmation.
+        findViewById(R.id.account_back).setOnClickListener(view -> leaveAccountSettings());
+        findViewById(R.id.account_delete)
+                .setOnClickListener(view -> confirmDeleteAccount(settingsEmail));
 
-        // While a sync runs the button shows its spinner and goes inert.
+        // The settings overlay's own save FAB (the shared one draws
+        // under the drawer the overlay covers).
+        android.widget.ImageButton accountFab = findViewById(R.id.account_fab);
+        accountFab.setImageTintList(
+                android.content.res.ColorStateList.valueOf(accentContrast()));
+        accountFab.setOnClickListener(view -> saveAccountSettings());
+
+        // While a sync runs the row goes inert; the modal dialog carries
+        // the only spinner.
         observeSync(
                 active -> {
-                    findViewById(R.id.drawer_sync_icon)
-                            .setVisibility(active ? View.GONE : View.VISIBLE);
-                    findViewById(R.id.drawer_sync_progress)
-                            .setVisibility(active ? View.VISIBLE : View.GONE);
                     View row = findViewById(R.id.drawer_sync);
                     row.setEnabled(!active);
                     row.setAlpha(active ? 0.5f : 1f);
@@ -2277,20 +2312,13 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Rebuilds the drawer's addressbooks listing: every addressbook
-     * grouped under its account header; tapping a book row opens its
-     * settings (the two switches). Long-pressing a header offers to
-     * delete the account.
+     * Rebuilds the drawer's accounts listing: one row per connected
+     * account (the local book stays hidden), the email with a trailing
+     * settings cog. Tapping the row opens the account's settings
+     * screen: activation, cadence, the per-addressbook advanced
+     * switches and deletion, so the drawer itself stays a plain list.
      */
     private void reloadHome() {
-        // The local book is hidden: only real accounts show in the drawer.
-        homeBooks = new ArrayList<>();
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            if (!LocalBook.is(entry.accountEmail)) {
-                homeBooks.add(entry);
-            }
-        }
-
         // With no real account the drawer shows an empty state, and its
         // sync row (which would sync nothing) is hidden.
         boolean hasAccount = hasRealAccount();
@@ -2300,164 +2328,326 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.home_container);
         container.removeAllViews();
 
-        String group = null;
-        LinearLayout books = null;
-        for (BookEntry entry : homeBooks) {
-            if (!entry.accountEmail.equals(group)) {
-                group = entry.accountEmail;
-                books = new LinearLayout(this);
-                books.setOrientation(LinearLayout.VERTICAL);
-                books.setVisibility(
-                        collapsedAccounts.contains(group) ? View.GONE : View.VISIBLE);
-                container.addView(accountHeader(group, books));
-                container.addView(books);
+        java.util.Set<String> emails = new java.util.LinkedHashSet<>();
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            if (!LocalBook.is(entry.accountEmail)) {
+                emails.add(entry.accountEmail);
             }
+        }
 
-            TextView name = new TextView(this);
-            name.setText(entry.book.name);
-            itemText(name);
-            name.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-            name.setSingleLine(true);
+        for (String email : emails) {
+            // Styled like the footer rows: a leading account glyph then
+            // the email, same paddings, gap and icon box.
+            android.widget.ImageView glyph = new android.widget.ImageView(this);
+            glyph.setImageResource(R.drawable.ic_account);
+            glyph.setImageTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            resolveColor(android.R.attr.textColorPrimary)));
+            LinearLayout.LayoutParams glyphParams =
+                    new LinearLayout.LayoutParams(
+                            dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
+            glyphParams.setMarginEnd(dimen(R.dimen.item_gap));
+
+            TextView label = new TextView(this);
+            label.setText(email);
+            itemText(label);
+            label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            label.setLayoutParams(
+                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            android.widget.ImageView chevron = new android.widget.ImageView(this);
+            chevron.setImageResource(R.drawable.ic_chevron_right);
+            chevron.setImageTintList(
+                    android.content.res.ColorStateList.valueOf(
+                            resolveColor(android.R.attr.textColorSecondary)));
+            LinearLayout.LayoutParams chevronParams =
+                    new LinearLayout.LayoutParams(
+                            dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setMinimumHeight(dimen(R.dimen.item_height));
-            // The extra start padding indents the books under their
-            // account header, reading as members of the group.
-            row.setPadding(
-                    dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
+            row.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
             row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-            // An unsubscribed book is dimmed.
-            row.setAlpha(entry.subscribed ? 1f : 0.5f);
-
-            // The leading glyph tells the book's sync reach: disabled,
-            // remote-only, or remote plus the phone's addressbook.
-            android.widget.ImageView book = new android.widget.ImageView(this);
-            book.setImageResource(
-                    !entry.subscribed
-                            ? R.drawable.ic_sync_disabled
-                            : entry.phoneSynced
-                                    ? R.drawable.ic_sync
-                                    : R.drawable.ic_cloud_sync);
-            book.setImageTintList(
-                    android.content.res.ColorStateList.valueOf(
-                            resolveColor(android.R.attr.textColorSecondary)));
-            LinearLayout.LayoutParams bookParams =
-                    new LinearLayout.LayoutParams(dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
-            bookParams.setMarginEnd(dimen(R.dimen.item_gap));
-            row.addView(book, bookParams);
-
-            row.addView(name);
-
-            // Tapping the row opens the book's settings (the two switches).
-            row.setOnClickListener(view -> showBookSettings(entry));
-            books.addView(row);
+            row.addView(glyph, glyphParams);
+            row.addView(label);
+            row.addView(chevron, chevronParams);
+            row.setOnClickListener(view -> openAccountSettings(email));
+            container.addView(row);
         }
     }
 
     /**
-     * The per-addressbook settings (its name is the dialog title), three
-     * uniform rows: a checkbox row to use the addressbook (its contacts
-     * are visible and take part in sync), a checkbox row to mirror it
-     * into the phone's Contacts app (label left, box at the end, the
-     * whole row toggles), and the full-width background sync cadence
-     * dropdown, whose entries carry the whole meaning (disabled by
-     * default). Phone sync and background sync need the subscription, so
-     * both are disabled while the book is off. The local book is always
-     * subscribed, so its checkbox is locked on.
+     * Opens one account's settings screen: the staged switches load
+     * from the store, the screen fades in over the drawer it came
+     * from, which stays open underneath for the return. The simple
+     * pair (activate, cadence) fans out onto every addressbook;
+     * Advanced unfolds the per-book sections.
      */
-    private void showBookSettings(BookEntry entry) {
-        boolean local = LocalBook.is(entry.accountEmail);
+    private void openAccountSettings(String email) {
+        settingsEmail = email;
+        settingsBooks = new ArrayList<>();
+        bookSettings.clear();
+        for (BookEntry entry : base.loadAllAddressbooks()) {
+            if (entry.accountEmail.equals(email)) {
+                settingsBooks.add(entry);
+                BookSettings staged = new BookSettings();
+                staged.enabled = entry.subscribed;
+                staged.remote = entry.remoteSynced;
+                staged.local = entry.phoneSynced;
+                staged.interval = BackgroundSync.intervalIndex(this, entry.book.url);
+                bookSettings.put(entry.book.url, staged);
+            }
+        }
+        settingsAdvancedOpen = false;
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(24);
-        content.setPadding(pad, dp(8), pad, 0);
+        ((TextView) findViewById(R.id.account_title)).setText(email);
+        renderAccountSettings();
+        openOverlay(PANEL_ACCOUNT);
+    }
+
+    /**
+     * Rebuilds the settings screen from the staged switches; every bulk
+     * change re-renders, so the simple pair, the advanced sections and
+     * the dimming always agree.
+     */
+    private void renderAccountSettings() {
+        LinearLayout content = findViewById(R.id.account_content);
+        content.removeAllViews();
 
         LinearLayout.LayoutParams rowParams =
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
 
-        CheckBox subscribe = new CheckBox(this);
-        subscribe.setChecked(local || entry.subscribed);
-        subscribe.setEnabled(!local);
-        View subscribeRow = optionRow(R.string.book_subscribe, subscribe);
-        subscribeRow.setAlpha(local ? 0.5f : 1f);
-        content.addView(subscribeRow, rowParams);
+        boolean anyEnabled = false;
+        for (BookSettings staged : bookSettings.values()) {
+            anyEnabled |= staged.enabled;
+        }
 
-        CheckBox phone = new CheckBox(this);
-        phone.setChecked(entry.phoneSynced);
-        phone.setEnabled(subscribe.isChecked());
-        View phoneRow = optionRow(R.string.book_phone_sync, phone);
-        content.addView(phoneRow, rowParams);
+        // The master switch: on puts every addressbook fully on (both
+        // spokes), off shuts everything down, cadence included.
+        CheckBox activate = new CheckBox(this);
+        activate.setChecked(anyEnabled);
+        content.addView(optionRow(R.string.account_enable, activate), rowParams);
+        activate.setOnCheckedChangeListener(
+                (view, checked) -> {
+                    for (BookSettings staged : bookSettings.values()) {
+                        staged.enabled = checked;
+                        staged.remote = checked;
+                        staged.local = checked;
+                        if (!checked) {
+                            staged.interval = 0;
+                        }
+                    }
+                    renderAccountSettings();
+                });
 
-        // The cadence dropdown spans its row alone; the shared minimum
-        // height keeps the three rows consistent (the spinner centres
-        // its selected view vertically).
+        // The account-wide cadence, showing the first enabled book's
+        // pick and fanning a change out onto every book.
+        int shown = 0;
+        for (BookSettings staged : bookSettings.values()) {
+            if (staged.enabled) {
+                shown = staged.interval;
+                break;
+            }
+        }
         Spinner interval = intervalSpinner();
         interval.setMinimumHeight(dp(48));
-        interval.setSelection(BackgroundSync.intervalIndex(this, entry.book.url));
-        interval.setEnabled(subscribe.isChecked());
+        interval.setSelection(shown);
+        interval.setEnabled(anyEnabled);
+        interval.setAlpha(anyEnabled ? 1f : 0.5f);
         LinearLayout.LayoutParams intervalParams =
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
         // The framework caret renders further in from the spinner's end
-        // (a 12dp layer offset plus its glyph inset) than the checkbox
-        // glyph sits from its own edge, so the spinner bleeds past the
-        // content edge to line the caret up with the boxes above (the
-        // margin is tuned on device).
-        intervalParams.setMarginEnd(-dp(8));
+        // than the checkbox glyph sits from its own edge, so the spinner
+        // stops 8dp short of the rows' end padding to line the caret up
+        // with the boxes (same tuning as the onboarding cadence).
+        intervalParams.setMarginStart(dp(16));
+        intervalParams.setMarginEnd(dp(4));
         content.addView(interval, intervalParams);
 
-        // Phone sync and background sync only make sense for a
-        // subscribed book; their rows dim with them.
-        phoneRow.setAlpha(subscribe.isChecked() ? 1f : 0.5f);
-        interval.setAlpha(subscribe.isChecked() ? 1f : 0.5f);
-        subscribe.setOnCheckedChangeListener(
-                (view, checked) -> {
-                    phone.setEnabled(checked);
-                    interval.setEnabled(checked);
-                    phoneRow.setAlpha(checked ? 1f : 0.5f);
-                    interval.setAlpha(checked ? 1f : 0.5f);
-                    if (!checked) {
-                        phone.setChecked(false);
-                        interval.setSelection(0);
+        // The edit form's section separator between the account pair
+        // and the advanced fold: a 1dp line in the app bar tone,
+        // inset to the rows' own paddings.
+        View line = new View(this);
+        line.setBackgroundColor(getColor(R.color.surface));
+        LinearLayout.LayoutParams lineParams =
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
+        lineParams.setMargins(0, dp(12), 0, dp(12));
+        content.addView(line, lineParams);
+        onIntervalPicked(
+                interval,
+                position -> {
+                    boolean changed = false;
+                    for (BookSettings staged : bookSettings.values()) {
+                        changed |= staged.interval != position;
+                        staged.interval = position;
+                    }
+                    if (changed && settingsAdvancedOpen) {
+                        renderAccountSettings();
                     }
                 });
 
-        new AlertDialog.Builder(this)
-                .setTitle(entry.book.name)
-                .setView(content)
-                .setPositiveButton(
-                        android.R.string.ok,
-                        (dialog, which) -> {
-                            base.setBookState(
-                                    entry.book.url, subscribe.isChecked(), phone.isChecked());
+        // The Advanced fold, a checkbox row like every other: the
+        // per-addressbook sections below only matter on multi-book
+        // accounts or for spoke-level tuning.
+        CheckBox advanced = new CheckBox(this);
+        advanced.setChecked(settingsAdvancedOpen);
+        content.addView(optionRow(R.string.account_advanced, advanced), rowParams);
+        advanced.setOnCheckedChangeListener(
+                (view, checked) -> {
+                    settingsAdvancedOpen = checked;
+                    renderAccountSettings();
+                });
 
-                            long minutes =
-                                    subscribe.isChecked()
-                                            ? BackgroundSync.INTERVAL_MINUTES[
-                                                    interval.getSelectedItemPosition()]
-                                            : 0;
-                            BackgroundSync.setInterval(this, entry.book.url, minutes);
-                            BackgroundSync.reconcile(this, base.loadAllAddressbooks());
-                            if (minutes > 0) {
-                                ensureNotificationsPermission();
-                            }
+        if (!settingsAdvancedOpen) {
+            return;
+        }
 
-                            reloadHome();
-                        })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        for (BookEntry entry : settingsBooks) {
+            BookSettings staged = bookSettings.get(entry.book.url);
+
+            // The addressbook header, a plain row at the shared type
+            // scale; its rows indent under it.
+            TextView header = new TextView(this);
+            header.setText(entry.book.name);
+            header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            header.setTextColor(resolveColor(android.R.attr.textColorPrimary));
+            header.setSingleLine(true);
+            header.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            header.setMinimumHeight(dp(48));
+            header.setPadding(dp(16), 0, dp(16), 0);
+            content.addView(header, rowParams);
+
+            LinearLayout rows = new LinearLayout(this);
+            rows.setOrientation(LinearLayout.VERTICAL);
+            rows.setPadding(dp(12), 0, 0, 0);
+            content.addView(rows, rowParams);
+
+            CheckBox enable = new CheckBox(this);
+            enable.setChecked(staged.enabled);
+            rows.addView(optionRow(R.string.book_enable, enable), rowParams);
+            enable.setOnCheckedChangeListener(
+                    (view, checked) -> {
+                        staged.enabled = checked;
+                        staged.remote = checked;
+                        staged.local = checked;
+                        if (!checked) {
+                            staged.interval = 0;
+                        }
+                        renderAccountSettings();
+                    });
+
+            // The spoke switches and the cadence need the book on;
+            // their rows dim with it.
+            CheckBox remote = new CheckBox(this);
+            remote.setChecked(staged.remote);
+            remote.setEnabled(staged.enabled);
+            View remoteRow = optionRow(R.string.book_remote_sync, remote);
+            remoteRow.setAlpha(staged.enabled ? 1f : 0.5f);
+            rows.addView(remoteRow, rowParams);
+            remote.setOnCheckedChangeListener((view, checked) -> staged.remote = checked);
+
+            CheckBox local = new CheckBox(this);
+            local.setChecked(staged.local);
+            local.setEnabled(staged.enabled);
+            View localRow = optionRow(R.string.book_local_sync, local);
+            localRow.setAlpha(staged.enabled ? 1f : 0.5f);
+            rows.addView(localRow, rowParams);
+            local.setOnCheckedChangeListener((view, checked) -> staged.local = checked);
+
+            Spinner cadence = intervalSpinner();
+            cadence.setMinimumHeight(dp(48));
+            cadence.setSelection(staged.interval);
+            cadence.setEnabled(staged.enabled);
+            cadence.setAlpha(staged.enabled ? 1f : 0.5f);
+            LinearLayout.LayoutParams cadenceParams =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            cadenceParams.setMarginStart(dp(16));
+            cadenceParams.setMarginEnd(dp(4));
+            rows.addView(cadence, cadenceParams);
+            onIntervalPicked(cadence, position -> staged.interval = position);
+        }
+    }
+
+    /**
+     * Wires a cadence spinner's user picks to the staged state,
+     * swallowing the selection callback Android fires on layout for
+     * the initial value (it would clobber differing per-book picks).
+     */
+    private void onIntervalPicked(Spinner spinner, java.util.function.IntConsumer picked) {
+        spinner.setOnItemSelectedListener(
+                new android.widget.AdapterView.OnItemSelectedListener() {
+                    private boolean initial = true;
+
+                    @Override
+                    public void onItemSelected(
+                            android.widget.AdapterView<?> parent,
+                            View view,
+                            int position,
+                            long id) {
+                        if (initial) {
+                            initial = false;
+                            return;
+                        }
+                        picked.accept(position);
+                    }
+
+                    @Override
+                    public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+                });
+    }
+
+    /** Commits the staged switches and returns to the drawer. */
+    private void saveAccountSettings() {
+        boolean cadence = false;
+        for (Map.Entry<String, BookSettings> staged : bookSettings.entrySet()) {
+            BookSettings state = staged.getValue();
+            base.setBookState(staged.getKey(), state.enabled, state.remote, state.local);
+            long minutes =
+                    state.enabled ? BackgroundSync.INTERVAL_MINUTES[state.interval] : 0;
+            BackgroundSync.setInterval(this, staged.getKey(), minutes);
+            cadence |= minutes > 0;
+        }
+        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
+        if (cadence) {
+            ensureNotificationsPermission();
+        }
+
+        // The subscription switches move what the contacts root shows.
+        contacts = loadEntries();
+        renderContacts();
+        leaveAccountSettings();
+    }
+
+    /** Leaves the settings screen, landing on the still-open drawer. */
+    private void leaveAccountSettings() {
+        settingsEmail = null;
+        closeOverlay(PANEL_ACCOUNT);
+        screen = PANEL_CONTACTS;
+        applyChrome(PANEL_CONTACTS);
+        // The drawer never closed under the overlay; its rows refresh
+        // in place (switches saved, or the account deleted).
+        reloadHome();
     }
 
     /**
      * One settings row: the label on the left, the checkbox at the end,
      * vertically centred on a shared height; tapping anywhere on the row
-     * toggles the box (while it is enabled).
+     * toggles the box (while it is enabled). Pads itself like the edit
+     * form's rows (the container stays unpadded for the separators);
+     * the 12dp end centres the checkbox glyph under the bar's 48dp
+     * buttons (4dp bar padding + 24 = 28dp centreline, the glyph
+     * sitting 16dp in from the widget's end).
      */
     private View optionRow(int label, CheckBox box) {
         TextView text = new TextView(this);
@@ -2471,6 +2661,7 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(48));
+        row.setPadding(dp(16), 0, dp(12), 0);
         row.addView(text);
         row.addView(box);
         row.setOnClickListener(
@@ -2482,11 +2673,22 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    /** Confirms, then removes the account and everything under it. */
+    /**
+     * Confirms, then removes the account and everything under it,
+     * leaving its settings screen for the drawer underneath.
+     */
     private void confirmDeleteAccount(String email) {
         new AlertDialog.Builder(this)
-                .setMessage(getString(R.string.delete_account_confirm, email))
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> deleteAccount(email))
+                .setTitle(R.string.delete_account)
+                .setMessage(R.string.delete_account_confirm)
+                .setPositiveButton(
+                        android.R.string.ok,
+                        (dialog, which) -> {
+                            deleteAccount(email);
+                            if (screen == PANEL_ACCOUNT) {
+                                leaveAccountSettings();
+                            }
+                        })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
     }
@@ -2508,7 +2710,6 @@ public class MainActivity extends Activity {
         store.remove(email);
         base.detachAccountToLocal(email);
         accounts.removeIf(entry -> entry.email.equals(email));
-        collapsedAccounts.remove(email);
         reloadHome();
 
         // The deleted books' phone accounts go explicitly (their rows
@@ -2527,63 +2728,6 @@ public class MainActivity extends Activity {
                 Log.w("cardamum", "account purge failed for " + email + ": " + error);
             }
         });
-    }
-
-    /**
-     * A drawer account header: the email with a trailing chevron that
-     * rotates as its books collapse or expand on tap. Long-pressing it
-     * offers to delete the account (the local one excepted).
-     */
-    private View accountHeader(String email, LinearLayout books) {
-        android.widget.ImageView chevron = new android.widget.ImageView(this);
-        chevron.setImageResource(R.drawable.ic_chevron_right);
-        chevron.setRotation(collapsedAccounts.contains(email) ? 0 : 90);
-        chevron.setImageTintList(
-                android.content.res.ColorStateList.valueOf(
-                        resolveColor(android.R.attr.textColorSecondary)));
-        LinearLayout.LayoutParams chevronParams =
-                new LinearLayout.LayoutParams(dimen(R.dimen.item_icon), dimen(R.dimen.item_icon));
-
-        TextView label = new TextView(this);
-        label.setText(LocalBook.is(email) ? getString(R.string.local_account) : email);
-        itemText(label);
-        label.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        label.setSingleLine(true);
-        label.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        label.setLayoutParams(
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setMinimumHeight(dimen(R.dimen.item_height));
-        header.setPadding(dimen(R.dimen.item_padding), 0, dimen(R.dimen.item_padding), 0);
-        header.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        header.addView(label);
-        header.addView(chevron, chevronParams);
-
-        header.setOnClickListener(
-                view -> {
-                    boolean collapse = books.getVisibility() == View.VISIBLE;
-                    if (collapse) {
-                        collapsedAccounts.add(email);
-                    } else {
-                        collapsedAccounts.remove(email);
-                    }
-                    books.setVisibility(collapse ? View.GONE : View.VISIBLE);
-                    chevron.setRotation(collapse ? 0 : 90);
-                });
-        // The local account is undeletable; every other account can be
-        // removed by long-pressing its header.
-        if (!LocalBook.is(email)) {
-            header.setOnLongClickListener(
-                    view -> {
-                        confirmDeleteAccount(email);
-                        return true;
-                    });
-        }
-
-        return header;
     }
 
     /**
@@ -2665,67 +2809,42 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Shows or hides the modal sync loader: a whole-frame overlay that
-     * swallows every touch, locks the drawer and ignores back while a
-     * sync runs, so the wait is explicit instead of an ambiguous
-     * spinner. The screen stays on for the duration. It appears and
-     * leaves with the auth sheet's fade-and-slight-zoom.
+     * Shows or hides the modal sync dialog: non-cancelable (no outside
+     * tap, no back), so the wait is explicit instead of an ambiguous
+     * spinner, while the screen behind stays fully visible. The title
+     * carries the addressbook, the detail the current engine step, and
+     * the screen stays on for the duration.
      */
-    private void showSyncOverlay(boolean active) {
-        View overlay = findViewById(R.id.sync_overlay);
-        if (active) {
-            ((TextView) findViewById(R.id.sync_overlay_title))
-                    .setText(R.string.sync_overlay_preparing);
-            ((TextView) findViewById(R.id.sync_overlay_detail)).setText("");
-            drawer.closeDrawers();
-            drawer.setDrawerLockMode(
-                    androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
-            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-
-            overlay.setVisibility(View.VISIBLE);
-            overlay.startAnimation(
-                    android.view.animation.AnimationUtils.loadAnimation(
-                            this, R.anim.fade_zoom_in));
+    private void showSyncDialog(boolean active) {
+        if (!active) {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (syncDialog != null) {
+                syncDialog.dismiss();
+                syncDialog = null;
+            }
             return;
         }
 
-        drawer.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_UNLOCKED);
-        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        if (overlay.getVisibility() != View.VISIBLE) {
-            // The initial observer call, before any sync ran.
-            return;
-        }
-
-        android.view.animation.Animation exit =
-                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_out);
-        exit.setAnimationListener(
-                new android.view.animation.Animation.AnimationListener() {
-                    @Override
-                    public void onAnimationStart(android.view.animation.Animation animation) {}
-
-                    @Override
-                    public void onAnimationRepeat(android.view.animation.Animation animation) {}
-
-                    @Override
-                    public void onAnimationEnd(android.view.animation.Animation animation) {
-                        // A sync started back before the fade ended
-                        // keeps the overlay up. Invisible, not gone,
-                        // so the view stays measured (see the layout);
-                        // the finished animation clears with it, since
-                        // an animated invisible view still catches
-                        // touches.
-                        if (!syncing) {
-                            overlay.clearAnimation();
-                            overlay.setVisibility(View.INVISIBLE);
-                        }
-                    }
-                });
-        overlay.startAnimation(exit);
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        View content = getLayoutInflater().inflate(R.layout.dialog_sync, null);
+        ((TextView) content.findViewById(R.id.sync_dialog_title))
+                .setText(R.string.sync_overlay_preparing);
+        syncDialog =
+                new AlertDialog.Builder(this)
+                        .setView(content)
+                        .setCancelable(false)
+                        .show();
     }
 
-    /** Sets the loader's addressbook line (callable off the main thread). */
+    /** Sets the dialog's addressbook line (callable off the main thread). */
     private void syncTitle(String book) {
-        main.post(() -> ((TextView) findViewById(R.id.sync_overlay_title)).setText(book));
+        main.post(
+                () -> {
+                    if (syncDialog != null) {
+                        ((TextView) syncDialog.findViewById(R.id.sync_dialog_title))
+                                .setText(book);
+                    }
+                });
     }
 
     /** Sets the loader's step line from an engine stage (any thread). */
@@ -2753,7 +2872,13 @@ public class MainActivity extends Activity {
             default:
                 return;
         }
-        main.post(() -> ((TextView) findViewById(R.id.sync_overlay_detail)).setText(text));
+        main.post(
+                () -> {
+                    if (syncDialog != null) {
+                        ((TextView) syncDialog.findViewById(R.id.sync_dialog_detail))
+                                .setText(text);
+                    }
+                });
     }
 
     /**
@@ -2913,7 +3038,7 @@ public class MainActivity extends Activity {
             syncTitle(entry.book.name);
             OfflineEngine.Report report;
             try {
-                report = engine.syncBook(entry.book.url);
+                report = engine.syncBook(entry.book.url, entry.remoteSynced);
             } catch (org.json.JSONException error) {
                 throw new IllegalStateException(error);
             }
@@ -3128,17 +3253,18 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
         findViewById(R.id.contacts_birthdays).setOnClickListener(view -> showBirthdays());
         findViewById(R.id.contacts_duplicates).setOnClickListener(view -> findDuplicates());
-        // A running sync shows on the FAB, whose icon gives way to an
-        // on-disc loader (the overflow icon stays put).
-        observeSync(active -> setAuthLoading(R.id.fab, R.id.fab_progress, active));
         // Pull down on the list to run the very same sync as the drawer
-        // (syncAll, with its outcome toast); the swipe spinner tracks the
-        // shared sync state, so a drawer-triggered sync shows it too.
+        // (syncAll, with its outcome toast). The gesture only triggers:
+        // its spinner retracts right away, the modal dialog carries the
+        // wait (the FAB keeps its plain icon too).
         androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh =
                 findViewById(R.id.contacts_refresh);
         refresh.setColorSchemeColors(resolveColor(android.R.attr.colorAccent));
-        refresh.setOnRefreshListener(this::syncAll);
-        observeSync(refresh::setRefreshing);
+        refresh.setOnRefreshListener(
+                () -> {
+                    refresh.setRefreshing(false);
+                    syncAll();
+                });
 
         findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
         findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
@@ -3304,23 +3430,45 @@ public class MainActivity extends Activity {
                         }
                     }
 
+                    // One readable sentence: "Alice and Bob celebrate
+                    // their birthdays on 12 April, in 3 days."
                     String message;
                     if (names.isEmpty()) {
                         message = getString(R.string.birthdays_none);
                     } else {
-                        String when =
-                                soonest == 0
-                                        ? getString(R.string.birthday_today)
-                                        : getResources()
-                                                .getQuantityString(
-                                                        R.plurals.birthday_in_days,
-                                                        (int) soonest,
-                                                        (int) soonest);
-                        String day =
-                                new java.text.SimpleDateFormat(
-                                                "d MMMM", java.util.Locale.getDefault())
-                                        .format(date.getTime());
-                        message = day + " (" + when + ")\n\n" + String.join("\n", names);
+                        String joined =
+                                names.size() == 1
+                                        ? names.get(0)
+                                        : String.join(", ", names.subList(0, names.size() - 1))
+                                                + getString(R.string.birthdays_and)
+                                                + names.get(names.size() - 1);
+                        if (soonest == 0) {
+                            message =
+                                    getResources()
+                                            .getQuantityString(
+                                                    R.plurals.birthdays_message_today,
+                                                    names.size(),
+                                                    joined);
+                        } else {
+                            String when =
+                                    getResources()
+                                            .getQuantityString(
+                                                    R.plurals.birthday_in_days,
+                                                    (int) soonest,
+                                                    (int) soonest);
+                            String day =
+                                    new java.text.SimpleDateFormat(
+                                                    "d MMMM", java.util.Locale.getDefault())
+                                            .format(date.getTime());
+                            message =
+                                    getResources()
+                                            .getQuantityString(
+                                                    R.plurals.birthdays_message,
+                                                    names.size(),
+                                                    joined,
+                                                    day,
+                                                    when);
+                        }
                     }
                     main.post(
                             () ->
@@ -3754,12 +3902,12 @@ public class MainActivity extends Activity {
 
             TextView name = new TextView(this);
             name.setText(displayName(entry));
-            name.setTextSize(16);
+            name.setTextSize(15);
             name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
 
             TextView book = new TextView(this);
             book.setText(entry.book.name);
-            book.setTextSize(14);
+            book.setTextSize(13);
             book.setTextColor(resolveColor(android.R.attr.textColorSecondary));
 
             TextView account = new TextView(this);
@@ -4330,8 +4478,6 @@ public class MainActivity extends Activity {
         findViewById(R.id.bar_title).setVisibility(View.GONE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.GONE);
         findViewById(R.id.contacts_search).setVisibility(View.GONE);
-        findViewById(R.id.contacts_birthdays).setVisibility(View.GONE);
-        findViewById(R.id.contacts_duplicates).setVisibility(View.GONE);
         findViewById(R.id.contacts_search_pill).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search_close).setVisibility(View.VISIBLE);
 
@@ -4362,10 +4508,6 @@ public class MainActivity extends Activity {
         findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_birthdays)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_duplicates)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_more_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -4403,10 +4545,12 @@ public class MainActivity extends Activity {
 
         findViewById(R.id.contacts_search)
                 .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+        // The birthday and duplicates icons stay through search (like
+        // the overflow slot), so the pill shrinks to end at them.
         findViewById(R.id.contacts_birthdays)
-                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_duplicates)
-                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_menu).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_close)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
@@ -4429,7 +4573,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.contacts_sticky_letter).setClickable(selectionMode);
         // The whole overflow slot goes in selection mode, not just the
         // inner button: an empty 48dp frame would push the selection icons
-        // off the edge. It stays through search, so the field stops at it.
+        // off the edge. It stays through search like the two icons above.
         findViewById(R.id.contacts_more_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.fab).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -4751,7 +4895,7 @@ public class MainActivity extends Activity {
         TextView titleView = new TextView(this);
         titleView.setText(title);
         titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        titleView.setTextSize(16);
+        titleView.setTextSize(15);
 
         TextView lineView = new TextView(this);
         lineView.setText(line);
@@ -5474,7 +5618,7 @@ public class MainActivity extends Activity {
      */
     private void openOverlay(int panel) {
         hideKeyboard();
-        View overlay = findViewById(R.id.overlay_auth);
+        View overlay = overlayOf(panel);
         overlay.setVisibility(View.VISIBLE);
         overlay.startAnimation(
                 android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_in));
@@ -5485,7 +5629,7 @@ public class MainActivity extends Activity {
     /** Fades the overlay back out (zooming slightly away), then hides it. */
     private void closeOverlay(int panel) {
         hideKeyboard();
-        View overlay = findViewById(R.id.overlay_auth);
+        View overlay = overlayOf(panel);
         android.view.animation.Animation exit =
                 android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_out);
         exit.setAnimationListener(
@@ -5507,6 +5651,11 @@ public class MainActivity extends Activity {
                     }
                 });
         overlay.startAnimation(exit);
+    }
+
+    /** The whole-frame overlay view behind an overlay panel id. */
+    private View overlayOf(int panel) {
+        return findViewById(panel == PANEL_ACCOUNT ? R.id.overlay_account : R.id.overlay_auth);
     }
 
     /**
@@ -5537,6 +5686,12 @@ public class MainActivity extends Activity {
             fab.setVisibility(View.VISIBLE);
             setFabEnabled(R.id.fab, authStepReady());
             applyAuthChrome();
+            return;
+        }
+        if (panel == PANEL_ACCOUNT) {
+            // The settings overlay draws above the drawer, where the
+            // shared FAB cannot follow; it carries its own save FAB.
+            fab.setVisibility(View.GONE);
             return;
         }
         for (int id :
@@ -5623,6 +5778,9 @@ public class MainActivity extends Activity {
                 break;
             case PANEL_AUTH:
                 authContinue();
+                break;
+            case PANEL_ACCOUNT:
+                saveAccountSettings();
                 break;
             default:
                 break;
@@ -5801,11 +5959,13 @@ public class MainActivity extends Activity {
         padTop(R.id.app_bar, bars.top);
         padTop(R.id.drawer_header, bars.top);
         padTop(R.id.auth_bar, bars.top);
+        padTop(R.id.account_bar, bars.top);
 
         // The base is each view's designed FAB clearance, so re-applying
         // stays idempotent as the listener fires again. The bottom folds
         // in the keyboard, so the FAB and the email field ride above it.
         padBottom(R.id.fab_frame, 0, bottom);
+        padBottom(R.id.account_fab_frame, 0, bottom);
         padBottom(R.id.contacts_list, 88, bottom);
         // The drawer's fixed bottom band takes the inset; the scrollable
         // list above it needs none.

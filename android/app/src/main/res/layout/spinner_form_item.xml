@@ -10,4 +10,5 @@
     android:ellipsize="marquee"
     android:paddingStart="0dp"
     android:paddingEnd="0dp"
-    android:singleLine="true" />
+    android:singleLine="true"
+    android:textSize="16sp" />

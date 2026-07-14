@@ -24,21 +24,23 @@ import org.pimalaya.cardamum.client.CardamumClient;
  * account and a backend-unique key, with the addressbooks it belongs to
  * in a separate membership table (m:n on JMAP and Google, exactly one on
  * CardDAV and Graph). Every addressbook is tagged with the account it
- * belongs to and whether the user is subscribed to it (subscription
- * drives what is fetched and displayed). Local edits are staged here
+ * belongs to and its three switches: subscribed drives what is
+ * displayed, remote_synced and phone_synced the two sync spokes.
+ * Local edits are staged here
  * (dirty and deleted flags) and pushed by the next sync; the app never
  * talks to the remote outside a sync.
  */
 public class CardStore extends SQLiteOpenHelper {
     private static final String DATABASE = "cards.db";
-    // NOTE: 15 = the phone axis columns on membership (phone_revision,
-    // phone_base, phone_stale, phone_conflict_revision); 14 = the
-    // io-offline engine columns (conflict_revision and stale on card,
-    // checkpoint on addressbook); 13 = the dismissed_duplicate table;
-    // 12 = the index gained the info fallback line; 11 = the
-    // divergence hash covering the extended model fields; index
-    // changes rebuild the card tables.
-    private static final int VERSION = 1;
+    // NOTE: 2 = the remote_synced switch on addressbook; 15 = the
+    // phone axis columns on membership (phone_revision, phone_base,
+    // phone_stale, phone_conflict_revision); 14 = the io-offline
+    // engine columns (conflict_revision and stale on card, checkpoint
+    // on addressbook); 13 = the dismissed_duplicate table; 12 = the
+    // index gained the info fallback line; 11 = the divergence hash
+    // covering the extended model fields; index changes rebuild the
+    // card tables.
+    private static final int VERSION = 2;
 
     /** Indexes vCards at write time (pure bridge computation). */
     private final org.pimalaya.cardamum.client.CardamumClient client =
@@ -147,6 +149,7 @@ public class CardStore extends SQLiteOpenHelper {
                         + "description TEXT, "
                         + "color TEXT, "
                         + "subscribed INTEGER NOT NULL DEFAULT 1, "
+                        + "remote_synced INTEGER NOT NULL DEFAULT 1, "
                         + "phone_synced INTEGER NOT NULL DEFAULT 0, "
                         + "checkpoint TEXT)");
         // name/email/phone/uid/hash are the write-time index computed
@@ -228,7 +231,13 @@ public class CardStore extends SQLiteOpenHelper {
         // the next sync. The addressbook table SURVIVES: syncs walk
         // the stored addressbooks, so dropping them would leave the
         // accounts with nothing to sync from (the sync's self-heal
-        // re-fetches them as a fallback).
+        // re-fetches them as a fallback). Its own additions land as
+        // ALTERs instead.
+        if (oldVersion < 2) {
+            db.execSQL(
+                    "ALTER TABLE addressbook"
+                            + " ADD COLUMN remote_synced INTEGER NOT NULL DEFAULT 1");
+        }
         db.execSQL("DROP TABLE IF EXISTS card");
         db.execSQL("DROP TABLE IF EXISTS membership");
         db.execSQL("DROP TABLE IF EXISTS detached");
@@ -373,26 +382,28 @@ public class CardStore extends SQLiteOpenHelper {
 
     /**
      * Replaces one account's addressbooks with the fetched set, keeping
-     * the subscription of any addressbook already known (new ones default
-     * to subscribed), dropping memberships pointing at vanished books and
-     * clean cards left with no membership at all.
+     * the switches of any addressbook already known (new ones default to
+     * subscribed with remote sync on), dropping memberships pointing at
+     * vanished books and clean cards left with no membership at all.
      */
     public void replaceAddressbooks(String accountEmail, List<Addressbook> books) {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            Map<String, Integer> wasSubscribed = new HashMap<>();
+            Map<String, int[]> wasSwitched = new HashMap<>();
             try (Cursor cursor =
                     db.query(
                             "addressbook",
-                            new String[] {"url", "subscribed"},
+                            new String[] {"url", "subscribed", "remote_synced", "phone_synced"},
                             "account_email = ?",
                             new String[] {accountEmail},
                             null,
                             null,
                             null)) {
                 while (cursor.moveToNext()) {
-                    wasSubscribed.put(cursor.getString(0), cursor.getInt(1));
+                    wasSwitched.put(
+                            cursor.getString(0),
+                            new int[] {cursor.getInt(1), cursor.getInt(2), cursor.getInt(3)});
                 }
             }
 
@@ -406,8 +417,10 @@ public class CardStore extends SQLiteOpenHelper {
                 values.put("name", book.name);
                 values.put("description", book.description);
                 values.put("color", book.color);
-                Integer subscribed = wasSubscribed.get(book.url);
-                values.put("subscribed", subscribed == null ? 1 : subscribed);
+                int[] switches = wasSwitched.get(book.url);
+                values.put("subscribed", switches == null ? 1 : switches[0]);
+                values.put("remote_synced", switches == null ? 1 : switches[1]);
+                values.put("phone_synced", switches == null ? 0 : switches[2]);
                 db.insert("addressbook", null, values);
             }
 
@@ -423,16 +436,19 @@ public class CardStore extends SQLiteOpenHelper {
     }
 
     /**
-     * Sets one addressbook's two switches. Phone sync requires the
-     * subscription, so it is forced off whenever the book is not
+     * Sets one addressbook's three switches. Both sync switches require
+     * the subscription, so they are forced off whenever the book is not
      * subscribed.
      */
-    public void setBookState(String url, boolean subscribed, boolean phoneSynced) {
+    public void setBookState(
+            String url, boolean subscribed, boolean remoteSynced, boolean phoneSynced) {
+        boolean remote = subscribed && remoteSynced;
         boolean phone = subscribed && phoneSynced;
         SQLiteDatabase db = getWritableDatabase();
 
         ContentValues values = new ContentValues();
         values.put("subscribed", subscribed ? 1 : 0);
+        values.put("remote_synced", remote ? 1 : 0);
         values.put("phone_synced", phone ? 1 : 0);
         db.update("addressbook", values, "url = ?", new String[] {url});
 
@@ -554,6 +570,7 @@ public class CardStore extends SQLiteOpenHelper {
                             "description",
                             "color",
                             "subscribed",
+                            "remote_synced",
                             "phone_synced"
                         },
                         selection,
@@ -575,7 +592,8 @@ public class CardStore extends SQLiteOpenHelper {
                                 book,
                                 cursor.getString(1),
                                 cursor.getInt(6) == 1,
-                                cursor.getInt(7) == 1));
+                                cursor.getInt(7) == 1,
+                                cursor.getInt(8) == 1));
             }
             return books;
         }

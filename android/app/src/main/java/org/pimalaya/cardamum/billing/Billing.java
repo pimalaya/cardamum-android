@@ -20,20 +20,4 @@ public interface Billing {
      * FOSS build, and never blocking the app anywhere.
      */
     void prompt(Activity host);
-
-    /**
-     * Opens the support panel right away, regardless of the prompt
-     * cadence: the drawer's Support row. Only meaningful when
-     * {@link #supported()}; the default is a no-op.
-     */
-    default void open(Activity host) {}
-
-    /**
-     * Whether this build has a support panel at all: true on the Google
-     * build; false (the default) on the FOSS builds, where the drawer's
-     * Support row hides.
-     */
-    default boolean supported() {
-        return false;
-    }
 }

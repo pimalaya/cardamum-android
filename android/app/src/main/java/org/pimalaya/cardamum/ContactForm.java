@@ -771,7 +771,7 @@ final class ContactForm {
         TextView label = new TextView(activity);
         label.setText(title);
         label.setTextColor(accentColor);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         LinearLayout.LayoutParams labelParams =
                 new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         labelParams.setMarginStart(dp(8));
@@ -822,7 +822,7 @@ final class ContactForm {
         TextView titleView = new TextView(activity);
         titleView.setText(title);
         titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
 
         LinearLayout text = new LinearLayout(activity);
         text.setOrientation(LinearLayout.VERTICAL);

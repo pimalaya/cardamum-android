@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Overlay entrance: a fade with a slight zoom towards the viewer. -->
+<!-- Overlay entrance: a fade settling down from slightly larger, as if
+     the sheet dropped onto the screen from above the viewer. -->
 <set xmlns:android="http://schemas.android.com/apk/res/android"
     android:duration="300"
     android:interpolator="@android:interpolator/fast_out_slow_in">
@@ -7,9 +8,9 @@
         android:fromAlpha="0"
         android:toAlpha="1" />
     <scale
-        android:fromXScale="0.92"
+        android:fromXScale="1.08"
         android:toXScale="1"
-        android:fromYScale="0.92"
+        android:fromYScale="1.08"
         android:toYScale="1"
         android:pivotX="50%"
         android:pivotY="50%" />

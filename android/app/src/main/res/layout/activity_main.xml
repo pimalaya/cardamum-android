@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The main column (one persistent app bar over the content flipper:
-     navigating flips only the inner content) plus two whole-frame
-     overlays sliding over it, bar included (the addressbooks drawer
-     and the auth sheet), and the one FAB fixed above everything.
-     applyChrome (MainActivity) reconfigures the chrome per screen. -->
-<androidx.drawerlayout.widget.DrawerLayout
+     navigating flips only the inner content) plus the whole-frame
+     overlays, bar included. The auth sheet and the shared FAB live in
+     the drawer's content; the account settings overlay sits after the
+     DrawerLayout so it draws above the open drawer: an account row
+     raises it without closing the drawer, and closing it lands back on
+     that same open drawer (it carries its own save FAB for the same
+     reason). applyChrome (MainActivity) reconfigures the chrome per
+     screen. -->
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<androidx.drawerlayout.widget.DrawerLayout
     android:id="@+id/drawer"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
@@ -107,7 +115,7 @@
                 android:paddingEnd="48dp"
                 android:textColor="?android:attr/textColorPrimary"
                 android:textColorHint="?android:attr/textColorSecondary"
-                android:textSize="15sp" />
+                android:textSize="16sp" />
 
         </FrameLayout>
 
@@ -200,9 +208,8 @@
 
         </FrameLayout>
 
-        <!-- Contacts: the overflow menu (Import, Export). A running sync
-             shows on the FAB, not here, so the icon stays put. The slot
-             id gates its whole visibility. -->
+        <!-- Contacts: the overflow menu (Import, Export), hence the
+             up-down arrows. The slot id gates its whole visibility. -->
         <FrameLayout
             android:id="@+id/contacts_more_slot"
             android:layout_width="@dimen/app_bar_button"
@@ -214,7 +221,7 @@
                 android:layout_height="match_parent"
                 android:background="@drawable/ripple_circle"
                 android:contentDescription="@string/contacts_more"
-                android:src="@drawable/ic_more_vert"
+                android:src="@drawable/ic_import_export"
                 android:tint="?android:attr/textColorPrimary" />
 
         </FrameLayout>
@@ -312,57 +319,12 @@
 
     </FrameLayout>
 
-    <!-- The sync loader: a whole-frame modal overlay shown while any
-         sync runs (drawer, pull-down and Sync local all share the one
-         syncing state). Its translucent scrim keeps the contacts list
-         readable behind the wait. Clickable so it swallows every
-         touch; back is ignored and the drawer locked while it shows,
-         so the wait is explicit instead of an ambiguous spinner. The
-         title carries the addressbook, the detail the current step.
-         Invisible rather than gone, so it is measured from the first
-         layout pass and the entrance zoom pivots on its centre from
-         the very first show (a never-laid-out view resolves the 50%
-         pivot at its left edge, which read as a sideways slide). -->
-    <LinearLayout
-        android:id="@+id/sync_overlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/scrim"
-        android:clickable="true"
-        android:elevation="16dp"
-        android:focusable="true"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:visibility="invisible">
-
-        <ProgressBar
-            android:layout_width="96dp"
-            android:layout_height="96dp"
-            android:indeterminateTint="?android:attr/colorAccent" />
-
-        <TextView
-            android:id="@+id/sync_overlay_title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textSize="18sp" />
-
-        <TextView
-            android:id="@+id/sync_overlay_detail"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textColor="?android:attr/textColorSecondary"
-            android:textSize="14sp" />
-
-    </LinearLayout>
-
     </FrameLayout>
 
-    <!-- The addressbooks drawer: a title bar over the scrollable accounts
-         (reloadHome fills home_container) and a fixed footer of actions.
-         Width caps at 320dp per the drawer spec. -->
+    <!-- The accounts drawer: a title bar over the plain account rows
+         (reloadHome fills home_container; each row opens the account's
+         settings screen) and a fixed footer of actions. Width caps at
+         320dp per the drawer spec. -->
     <LinearLayout
         android:id="@+id/drawer_panel"
         android:layout_width="320dp"
@@ -372,8 +334,8 @@
         android:elevation="16dp"
         android:orientation="vertical">
 
-        <!-- Title bar: a manage-accounts icon then the title. The 48dp
-             tall icon makes the bar as tall as the app bar so their
+        <!-- Title bar: a closing cross then the title, in the shared
+             nav-icon-first bar shape, as tall as the app bar so their
              bottoms line up. -->
         <LinearLayout
             android:id="@+id/drawer_header"
@@ -383,22 +345,24 @@
             android:gravity="center_vertical"
             android:minHeight="@dimen/app_bar_height"
             android:orientation="horizontal"
-            android:paddingStart="16dp"
+            android:paddingStart="@dimen/app_bar_padding"
             android:paddingEnd="@dimen/app_bar_padding">
 
-            <ImageView
-                android:layout_width="24dp"
-                android:layout_height="48dp"
-                android:layout_marginEnd="16dp"
-                android:contentDescription="@null"
-                android:scaleType="center"
-                android:src="@drawable/ic_account"
+            <ImageButton
+                android:id="@+id/drawer_close"
+                android:layout_width="@dimen/app_bar_button"
+                android:layout_height="@dimen/app_bar_button"
+                android:background="@drawable/ripple_circle"
+                android:contentDescription="@string/drawer_close"
+                android:src="@drawable/ic_close"
                 android:tint="?android:attr/textColorPrimary" />
 
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:paddingStart="@dimen/app_bar_title_padding"
+                android:paddingEnd="@dimen/app_bar_title_padding"
                 android:text="@string/subscriptions_title"
                 android:textAppearance="@android:style/TextAppearance.DeviceDefault.Widget.ActionBar.Title"
                 android:textColor="?android:attr/textColorPrimary" />
@@ -516,68 +480,18 @@
                 android:paddingStart="@dimen/item_padding"
                 android:paddingEnd="@dimen/item_padding">
 
-                <FrameLayout
-                    android:layout_width="@dimen/item_icon"
-                    android:layout_height="@dimen/item_icon"
-                    android:layout_marginEnd="@dimen/item_gap">
-
-                    <ImageView
-                        android:id="@+id/drawer_sync_icon"
-                        android:layout_width="@dimen/item_icon"
-                        android:layout_height="@dimen/item_icon"
-                        android:contentDescription="@null"
-                        android:src="@drawable/ic_sync"
-                        android:tint="?android:attr/textColorPrimary" />
-
-                    <ProgressBar
-                        android:id="@+id/drawer_sync_progress"
-                        style="?android:attr/progressBarStyleSmall"
-                        android:layout_width="@dimen/item_icon"
-                        android:layout_height="@dimen/item_icon"
-                        android:layout_gravity="center"
-                        android:indeterminateTint="?android:attr/textColorPrimary"
-                        android:visibility="gone" />
-
-                </FrameLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/sync_accounts"
-                    android:textColor="?android:attr/textColorPrimary"
-                    android:textSize="@dimen/item_text" />
-
-            </LinearLayout>
-
-            <!-- Opens the support panel on demand (the same one the
-                 Google build prompts with); hidden on the FOSS build,
-                 which carries no billing (setUpHomePanel). -->
-            <LinearLayout
-                android:id="@+id/drawer_support"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="?android:attr/selectableItemBackground"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:minHeight="@dimen/item_height"
-                android:orientation="horizontal"
-                android:paddingStart="@dimen/item_padding"
-                android:paddingEnd="@dimen/item_padding"
-                android:visibility="gone">
-
                 <ImageView
                     android:layout_width="@dimen/item_icon"
                     android:layout_height="@dimen/item_icon"
                     android:layout_marginEnd="@dimen/item_gap"
                     android:contentDescription="@null"
-                    android:src="@drawable/ic_support"
+                    android:src="@drawable/ic_sync"
                     android:tint="?android:attr/textColorPrimary" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="@string/support"
+                    android:text="@string/sync_accounts"
                     android:textColor="?android:attr/textColorPrimary"
                     android:textSize="@dimen/item_text" />
 
@@ -618,3 +532,10 @@
     </LinearLayout>
 
 </androidx.drawerlayout.widget.DrawerLayout>
+
+    <!-- One account's settings: same overlay treatment, but above the
+         DrawerLayout, so the drawer's account rows raise it over the
+         open drawer and closing it reveals that drawer again. -->
+    <include layout="@layout/panel_account" />
+
+</FrameLayout>

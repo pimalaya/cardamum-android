@@ -168,13 +168,18 @@ final class OfflineEngine implements OfflineDriver {
      * One book's full hub sync, three engine passes: phone (pull the
      * contacts app's edits into the hub), server (exchange with the
      * remote; the phone-won hub divergences push along), phone again
-     * (project what the server round brought; local-only, cheap).
+     * (project what the server round brought; local-only, cheap). A
+     * book whose remote switch is off keeps only the first phone pass:
+     * the hub still converges with the Contacts app, nothing touches
+     * the server.
      */
-    Report syncBook(String url) throws JSONException {
+    Report syncBook(String url, boolean remote) throws JSONException {
         Report report = new Report();
         syncPhone(url, report);
-        syncServer(url, report);
-        syncPhone(url, report);
+        if (remote) {
+            syncServer(url, report);
+            syncPhone(url, report);
+        }
         return report;
     }
 

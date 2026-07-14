@@ -64,15 +64,19 @@
     <string name="accounts_failed">Could not create the accounts</string>
     <string name="add_account">Add account</string>
     <string name="sync_accounts">Synchronize accounts</string>
-    <string name="support">Support Cardamum</string>
     <string name="about">About</string>
+    <string name="drawer_close">Close</string>
     <string name="about_body">Version %1$s\n\nYour contacts, offline-first and multi-account.\n\nMade by Pimalaya.</string>
     <string name="about_website">Website</string>
     <string name="report_bug">Report a bug</string>
     <string name="local_account">Cardamum</string>
     <string name="local_book">Local app contacts</string>
-    <string name="book_subscribe">Sync contacts with this remote addressbook</string>
-    <string name="book_phone_sync">Sync contacts with your phone\'s addressbook</string>
+    <string name="delete_account">Delete account</string>
+    <string name="account_enable">Enable this account</string>
+    <string name="account_advanced">Enable advanced settings per addressbook</string>
+    <string name="book_enable">Enable this addressbook</string>
+    <string name="book_remote_sync">Sync remotely</string>
+    <string name="book_local_sync">Sync locally</string>
     <string name="book_background_sync">Sync in background</string>
     <string-array name="background_sync_intervals">
         <item>Disable background sync</item>
@@ -84,7 +88,7 @@
         <item>Sync every day</item>
     </string-array>
     <string name="home_empty">No addressbook yet. Add an account to get started.</string>
-    <string name="delete_account_confirm">Remove the account %1$s? Its contacts stay on this device.</string>
+    <string name="delete_account_confirm">Are you sure you want to remove this account? Its contacts will stay on this device.</string>
 
     <string name="sync_title">Synchronizing</string>
     <string name="sync_addressbooks">Fetching addressbooks</string>
@@ -112,7 +116,15 @@
     <string name="contacts_more">More</string>
     <string name="birthdays_title">Next birthday</string>
     <string name="birthdays_none">No birthday recorded on your contacts.</string>
-    <string name="birthday_today">today</string>
+    <string name="birthdays_and">" and "</string>
+    <plurals name="birthdays_message">
+        <item quantity="one">%1$s celebrates a birthday on %2$s, %3$s.</item>
+        <item quantity="other">%1$s celebrate their birthdays on %2$s, %3$s.</item>
+    </plurals>
+    <plurals name="birthdays_message_today">
+        <item quantity="one">%1$s celebrates a birthday today!</item>
+        <item quantity="other">%1$s celebrate their birthdays today!</item>
+    </plurals>
     <plurals name="birthday_in_days">
         <item quantity="one">in %1$d day</item>
         <item quantity="other">in %1$d days</item>

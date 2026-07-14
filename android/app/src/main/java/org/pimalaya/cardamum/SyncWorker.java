@@ -136,7 +136,8 @@ public class SyncWorker extends Worker {
         }
 
         try {
-            return new OfflineEngine(base, client, entry.account, context).syncBook(url);
+            return new OfflineEngine(base, client, entry.account, context)
+                    .syncBook(url, book.remoteSynced);
         } catch (Exception error) {
             // An expired OAuth access token: refresh it, persist the
             // rotated credentials, and retry the book once (the in-app
@@ -145,7 +146,7 @@ public class SyncWorker extends Worker {
                 throw error;
             }
             return new OfflineEngine(base, client, refresh(client, store, entry), context)
-                    .syncBook(url);
+                    .syncBook(url, book.remoteSynced);
         }
     }
 

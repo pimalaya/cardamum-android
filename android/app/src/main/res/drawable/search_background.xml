@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The M3 search bar pill: a rounded surface riding the app bar. -->
+<!-- The M3 search bar pill: rounded, in the view background tone so it
+     reads as a field against the surface-toned app bar. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="@color/surface" />
+    <solid android:color="?android:attr/colorBackground" />
     <corners android:radius="28dp" />
 </shape>

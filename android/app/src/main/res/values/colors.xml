@@ -6,8 +6,4 @@
     <color name="divider">#BDBDBD</color>
     <color name="surface">#EEEEEE</color>
 
-    <!-- The sync loader's veil: surface at 75% opacity, so the screen
-         underneath stays visible while the overlay swallows touches. -->
-    <color name="scrim">#BFEEEEEE</color>
-
 </resources>

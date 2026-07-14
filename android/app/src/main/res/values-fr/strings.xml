@@ -56,15 +56,19 @@
     <string name="accounts_failed">Impossible de créer les comptes</string>
     <string name="add_account">Ajouter un compte</string>
     <string name="sync_accounts">Synchroniser les comptes</string>
-    <string name="support">Soutenir Cardamum</string>
     <string name="about">À propos</string>
+    <string name="drawer_close">Fermer</string>
     <string name="about_body">Version %1$s\n\nVos contacts, hors-ligne et multi-comptes.\n\nRéalisé par Pimalaya.</string>
     <string name="about_website">Site web</string>
     <string name="report_bug">Signaler un bug</string>
     <string name="local_account">Cette application</string>
     <string name="local_book">Contacts locaux</string>
-    <string name="book_subscribe">Synchroniser les contacts avec ce carnet d\'adresses distant</string>
-    <string name="book_phone_sync">Synchroniser les contacts avec le carnet d\'adresses du téléphone</string>
+    <string name="delete_account">Supprimer le compte</string>
+    <string name="account_enable">Activer ce compte</string>
+    <string name="account_advanced">Activer les paramètres avancés par carnet d\'adresses</string>
+    <string name="book_enable">Activer ce carnet d\'adresses</string>
+    <string name="book_remote_sync">Synchroniser à distance</string>
+    <string name="book_local_sync">Synchroniser localement</string>
     <string name="book_background_sync">Synchroniser en arrière-plan</string>
     <string-array name="background_sync_intervals">
         <item>Désactiver la synchronisation en arrière-plan</item>
@@ -76,7 +80,7 @@
         <item>Synchroniser tous les jours</item>
     </string-array>
     <string name="home_empty">Aucun carnet d\'adresses pour l\'instant. Ajoutez un compte pour commencer.</string>
-    <string name="delete_account_confirm">Retirer le compte %1$s ? Ses contacts restent sur cet appareil.</string>
+    <string name="delete_account_confirm">Voulez-vous vraiment retirer ce compte ? Ses contacts resteront sur cet appareil.</string>
 
     <string name="sync_title">Synchronisation</string>
     <string name="sync_addressbooks">Récupération des carnets d\'adresses</string>
@@ -104,7 +108,15 @@
     <string name="contacts_more">Plus</string>
     <string name="birthdays_title">Prochain anniversaire</string>
     <string name="birthdays_none">Aucune date de naissance renseignée sur vos contacts.</string>
-    <string name="birthday_today">aujourd\'hui</string>
+    <string name="birthdays_and">" et "</string>
+    <plurals name="birthdays_message">
+        <item quantity="one">%1$s fêtera son anniversaire le %2$s, %3$s.</item>
+        <item quantity="other">%1$s fêteront leur anniversaire le %2$s, %3$s.</item>
+    </plurals>
+    <plurals name="birthdays_message_today">
+        <item quantity="one">%1$s fête son anniversaire aujourd\'hui !</item>
+        <item quantity="other">%1$s fêtent leur anniversaire aujourd\'hui !</item>
+    </plurals>
     <plurals name="birthday_in_days">
         <item quantity="one">dans %1$d jour</item>
         <item quantity="other">dans %1$d jours</item>
