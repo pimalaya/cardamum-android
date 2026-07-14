@@ -1,4 +1,4 @@
-//! Blocking CardDAV client over the JNI transport: drives pimconf's
+//! Blocking CardDAV client over the JNI transport: drives io-pim-discovery's
 //! RFC 6764 discovery and io-webdav's sans-io CardDAV coroutines, doing
 //! all socket I/O by upcalling the Java `Transport` on each yield. TLS
 //! lives in Java; this crate only ever sees plaintext bytes.
@@ -72,23 +72,37 @@ use io_msgraph::{
         send::{MSGRAPH_API_BASE, MsgraphSend, MsgraphSendError, MsgraphSendOutput},
     },
 };
-use io_oauth::v2_0::{
-    authorization_code_grant::access_token_request::{
-        Oauth20AccessTokenRequestParams, Oauth20RequestAccessToken, Oauth20RequestAccessTokenResult,
+use io_oauth::{
+    rfc6749::{
+        access_token_request::{
+            Oauth20RequestAccessToken, Oauth20RequestAccessTokenParams,
+            Oauth20RequestAccessTokenResult,
+        },
+        issue_access_token::{
+            Oauth20IssueAccessTokenErrorParams, Oauth20IssueAccessTokenSuccessParams,
+        },
+        refresh_access_token::{
+            Oauth20RefreshAccessToken, Oauth20RefreshAccessTokenParams,
+            Oauth20RefreshAccessTokenResult,
+        },
     },
-    issue_access_token::{
-        Oauth20IssueAccessTokenErrorParams, Oauth20IssueAccessTokenSuccessParams,
-    },
-    refresh_access_token::{
-        Oauth20RefreshAccessToken, Oauth20RefreshAccessTokenParams, Oauth20RefreshAccessTokenResult,
-    },
-    rfc7591::client_registration::{
+    rfc7591::register::{
         Oauth20ClientInformation, Oauth20RegisterClient, Oauth20RegisterClientParams,
         Oauth20RegisterClientResult,
     },
-    rfc8414::server_metadata::{
-        Oauth20FetchServerMetadata, Oauth20FetchServerMetadataResult, Oauth20ServerMetadata,
+};
+use io_pim_discovery::{
+    autoconfig::mx::DiscoveryDnsMx,
+    compose::{
+        providers::Provider,
+        types::{Service, ServiceConfig},
     },
+    coroutine::{DiscoveryCoroutine, DiscoveryCoroutineState, DiscoveryYield},
+    pacc::discover::DiscoveryPacc,
+    rfc6764::{resolve::ResolveDav, types::DavService, well_known::WellKnown},
+    rfc8414::{OauthServerMetadata, ResolveOauthServer},
+    rfc8620::resolve::ResolveJmap,
+    rfc9110::ProbeAuth,
 };
 use io_webdav::{
     coroutine::{WebdavCoroutine, WebdavCoroutineState, WebdavYield},
@@ -110,18 +124,6 @@ use jni::{
     errors::Error,
     jni_sig, jni_str,
     objects::{JByteArray, JObject},
-};
-use pimconf::{
-    autoconfig::mx::DiscoveryDnsMx,
-    coroutine::{DiscoveryCoroutine, DiscoveryCoroutineState, DiscoveryYield},
-    pacc::discover::DiscoveryPacc,
-    rfc6764::{resolve::ResolveDav, types::DavService, well_known::WellKnown},
-    rfc8620::resolve::ResolveJmap,
-    rfc9110::ProbeAuth,
-    search::{
-        providers::Provider,
-        types::{Service, ServiceConfig},
-    },
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -332,34 +334,16 @@ impl<'a, 'local> Client<'a, 'local> {
     /// first and falling back to the OpenID Connect Discovery
     /// document (the mailmaint OAuth draft requires servers to serve
     /// at least one).
-    pub fn oauth_server_metadata(&mut self, issuer: &Url) -> Result<Oauth20ServerMetadata, String> {
-        let primary = Oauth20ServerMetadata::well_known_url(issuer);
-        match self.run_fetch_metadata(&primary) {
+    pub fn oauth_server_metadata(&mut self, issuer: &Url) -> Result<OauthServerMetadata, String> {
+        let primary = OauthServerMetadata::well_known_url(issuer);
+        match self.run_discovery(ResolveOauthServer::new(primary)) {
             Ok(metadata) => Ok(metadata),
             Err(primary_err) => {
-                let fallback = Oauth20ServerMetadata::openid_well_known_url(issuer);
-                self.run_fetch_metadata(&fallback).map_err(|fallback_err| {
-                    format!("{primary_err} (OpenID fallback also failed: {fallback_err})")
-                })
-            }
-        }
-    }
-
-    fn run_fetch_metadata(&mut self, url: &Url) -> Result<Oauth20ServerMetadata, String> {
-        let mut coroutine = Oauth20FetchServerMetadata::new(oauth_get_request(url));
-        let mut arg: Option<Vec<u8>> = None;
-
-        loop {
-            match coroutine.resume(arg.as_deref()) {
-                Oauth20FetchServerMetadataResult::Ok(metadata) => return Ok(metadata),
-                Oauth20FetchServerMetadataResult::Err(err) => return Err(err.to_string()),
-                Oauth20FetchServerMetadataResult::WantsRead => {
-                    arg = Some(self.read(url.as_str())?);
-                }
-                Oauth20FetchServerMetadataResult::WantsWrite(bytes) => {
-                    self.write(url.as_str(), &bytes)?;
-                    arg = None;
-                }
+                let fallback = OauthServerMetadata::openid_well_known_url(issuer);
+                self.run_discovery(ResolveOauthServer::new(fallback))
+                    .map_err(|fallback_err| {
+                        format!("{primary_err} (OpenID fallback also failed: {fallback_err})")
+                    })
             }
         }
     }
@@ -412,7 +396,7 @@ impl<'a, 'local> Client<'a, 'local> {
         pkce_verifier: &str,
     ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
         let verifier = parse_pkce_verifier(pkce_verifier)?;
-        let params = Oauth20AccessTokenRequestParams {
+        let params = Oauth20RequestAccessTokenParams {
             code: code.into(),
             redirect_uri: Some(redirect_uri.into()),
             client_id: client_id.into(),
@@ -2804,26 +2788,16 @@ fn jmap_addressbook(book: JmapAddressBook) -> Addressbook {
     }
 }
 
-/// POST request skeleton against the token endpoint, Host header
-/// included (the io-oauth coroutines add the Content-Type and body).
+/// POST request skeleton against the token or registration endpoint
+/// (the io-oauth coroutines add the content headers and body), with
+/// the explicit `host:port` Host header the fastmail flow was
+/// verified with.
 fn oauth_post_request(endpoint: &Url) -> HttpRequest {
-    oauth_request("POST", endpoint)
-}
-
-/// GET request skeleton against a metadata endpoint, Host header
-/// included (the io-oauth coroutines add the Accept header).
-fn oauth_get_request(endpoint: &Url) -> HttpRequest {
-    oauth_request("GET", endpoint)
-}
-
-/// Request skeleton with the Host header the HTTP/1.1 serializer
-/// needs (fastmail and others 400 a request without one).
-fn oauth_request(method: &str, endpoint: &Url) -> HttpRequest {
     let host = endpoint.host_str().unwrap_or("");
     let port = endpoint.port_or_known_default().unwrap_or(443);
 
     HttpRequest {
-        method: method.into(),
+        method: "POST".into(),
         url: endpoint.clone(),
         headers: Vec::new(),
         body: Vec::new(),

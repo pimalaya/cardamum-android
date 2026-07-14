@@ -9,11 +9,14 @@ use std::{borrow::Cow, collections::BTreeMap, str::FromStr};
 
 use rand::seq::IndexedRandom;
 
-use io_oauth::v2_0::authorization_code_grant::{
-    authorization_request::Oauth20AuthorizationRequestParams,
-    authorization_response::Oauth20AuthorizeParams,
-    pkce::{Oauth20PkceCodeChallenge, Oauth20PkceCodeChallengeMethod, Oauth20PkceCodeVerifier},
-    state::Oauth20State,
+use io_oauth::{
+    rfc6749::{
+        auth_request::Oauth20AuthRequestParams, auth_response::Oauth20AuthParams,
+        state::Oauth20State,
+    },
+    rfc7636::pkce::{
+        Oauth20PkceCodeChallenge, Oauth20PkceCodeChallengeMethod, Oauth20PkceCodeVerifier,
+    },
 };
 use serde::{
     Deserialize,
@@ -53,7 +56,7 @@ pub fn authorize_url(
         serde_json::from_str(extras).map_err(|err| format!("Invalid OAuth extras JSON: {err}"))?
     };
 
-    let params = Oauth20AuthorizationRequestParams {
+    let params = Oauth20AuthRequestParams {
         client_id: client_id.into(),
         redirect_uri: Some(redirect_uri.into()),
         scope: scope.split_whitespace().map(Cow::Borrowed).collect(),
@@ -76,7 +79,7 @@ pub fn validate_redirect(redirect_url: &str, state: &str) -> Result<String, Stri
 
     let state = parse_state(state)?;
 
-    Oauth20AuthorizeParams::from(&url)
+    Oauth20AuthParams::from(&url)
         .validate(Some(&state))
         .map(|code| code.into_owned())
         .map_err(|err| err.to_string())

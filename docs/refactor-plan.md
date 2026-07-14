@@ -1,0 +1,68 @@
+# Refactor plan: post-review hardening, decomposition and the Rust migration map
+
+Three independent cold reviews (code quality, Rust/Java separation of concerns, codebase structure) ran on 2026-07-15, each with no prior context, then merged with maintainer knowledge. Their strongest signal is fourfold: the sync path has three unserialized entry points and a logic fork between the in-app path and the worker; error semantics cross the bridge as prose that three layers must preserve verbatim; MainActivity is a ~6,000-line god object; and a shared vocabulary (hashes, enums, TYPE tables) is maintained on both sides of the bridge by convention. This plan sequences the fixes and maps which responsibilities migrate into Rust. Nothing here changes behavior except where a finding is itself a bug.
+
+Constraint while the io-oauth upgrade session is in flight: no work on oauth.rs, the Java OAuth flows or the token-refresh call sites until it lands; the phases below mark the affected steps.
+
+## Phase 0: correctness
+
+Small, independent fixes; each closes a live hazard.
+
+- **Structured errors across the bridge.** Every error reply becomes {"error": message, "status": N} (status absent when non-HTTP); CardamumException carries the status; OfflineEngine.isPreconditionFailure/isGone and the worker/activity 401 checks branch on the field instead of message.contains("HTTP 412"/"404"/"401"). Today a reworded io-webdav/io-http message silently flips retry-unguarded, tombstone-convergence and token-refresh decisions; Rust even substring-matches its own errors in client.rs. The 401 call sites wait for the io-oauth landing.
+- **Serialize the sync entry points.** The in-app sync (MainActivity's io executor), SyncWorker and SyncService can run engine passes over the same book concurrently; an engine round spans many transactions, so interleaved passes can double-push staged creates or clobber checkpoints. A process-wide per-collection lock (static ConcurrentHashMap of ReentrantLock acquired around syncBook/syncPhone) closes it cheaply.
+- **Migration policy.** onUpgrade drops the card tables wholesale, which destroys the two datasets with no remote to re-hydrate from: the local book's cards and unpushed dirty/deleted rows. Carry those rows over across rebuilds; add an onDowngrade that rebuilds instead of crashing; rewrite the stale VERSION note.
+- **SecureStore races.** add()/remove() are load-all, mutate, re-encrypt with no lock; two concurrent token refreshes (foreground plus worker) interleave last-writer-wins and can persist a stale rotated refresh token, permanently logging the account out. Synchronize loadAll/add/remove on a class lock and marshal MainActivity's in-memory accounts-list mutation to the main thread. Coordinate with the io-oauth landing.
+- **Lifecycle guards.** Posted UI callbacks (reportSync, showError, setSyncing) run unguarded against a destroyed activity (BadTokenException on rotation mid-sync); guard with isDestroyed(). The loopback OAuth ServerSocket outlives the activity by up to 300s since shutdownNow() cannot unblock accept(); close it from onDestroy.
+
+## Phase 1: one sync path
+
+Extract a SyncRunner owning the whole run: takes CardStore, SecureStore, CardamumClient, the account entry and book list; returns the outcome; owns the refresh-retry-once dance and the self-heal steps that today exist twice (MainActivity.runRemoteSync/refreshAccount/expiredToken versus SyncWorker.sync/refresh/expiredToken, aligned by a comment). MainActivity keeps only presentation (dialog, toasts, in-memory account cache refresh); SyncWorker keeps only scheduling concerns. This is also where the first engine-level JVM tests land: a fake serve() driver for OfflineEngine flows, applyWrites ordering and cancellation, and the stageMembership state machine; today MappingTest is the only Java test while the riskiest Java logic is the store and engine.
+
+## Phase 2: MainActivity decomposition
+
+Incremental, in dependency order; no framework migration, plain Java repackaging along seams the code already draws.
+
+1. ui/ helpers: dp/resolveAttr/resolveColor and the tappable-row builder exist in both MainActivity and ContactForm (plus four near-identical row builders inside MainActivity); both counts pass the two-call-site bar.
+2. Onboarding out: the auth wizard is a ~1,800-line embedded sub-application (email step, discovery fan-out and ranking, credential prompts, four OAuth grants including the loopback HTTP listener, redirect resumption, book selection) leaking ~12 fields into the activity. Extract an onboarding flow class plus an OAuth flow class talking back through an onConnected callback; MainActivity keeps onNewIntent routing. After the io-oauth landing.
+3. Contacts cluster out: list/adapter/search/selection as a screen class, Entry/Group plus grouping into a ContactPool, import/export as pure JVM-testable code, duplicates/merge/birthdays flows as their own classes. While touching the list, move renderContacts' pool building (full-table scan plus the groupContacts bridge call, today on the main thread every render) onto the io executor.
+4. EditSession value object for the editor state (a dozen editing*/pending* fields shared by the form, advanced editor, source editor, merge and conflict flows), created on open, discarded on close.
+5. Screen registry: the hand-rolled navigation currently spreads each screen over four parallel switches (applyChrome, onFabClick, onBarBack, applyBarInsets) plus the flipper-index coupling with activity_main.xml include order; a small Screen contract (chrome ids, fab, back, view id) dispatched from one table replaces them.
+6. Store split: the ~1,200-line io-offline seam (loadCollection, placementFacts, applyWrites and friends) moves out of CardStore into an OfflineStore over the same helper; the pure bridge calls (indexCard, projectCard, formView, groupContacts and friends) move out of CardamumClient into a transport-free Cards class so CardStore stops instantiating a network client to index vCards.
+
+## Phase 3: boundary tightening
+
+The Rust moves from the migration map below, in this order: vocabulary single-ownership first (mechanical, kills silent-drift bugs), then the facts-in/plan-out extensions, then the chatter batching. Each lands with its docs/io-offline-migration.md entry.
+
+## Phase 4: hygiene
+
+Delete the dead enumCards chain (Java stub, JNI export, Rust impl), CardamumClient.verify and CardStore.loadCards; keep linkGroups/unlinkGroup, they are the reserved link-cluster flow. Fix the four stale comments (detachAccountToLocal's contradictory javadocs, the VERSION note, the leftover setSyncing doc). Demote SyncWorker/SyncService success chatter from Log.w to Log.d. Reconcile the 8 keys missing from values-fr.
+
+## The Rust migration map
+
+The split holds at the resource level: every socket, SQLite row, WorkManager schedule, ContactsContract call and Keystore entry is Java; every byte of vCard parsing, protocol encoding and merge math is Rust. It erodes at the decision level, where sync policy accreted in OfflineEngine.java, and at the vocabulary level, where the same knowledge is maintained twice. The map has three tiers.
+
+### Moves to Rust
+
+- **Error classification** (phase 0): the status field on the error envelope, owned where the HTTP round happens. Long term the 412-retry and 404-converged policies themselves should return as plan verbs so Java never inspects a status.
+- **Content hash and collection namespace**: CardStore.byteHash duplicates store.rs byte_hash, pinned by a Rust test; the "phone:" prefix lives in Java but Rust plans rely on it. indexCard already crosses on every write; its reply gains the hash, and the phone-collection mapping becomes a bridge-exported rule (or at least a Rust-exported constant), leaving one owner.
+- **Membership-state and plan vocabularies**: the state ints (CardStore) versus their Rust twins (store.rs), and the stringly op/action/effect enums parallel in offline.rs/store.rs and CardStore/OfflineEngine. One Rust-exported vocabulary (a bridge call returning the tables, or generated constants) replaces convention.
+- **The vCard TYPE tables**: Mapping.phoneType/phoneTypes/homeWorkTypes hard-code RFC 6350 TYPE semantics in Java while project.rs hard-codes arrays.xml spinner ordering in Rust; each side owns a slab of the other's concern and reordering a string array breaks libcardamum.so silently. Rust exports the TYPE-to-kind table (cardPropLabels-style); Mapping consumes it, spinner positions become a Java lookup over the same export, and project.rs stops encoding resource order. docs/contacts-mapping.md records the ownership move.
+- **Backend classification**: OfflineEngine.isJmap defines JMAP by exclusion (account-level and not Google); accountInfo already answers the backend, use it.
+- **Push round planning**: pushGoogle and pushRound group changes into batch verbs (People batchCreate/batchDelete sizing, post-create membership sequencing, JMAP set/Graph $batch assembly) in Java; each per-item decision already asks Rust via offlinePushPlan, so the grouping is the missing half. A round-plan call (changes plus rows in, batch items and per-card fallbacks out) moves the strategy; Java keeps executing the transport calls. MULTIGET_CHUNK and batch sizes ride the plan instead of being Java constants.
+- **The fetched-revision policy**: OfflineEngine.fetchedItem's "listing ETag beats fetched ETag" rule (posteo SabreDAV, Google people.get) is pure revision semantics whose structural sibling already moved (offlineRetryUnguarded); it becomes the same kind of facts-to-decision call.
+- **Conflict resolution policy**: resolveCleanConflict's capture rules and its duplicate in MainActivity's conflict form path (persist only the remote body, never override conflict_revision with the read ETag, base falls back to local on create collisions) collapse into one Rust resolveConflict entry answering resolved-or-needs-user; the phone flavour (resolvePhoneConflict) folds in.
+- **vCard authorship leaks**: the BEGIN:VCARD skeleton literals in MainActivity and PhoneRemote become a bridge call beside setCardUid; the KNOWN_PROPS/KNOWN_PARAMS lists in MainActivity come from a Rust export.
+- **The myContacts rule**: MainActivity.createCopy re-implements the Google membership rule that store.rs push_plan owns; one more offlinePushPlan caller removes it.
+- **The phone-edit diff**: Mapping.merge decides which fields the phone edited by comparing String.valueOf prints of a Rust-produced model against a Java-produced one; the equality rests on cross-language canonical printing. The field-diff moves behind the bridge so one side owns the canonical form.
+
+### Stays Java deliberately
+
+- **Platform execution**: Transport (TLS, sockets), SQLite statements, WorkManager, ContactsContract, Keystore, SAF, all UI. The sans-io design is the point; only decisions migrate.
+- **The push thread pool**: pushAll's concurrency must run where Transport lives; the width could ride the round plan, the pool cannot.
+- **The three-pass syncBook orchestration**: it coordinates Java-only facts (PhoneRemote availability, the quiet-path counts, progress UI staging). It is the natural candidate for engine ownership when io-offline grows multi-spoke rounds (the aggregator-retirement direction), not before; revisit then.
+- **Adapter pass caches** (deltaCards, graphCards, listedEtags, listedComplete): owning them in Rust means stateful bridge sessions, against the stateless-bridge convention this repo documents. The listedEtags half already crosses as facts when needed (offlineRetryUnguarded); extend that pattern rather than introduce handles.
+- **formView/formEntry/formDate**: Rust computing view support is the accepted flip side of Rust owning the vocabulary; keep, and revisit only if the TYPE-table export makes them redundant.
+
+### Chatter, not ownership
+
+The storage seam pays O(cards) bridge crossings: offlinePlacement per cursor row on every collection load, offlineUpsertPlan per engine upsert, indexCard per write. The decisions are on the right side; batch the facts per collection (arrays in, arrays out) so the boundary tax is paid per phase, as offline.rs already claims.

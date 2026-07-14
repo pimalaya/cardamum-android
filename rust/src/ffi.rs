@@ -9,15 +9,16 @@
 
 use std::collections::BTreeSet;
 
+use io_oauth::rfc7591::register::{Oauth20ClientInformation, Oauth20RegisterClientParams};
+use io_pim_discovery::compose::{
+    collect::ConfigCollector,
+    types::{Service, ServiceConfig},
+};
 use jni::{
     Env, EnvUnowned,
     errors::{Error, LogErrorAndDefault},
     objects::{JClass, JObject, JString},
     sys::{jboolean, jint},
-};
-use pimconf::search::{
-    collect::ConfigCollector,
-    types::{Service, ServiceConfig},
 };
 use url::Url;
 
@@ -1839,8 +1840,8 @@ fn search_mechanism_json<'local>(
 }
 
 /// Merges per-mechanism config lists (in priority order) through
-/// pimconf's pure collector, restricted to the services the app
-/// drives (CardDAV, JMAP).
+/// io-pim-discovery's pure collector, restricted to the services the
+/// app drives (CardDAV, JMAP).
 fn search_merge(lists: &str) -> Result<String, String> {
     let lists: Vec<Vec<ServiceConfig>> =
         serde_json::from_str(lists).map_err(|err| format!("Invalid config lists: {err}"))?;
@@ -1940,9 +1941,7 @@ fn oauth_register_params(
     redirect_uri: &str,
     client_name: &str,
     scope: &str,
-) -> io_oauth::v2_0::rfc7591::client_registration::Oauth20RegisterClientParams {
-    use io_oauth::v2_0::rfc7591::client_registration::Oauth20RegisterClientParams;
-
+) -> Oauth20RegisterClientParams {
     Oauth20RegisterClientParams {
         redirect_uris: vec![redirect_uri.to_string()],
         token_endpoint_auth_method: Some("none".to_string()),
@@ -1961,9 +1960,7 @@ fn oauth_register_params(
 /// when the server returned one.
 // SAFETY: exposes the client secret, which a public-client
 // registration should not carry.
-fn client_information_json(
-    client: &io_oauth::v2_0::rfc7591::client_registration::Oauth20ClientInformation,
-) -> String {
+fn client_information_json(client: &Oauth20ClientInformation) -> String {
     use secrecy::ExposeSecret;
 
     let secret = client

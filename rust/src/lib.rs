@@ -1,7 +1,7 @@
 //! JNI bridge for the Cardamum Android :client module.
 //!
 //! TLS and TCP live in Java (SSLSocket); this crate is a pure protocol
-//! state machine running pimconf's discovery, io-oauth's OAuth 2.0 and
+//! state machine running io-pim-discovery's discovery, io-oauth's OAuth 2.0 and
 //! io-webdav's sans-io CardDAV coroutines, doing all socket I/O by
 //! upcalling a Java `Transport` on each yield. It exposes one entry
 //! point per operation: `search` turns an email into CardDAV service

@@ -52,9 +52,9 @@ dependencies = [
  "io-msgraph",
  "io-oauth",
  "io-offline",
+ "io-pim-discovery",
  "io-webdav",
  "jni",
- "pimconf",
  "rand",
  "secrecy",
  "serde",
@@ -338,7 +338,6 @@ dependencies = [
 [[package]]
 name = "io-google-people"
 version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-google-people#3821db2dae5e4cc4ed2491565441e7c0b09219c4"
 dependencies = [
  "base64",
  "io-http",
@@ -352,8 +351,8 @@ dependencies = [
 
 [[package]]
 name = "io-http"
-version = "0.1.1"
-source = "git+https://github.com/pimalaya/io-http#0ef0eb6a73f6f02853c09f95f669a46c01b3b3f5"
+version = "0.2.0"
+source = "git+https://github.com/pimalaya/io-http#6e169ff2d82b34591513b1f3f707db39ccd25a68"
 dependencies = [
  "base64",
  "httparse",
@@ -367,7 +366,6 @@ dependencies = [
 [[package]]
 name = "io-jmap"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-jmap#3feb34471b4ef7ae3ebba7636c8ed4b5cd1d59f8"
 dependencies = [
  "io-http",
  "log",
@@ -381,7 +379,6 @@ dependencies = [
 [[package]]
 name = "io-msgraph"
 version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-msgraph#b99061daa45ef1250db5529c44b3e5b9ac6cf723"
 dependencies = [
  "base64",
  "io-http",
@@ -395,8 +392,8 @@ dependencies = [
 
 [[package]]
 name = "io-oauth"
-version = "0.0.4"
-source = "git+https://github.com/pimalaya/io-oauth#af644aae86e8fb9627ee2b135f343a851b6de7bc"
+version = "0.1.0"
+source = "git+https://github.com/pimalaya/io-oauth#fd3bc2271bcb4be3d93124963167deaf6d1a0837"
 dependencies = [
  "base64",
  "io-http",
@@ -419,9 +416,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-pim-discovery"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "domain",
+ "io-http",
+ "log",
+ "serde",
+ "serde-xml-rs",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "io-webdav"
 version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-webdav#7eacf4f866c892637670ac82d6159b8b2252c81f"
 dependencies = [
  "io-http",
  "log",
@@ -550,24 +563,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "pimconf"
-version = "0.1.0"
-source = "git+https://github.com/pimalaya/pimconf#648c9597925bb8fd02b33c4939b738285503ea25"
-dependencies = [
- "base64",
- "domain",
- "io-http",
- "log",
- "serde",
- "serde-xml-rs",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror",
- "url",
-]
 
 [[package]]
 name = "portable-atomic"
@@ -754,9 +749,9 @@ dependencies = [
 
 [[package]]
 name = "simd_cesu8"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94f90157bb87cddf702797c5dadfa0be7d266cdf49e22da2fcaa32eff75b2c33"
+checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
 dependencies = [
  "rustc_version",
  "simdutf8",
@@ -1009,6 +1004,6 @@ dependencies = [
 
 [[package]]
 name = "zmij"
-version = "1.0.22"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2f034a4bebf216c9e4b7083603e024cf930873fd67830cfb083c9fa33129d9"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
