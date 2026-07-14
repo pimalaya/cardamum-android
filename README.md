@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./logo.svg" alt="Logo" width="128" height="128" />
-  <h1>📇 Cardamum for Android</h1>
-  <p>Android app to manage your contacts</p>
+  <h1>📇 Cardamum Android</h1>
+  <p>Android app to manage contacts</p>
   <p>
     <a href="https://matrix.to/#/#pimalaya:matrix.org"><img alt="Matrix" src="https://img.shields.io/badge/chat-%23pimalaya-blue?style=flat&logo=matrix&logoColor=white"/></a>
     <a href="https://fosstodon.org/@pimalaya"><img alt="Mastodon" src="https://img.shields.io/badge/news-%40pimalaya-blue?style=flat&logo=mastodon&logoColor=white"/></a>
@@ -9,16 +9,30 @@
 </div>
 
 > [!WARNING]
-> Cardamum for Android is early-stage software under active development: it currently connects a single CardDAV account and edits raw vCards against the server, and everything is subject to change. See [docs/design.md](./docs/design.md) for where it is heading.
+> Cardamum for Android is early-stage software under active development: it is not yet published on any store, and everything is subject to change. See [docs/design.md](./docs/design.md) for the design and the [docs](./docs) folder for the living documentation.
 
 ## Table of contents
 
+- [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [License](#license)
 - [AI disclosure](#ai-disclosure)
 - [Social](#social)
 - [Sponsoring](#sponsoring)
+
+## Features
+
+- Remote backend support: **CardDAV** <sup>[rfc6352](https://datatracker.ietf.org/doc/html/rfc6352)</sup>, **JMAP for Contacts** <sup>[rfc9610](https://datatracker.ietf.org/doc/html/rfc9610)</sup>, **Microsoft Graph**, **Google People API**
+- **Offline first**: a full-fidelity local vCard store, instant rendering, edits pushed on the next sync
+- **Incremental sync** on every backend, powered by the [io-offline](https://github.com/pimalaya/io-offline) replica engine
+- **Two-way phone sync**: one Android account per addressbook (the DAVx5 pattern), edits from any contacts app ride upstream
+- **Background sync** per addressbook (WorkManager), from 15 minutes to daily
+- **Conservative conflicts**: three-way merge, same-field collisions keep both sides for manual resolution
+- **Discovery** from an email address or a bare domain: provider rules with MX detection, PACC <sup>[specs](https://datatracker.ietf.org/doc/html/draft-ietf-mailmaint-pacc)</sup>, CardDAV <sup>[rfc6764](https://datatracker.ietf.org/doc/html/rfc6764)</sup> and JMAP <sup>[rfc8620](https://datatracker.ietf.org/doc/html/rfc8620)</sup> lookups
+- **Auth** support: password, API token, OAuth 2.0 (shipped Google and Microsoft clients, or your own), zero-registration OAuth <sup>[rfc7591](https://datatracker.ietf.org/doc/html/rfc7591)</sup>; credentials encrypted via Android Keystore
+- **Full vCard 4.0 editor**: a form, an advanced per-property editor, a free-hand source editor
+- **Merged contact view** over every account, with search, import/export and a duplicate remover
 
 ## Architecture
 
@@ -46,15 +60,10 @@ at your option.
 This project is developed with AI assistance. This section documents how, so users and downstream packagers can make informed decisions.
 
 - **Tools**: Claude Code (Anthropic), Opus 4.8, invoked locally with a persistent project-scoped memory and a small set of repo-specific rules.
-
 - **Used for**: Refactors, mechanical multi-file edits, boilerplate (feature gates, error enums, derive macros, trait impls), test scaffolding, doc polish, exploratory design conversations.
-
 - **Not used for**: Engineering, critical code, git manipulation (commit, merge, rebase…), real-world tests.
-
 - **Verification**: Every AI-assisted change is read, compiled, tested, and formatted before commit (`nix develop --command cargo check / cargo test / cargo fmt`). Behavioural correctness is verified against the relevant RFC or upstream spec, not assumed from the model output. Tests are never adjusted to fit AI-generated code; the code is adjusted to fit correct behaviour.
-
 - **Limitations**: AI models occasionally produce code that compiles and passes tests but is subtly wrong: off-by-one errors, missed edge cases, plausible but nonexistent APIs, stale RFC references. The verification workflow catches most of this; it does not catch all of it. Bug reports are welcome and taken seriously.
-
 - **Last reviewed**: 19/06/2026
 
 ## Social
