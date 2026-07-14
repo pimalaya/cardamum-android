@@ -256,7 +256,6 @@ public class MainActivity extends Activity {
     /** Whether the open contact loaded in conflict-resolution mode (the
      *  form shows only diverging fields), which hides the add-field FAB
      *  since new fields cannot show under the conflict filter. */
-    private boolean editingConflict;
 
     /** Whether the editor is resolving a both-sides-edited sync conflict:
      *  the form's picks apply onto the captured three-way merge
@@ -310,6 +309,11 @@ public class MainActivity extends Activity {
         setUpFab(R.id.fab);
         findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
         findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
+
+        // Every sync entry point (drawer, overflow menu, pull-down,
+        // Sync local, post-onboarding) drives the one syncing flag, so
+        // the modal loader binds here once and covers them all.
+        observeSync(this::showSyncOverlay);
 
         // The built-in local book is always present and subscribed, so
         // the app opens usable with no account: onboarding is never
@@ -478,7 +482,30 @@ public class MainActivity extends Activity {
         if (screen != PANEL_CONTACT) {
             return;
         }
-        setFabEnabled(R.id.fab, form.conflictResolved());
+
+        android.widget.ImageButton fab = findViewById(R.id.fab);
+        if (form.conflictResolved()) {
+            fab.setBackgroundTintList(null);
+            fab.setImageResource(R.drawable.ic_check);
+            fab.setImageTintList(android.content.res.ColorStateList.valueOf(accentContrast()));
+            fab.setContentDescription(getString(R.string.contact_save));
+            setFabEnabled(R.id.fab, true);
+            return;
+        }
+
+        // Diverging rows await review: the disc turns the error tone
+        // and wears the same warning glyph the rows carry, full
+        // strength so the state reads as a signal, not a dimmed save.
+        fab.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(
+                        resolveColor(android.R.attr.colorError)));
+        fab.setImageResource(R.drawable.ic_diverged);
+        fab.setImageTintList(
+                android.content.res.ColorStateList.valueOf(
+                        resolveColor(android.R.attr.textColorPrimary)));
+        fab.setContentDescription(getString(R.string.contact_diverged_pending));
+        fab.setEnabled(false);
+        fab.setAlpha(1f);
     }
 
     @Override
@@ -496,6 +523,11 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        // The sync loader is modal: the sync cannot be interrupted
+        // mid-pass, so back waits with the rest of the screen.
+        if (syncing) {
+            return;
+        }
         if (drawer.isDrawerOpen(android.view.Gravity.START)) {
             drawer.closeDrawer(android.view.Gravity.START);
             return;
@@ -2623,6 +2655,98 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Shows or hides the modal sync loader: a whole-frame overlay that
+     * swallows every touch, locks the drawer and ignores back while a
+     * sync runs, so the wait is explicit instead of an ambiguous
+     * spinner. The screen stays on for the duration. It appears and
+     * leaves with the auth sheet's fade-and-slight-zoom.
+     */
+    private void showSyncOverlay(boolean active) {
+        View overlay = findViewById(R.id.sync_overlay);
+        if (active) {
+            ((TextView) findViewById(R.id.sync_overlay_title))
+                    .setText(R.string.sync_overlay_preparing);
+            ((TextView) findViewById(R.id.sync_overlay_detail)).setText("");
+            drawer.closeDrawers();
+            drawer.setDrawerLockMode(
+                    androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+            overlay.setVisibility(View.VISIBLE);
+            overlay.startAnimation(
+                    android.view.animation.AnimationUtils.loadAnimation(
+                            this, R.anim.fade_zoom_in));
+            return;
+        }
+
+        drawer.setDrawerLockMode(androidx.drawerlayout.widget.DrawerLayout.LOCK_MODE_UNLOCKED);
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (overlay.getVisibility() != View.VISIBLE) {
+            // The initial observer call, before any sync ran.
+            return;
+        }
+
+        android.view.animation.Animation exit =
+                android.view.animation.AnimationUtils.loadAnimation(this, R.anim.fade_zoom_out);
+        exit.setAnimationListener(
+                new android.view.animation.Animation.AnimationListener() {
+                    @Override
+                    public void onAnimationStart(android.view.animation.Animation animation) {}
+
+                    @Override
+                    public void onAnimationRepeat(android.view.animation.Animation animation) {}
+
+                    @Override
+                    public void onAnimationEnd(android.view.animation.Animation animation) {
+                        // A sync started back before the fade ended
+                        // keeps the overlay up. Invisible, not gone,
+                        // so the view stays measured (see the layout);
+                        // the finished animation clears with it, since
+                        // an animated invisible view still catches
+                        // touches.
+                        if (!syncing) {
+                            overlay.clearAnimation();
+                            overlay.setVisibility(View.INVISIBLE);
+                        }
+                    }
+                });
+        overlay.startAnimation(exit);
+    }
+
+    /** Sets the loader's addressbook line (callable off the main thread). */
+    private void syncTitle(String book) {
+        main.post(() -> ((TextView) findViewById(R.id.sync_overlay_title)).setText(book));
+    }
+
+    /** Sets the loader's step line from an engine stage (any thread). */
+    private void syncStep(int stage, int count) {
+        String text;
+        switch (stage) {
+            case OfflineEngine.Progress.STAGE_SERVER:
+                text = getString(R.string.sync_step_server);
+                break;
+            case OfflineEngine.Progress.STAGE_DOWNLOAD:
+                text = getString(R.string.sync_step_download, count);
+                break;
+            case OfflineEngine.Progress.STAGE_UPLOAD:
+                text = getString(R.string.sync_step_upload, count);
+                break;
+            case OfflineEngine.Progress.STAGE_PHONE:
+                text = getString(R.string.sync_step_phone);
+                break;
+            case OfflineEngine.Progress.STAGE_PROJECT:
+                text = getString(R.string.sync_step_project, count);
+                break;
+            case OfflineEngine.Progress.STAGE_RESOLVE:
+                text = getString(R.string.sync_step_resolve, count);
+                break;
+            default:
+                return;
+        }
+        main.post(() -> ((TextView) findViewById(R.id.sync_overlay_detail)).setText(text));
+    }
+
+    /**
      * Subscribes an element to the sync state and hands it the current
      * value straight away, so it starts consistent.
      */
@@ -2778,8 +2902,10 @@ public class MainActivity extends Activity {
      */
     private void syncAccount(Account acc, List<BookEntry> books, SyncOutcome outcome) {
         OfflineEngine engine = new OfflineEngine(base, client, acc, this);
+        engine.progress = this::syncStep;
 
         for (BookEntry entry : books) {
+            syncTitle(entry.book.name);
             OfflineEngine.Report report;
             try {
                 report = engine.syncBook(entry.book.url);
@@ -2934,7 +3060,9 @@ public class MainActivity extends Activity {
             Accounts.reconcile(this, phoneBooks);
 
             OfflineEngine engine = new OfflineEngine(base, client, null, this);
+            engine.progress = this::syncStep;
             for (BookEntry entry : phoneBooks) {
+                syncTitle(entry.book.name);
                 engine.syncPhone(entry.book.url, report);
             }
         } catch (Exception error) {
@@ -3198,7 +3326,6 @@ public class MainActivity extends Activity {
         editingVcard = resolution.optString("vcard");
         editingTitle = displayName(replica);
         advancedAvailable = false;
-        editingConflict = true;
 
         org.json.JSONArray changed = resolution.optJSONArray("changed");
         if (changed == null) {
@@ -4332,7 +4459,6 @@ public class MainActivity extends Activity {
 
         editingTitle = getString(R.string.contact_new);
         advancedAvailable = true;
-        editingConflict = false;
         resolvingConflict = false;
 
         form.load(null, null, null);
@@ -4396,10 +4522,10 @@ public class MainActivity extends Activity {
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
         advancedAvailable = distinctRefs(replicas).size() == 1;
-        // A non-null changed set means the union merge diverged: the form
-        // opens in conflict mode.
-        editingConflict = changed != null;
 
+        // A non-null changed set means the union merge diverged: the
+        // form opens in conflict mode, the same full editor with the
+        // diverged glyph on the disagreeing rows.
         form.load(model, alternatives, changed);
         show(PANEL_CONTACT);
         return true;
@@ -5269,7 +5395,12 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void onAnimationEnd(android.view.animation.Animation animation) {
-                        overlay.setVisibility(View.GONE);
+                        // Invisible, not gone, so the view stays
+                        // measured (see the layout); the finished
+                        // animation clears with it, since an animated
+                        // invisible view still catches touches.
+                        overlay.clearAnimation();
+                        overlay.setVisibility(View.INVISIBLE);
                     }
                 });
         overlay.startAnimation(exit);
@@ -5286,9 +5417,12 @@ public class MainActivity extends Activity {
         // Every screen change clears any lingering FAB loader (an auth
         // step that navigated on while its loader was up) and re-enables
         // the disc: the icon comes back, the spinner goes, the dim from
-        // a disabled auth step lifts. The auth branch re-disables per
-        // step below.
+        // a disabled auth step lifts, and the error tones of a left-open
+        // conflict form reset. The auth branch re-disables per step
+        // below, updateSaveEnabled re-applies the error state.
         fab.setImageAlpha(255);
+        fab.setBackgroundTintList(null);
+        fab.setImageTintList(android.content.res.ColorStateList.valueOf(accentContrast()));
         findViewById(R.id.fab_progress).setVisibility(View.GONE);
         setFabEnabled(R.id.fab, true);
 
@@ -5342,13 +5476,12 @@ public class MainActivity extends Activity {
                                 editingCard != null && hasRealAccount() && !resolvingConflict
                                         ? View.VISIBLE
                                         : View.GONE);
-                // Add-field lives in the bar during a plain edit; conflict
-                // mode shows only the diverging fields, so nothing new can
-                // be added and the button hides.
-                findViewById(R.id.contact_add_field)
-                        .setVisibility(editingConflict ? View.GONE : View.VISIBLE);
-                // The FAB validates (check); in a merge it stays disabled
-                // until every diverging field has been reviewed.
+                // Add-field lives in the bar, in conflict mode like in a
+                // plain edit: the conflict form is the full editor.
+                findViewById(R.id.contact_add_field).setVisibility(View.VISIBLE);
+                // The FAB validates (check); while diverging rows await
+                // review it turns into the error disc instead
+                // (updateSaveEnabled).
                 fab.setImageResource(R.drawable.ic_check);
                 fab.setContentDescription(getString(R.string.contact_save));
                 fab.setVisibility(View.VISIBLE);

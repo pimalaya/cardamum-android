@@ -694,6 +694,64 @@ public class CardamumClient {
         }
     }
 
+    /**
+     * Creates a batch of cards (Google-only: the one backend with a
+     * batch create verb), returning the created cards in input order
+     * with their server-assigned ids.
+     */
+    public List<Card> createCards(Account account, List<String> vcards) {
+        Transport transport = new Transport();
+        try {
+            return cards(
+                    Native.createCards(
+                            transport,
+                            account.baseUrl,
+                            account.login,
+                            account.password,
+                            new JSONArray(vcards).toString()));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /** Deletes a batch of cards by id (Google-only, like createCards). */
+    public void deleteCards(Account account, List<String> ids) {
+        Transport transport = new Transport();
+        try {
+            object(
+                    Native.deleteCards(
+                            transport,
+                            account.baseUrl,
+                            account.login,
+                            account.password,
+                            new JSONArray(ids).toString()));
+        } finally {
+            transport.close();
+        }
+    }
+
+    /**
+     * Pushes a round of changes as batch calls (JMAP ContactCard/set,
+     * Graph $batch), returning one {@code {ref, accepted, id?, etag?,
+     * error?}} outcome per change: a rejected change reports rejected
+     * instead of failing the round.
+     */
+    public JSONArray pushCards(Account account, String addressbookUrl, JSONArray changes) {
+        Transport transport = new Transport();
+        try {
+            return array(
+                    Native.pushCards(
+                            transport,
+                            account.baseUrl,
+                            addressbookUrl,
+                            account.login,
+                            account.password,
+                            changes.toString()));
+        } finally {
+            transport.close();
+        }
+    }
+
     // ---- Pure card computations ----------------------------------------------
 
     /**

@@ -94,7 +94,15 @@
     <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
     <string name="sync_conflicts_pending">%1$d contact(s) diverged; resolve them to sync</string>
     <string name="conflict_auto_resolved">Conflict resolved automatically; changes push on the next sync</string>
+    <string name="contact_diverged_pending">Diverged fields await review</string>
     <string name="sync_local_requested">Local sync scheduled</string>
+    <string name="sync_overlay_preparing">Preparing synchronization</string>
+    <string name="sync_step_server">Checking the server for changes</string>
+    <string name="sync_step_download">Downloading %1$d contact(s)</string>
+    <string name="sync_step_upload">Sending %1$d change(s) to the server</string>
+    <string name="sync_step_phone">Reconciling with the phone contacts</string>
+    <string name="sync_step_project">Writing %1$d contact(s) to the phone</string>
+    <string name="sync_step_resolve">Resolving %1$d conflict(s)</string>
     <string name="notif_channel_sync">Background sync</string>
     <string name="notif_conflicts_sub">Conflicts found; open the app to resolve them</string>
 

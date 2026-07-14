@@ -9,6 +9,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -118,6 +122,37 @@ final class OfflineEngine implements OfflineDriver {
     }
 
     /**
+     * Observes the sync's coarse steps for a progress display; steps
+     * fire on the sync thread. Null when the sync runs headless (the
+     * background worker, the OS-scheduled adapter).
+     */
+    interface Progress {
+        /** Exchanging the spine with the server. */
+        int STAGE_SERVER = 0;
+        /** Downloading `count` bodies from the server. */
+        int STAGE_DOWNLOAD = 1;
+        /** Sending `count` changes to the server. */
+        int STAGE_UPLOAD = 2;
+        /** Reconciling with the phone's contacts. */
+        int STAGE_PHONE = 3;
+        /** Writing `count` contacts to the phone. */
+        int STAGE_PROJECT = 4;
+        /** Resolving `count` conflicts. */
+        int STAGE_RESOLVE = 5;
+
+        void step(int stage, int count);
+    }
+
+    /** The foreground sync's progress observer; null when headless. */
+    Progress progress;
+
+    private void step(int stage, int count) {
+        if (progress != null) {
+            progress.step(stage, count);
+        }
+    }
+
+    /**
      * Builds a driver for one account; a null account services storage
      * yields only (local mutations never touch the remote), a null
      * context disables the phone spoke.
@@ -155,10 +190,14 @@ final class OfflineEngine implements OfflineDriver {
      */
     private void syncServer(String url, Report report) throws JSONException {
         tally = report;
-        client.offlineSync(this, url, false);
+        step(Progress.STAGE_SERVER, 0);
+        Log.d("cardamum", "server sync " + url + ": " + client.offlineSync(this, url, false));
         hydrate(url);
 
         List<JSONObject> conflicts = base.loadConflicts(url);
+        if (!conflicts.isEmpty()) {
+            step(Progress.STAGE_RESOLVE, conflicts.size());
+        }
         int resolved = 0;
         for (JSONObject conflict : conflicts) {
             if (resolveCleanConflict(url, conflict)) {
@@ -185,14 +224,31 @@ final class OfflineEngine implements OfflineDriver {
         if (phone == null || !phone.available(url)) {
             return;
         }
+
+        // The quiet path: nothing to ingest phone-side (no dirty, new
+        // or deleted raw contact), nothing staged hub-side and both
+        // sides count the same members, so the engine pass (placement
+        // load, enumerate, per-row bridge calls) would reconcile
+        // nothing. Three cheap counts stand in for it; ContactsContract
+        // has no per-account changes token to compare instead.
+        if (!phone.changed(url)
+                && !base.phonePending(url)
+                && phone.count(url) == base.phoneMemberCount(url)) {
+            return;
+        }
+
         tally = report;
         String collection = CardStore.phoneCollection(url);
+        step(Progress.STAGE_PHONE, 0);
 
-        client.offlineSync(this, collection, false);
+        Log.d(
+                "cardamum",
+                "phone sync " + url + ": " + client.offlineSync(this, collection, false));
         hydrate(collection);
 
         List<JSONObject> conflicts = base.loadConflicts(collection);
         if (!conflicts.isEmpty()) {
+            step(Progress.STAGE_RESOLVE, conflicts.size());
             for (JSONObject conflict : conflicts) {
                 resolvePhoneConflict(collection, conflict);
             }
@@ -206,7 +262,13 @@ final class OfflineEngine implements OfflineDriver {
     private void hydrate(String url) {
         List<String> pending = base.handlesBelowFull(url);
         if (!pending.isEmpty()) {
-            client.offlineUpgrade(this, url, pending);
+            if (!CardStore.isPhoneCollection(url)) {
+                step(Progress.STAGE_DOWNLOAD, pending.size());
+            }
+            Log.d(
+                    "cardamum",
+                    "hydrate " + url + " (" + pending.size() + " below full): "
+                            + client.offlineUpgrade(this, url, pending));
         }
     }
 
@@ -456,7 +518,7 @@ final class OfflineEngine implements OfflineDriver {
                 if (card == null) {
                     card = client.readCard(account, url, handle);
                 }
-                items.put(fetchedItem(handle, card));
+                items.put(fetchedItem(url, handle, card));
             }
         } else if (isGraph()) {
             Map<String, Card> cached = graphCards.get(url);
@@ -466,7 +528,7 @@ final class OfflineEngine implements OfflineDriver {
                 if (card == null) {
                     card = client.readCard(account, url, handle);
                 }
-                items.put(fetchedItem(handle, card));
+                items.put(fetchedItem(url, handle, card));
             }
         } else {
             // CardDAV: multiget in chunks, matched back by resource name.
@@ -478,7 +540,7 @@ final class OfflineEngine implements OfflineDriver {
                 List<String> chunk =
                         uris.subList(start, Math.min(start + MULTIGET_CHUNK, uris.size()));
                 for (Card card : client.multigetCards(account, url, chunk)) {
-                    items.put(fetchedItem(card.uri, card));
+                    items.put(fetchedItem(url, card.uri, card));
                 }
             }
         }
@@ -488,10 +550,26 @@ final class OfflineEngine implements OfflineDriver {
         return reply;
     }
 
-    /** One fetched card on the engine wire. */
-    private JSONObject fetchedItem(String handle, Card card) throws JSONException {
+    /**
+     * One fetched card on the engine wire. The recorded revision must
+     * be the flavour the next enumerate compares against: posteo's
+     * SabreDAV serves multiget ETags that differ from its listing
+     * ETags for some cards (Google's people.get ETag likewise differs
+     * from its listing's), and recording the fetch flavour ping-pongs
+     * those cards through a refresh-and-refetch on every sync forever.
+     * The ETag the pass's own enumerate listed wins; the fetched one
+     * only stands in when the pass never listed the handle. Content
+     * moving between the listing and the fetch records the older
+     * listing ETag against the newer body, which reads as one more
+     * refresh next sync and then converges.
+     */
+    private JSONObject fetchedItem(String url, String handle, Card card) throws JSONException {
         JSONObject index = client.indexCard(card.vcard);
         String uid = index.optString("uid");
+
+        Map<String, String> listed = listedEtags.get(url);
+        String listedEtag = listed == null ? null : listed.get(handle);
+        String revision = listedEtag != null ? listedEtag : card.etag;
 
         JSONObject item = new JSONObject();
         item.put("handle", handle);
@@ -499,8 +577,8 @@ final class OfflineEngine implements OfflineDriver {
         item.put("meta", index.toString());
         item.put("hash", CardStore.byteHash(card.vcard));
         item.put("body", card.vcard);
-        if (card.etag != null) {
-            item.put("revision", card.etag);
+        if (revision != null) {
+            item.put("revision", revision);
         }
         return item;
     }
@@ -519,35 +597,319 @@ final class OfflineEngine implements OfflineDriver {
         String url = yielded.getString("collection");
         JSONArray changes = yielded.getJSONArray("changes");
         if (CardStore.isPhoneCollection(url)) {
+            step(Progress.STAGE_PROJECT, changes.length());
             JSONObject reply = phone.push(url, changes);
             tallyPushes(url, changes, reply.getJSONArray("results"));
             return reply;
         }
+        step(Progress.STAGE_UPLOAD, changes.length());
 
-        JSONArray results = new JSONArray();
-        for (int index = 0; index < changes.length(); index++) {
-            JSONObject change = changes.getJSONObject(index);
-            switch (change.getString("op")) {
-                case "add":
-                    results.put(pushAdd(url, change));
-                    break;
-                case "update":
-                    results.put(pushUpdate(url, change));
-                    break;
-                case "remove":
-                    results.put(pushRemove(url, change));
-                    break;
-                default:
-                    // No flag pushes on any contacts backend.
-                    results.put(result(change.getString("handle"), true, null, null));
-                    break;
+        // CardDAV has no batch verb, so its round parallelizes instead:
+        // every change stays one guarded HTTP round trip on its own
+        // connection (the client opens one transport per call), and on
+        // a latency-bound link the wall clock divides by the pool.
+        boolean concurrent =
+                changes.length() > 1
+                        && !CardamumClient.isAccountLevel(account)
+                        && !isGraph();
+
+        JSONArray results;
+        try {
+            if (isGoogle() && changes.length() > 1) {
+                results = pushGoogle(url, changes);
+            } else if ((isJmap() || isGraph()) && changes.length() > 1) {
+                results = pushRound(url, changes);
+            } else {
+                results = concurrent ? pushAll(url, changes) : pushEach(url, changes);
             }
+        } finally {
+            // One pass-cache drop per round instead of per change: no
+            // fetch interleaves a push yield, so deferring is
+            // equivalent, and the workers must not race the caches.
+            invalidate(url);
         }
         tallyPushes(url, changes, results);
 
         JSONObject reply = new JSONObject();
         reply.put("results", results);
         return reply;
+    }
+
+    /** One round's changes, sequentially (the batch-verb backends). */
+    private JSONArray pushEach(String url, JSONArray changes) throws JSONException {
+        JSONArray results = new JSONArray();
+        for (int index = 0; index < changes.length(); index++) {
+            results.put(pushOne(url, changes.getJSONObject(index)));
+        }
+        return results;
+    }
+
+    /**
+     * One round's changes, concurrently over a small pool (CardDAV).
+     * Results keep the change order; the first hard failure aborts the
+     * round like its sequential counterpart, dropping the still-flying
+     * requests with it (the next sync reconciles whatever landed).
+     */
+    private JSONArray pushAll(String url, JSONArray changes) throws JSONException {
+        // The book map primes single-threaded; the workers only read it.
+        bookId(url);
+
+        ExecutorService pool =
+                Executors.newFixedThreadPool(Math.min(PUSH_CONCURRENCY, changes.length()));
+        try {
+            List<Future<JSONObject>> pending = new ArrayList<>(changes.length());
+            for (int index = 0; index < changes.length(); index++) {
+                JSONObject change = changes.getJSONObject(index);
+                pending.add(pool.submit(() -> pushOne(url, change)));
+            }
+
+            JSONArray results = new JSONArray();
+            for (Future<JSONObject> future : pending) {
+                results.put(future.get());
+            }
+            return results;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof JSONException) {
+                throw (JSONException) cause;
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IllegalStateException(cause);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * One Google round: the genuine creates and deletes group into the
+     * People batch verbs (200 and 500 a call, one write-quota unit per
+     * call instead of one per card, which throttled large rounds);
+     * membership patches and guarded updates stay per-card. Results
+     * keep the change order, and a failed batch aborts the round like
+     * a failed per-card call would.
+     */
+    private JSONArray pushGoogle(String url, JSONArray changes) throws JSONException {
+        JSONObject[] results = new JSONObject[changes.length()];
+
+        List<Integer> creates = new ArrayList<>();
+        List<String> createVcards = new ArrayList<>();
+        List<JSONArray> createBooks = new ArrayList<>();
+        List<Integer> removes = new ArrayList<>();
+        List<String> removeIds = new ArrayList<>();
+
+        for (int index = 0; index < changes.length(); index++) {
+            JSONObject change = changes.getJSONObject(index);
+            String op = change.getString("op");
+            String handle = change.getString("handle");
+
+            if ("add".equals(op)) {
+                JSONObject row = base.loadRow(url, handle);
+                if (row == null) {
+                    results[index] = result(handle, false, null, null);
+                    continue;
+                }
+                JSONObject plan = pushPlan("add", url, !change.isNull("origin"), false);
+                if ("membership".equals(plan.getString("action"))) {
+                    client.updateCardBooks(
+                            account, row.getString("id"), List.of(bookId(url)), List.of());
+                    results[index] = result(handle, true, handle, null);
+                    continue;
+                }
+                creates.add(index);
+                createVcards.add(row.getString("vcard"));
+                createBooks.add(plan.optJSONArray("postCreateBooks"));
+            } else if ("remove".equals(op)) {
+                JSONObject row = base.loadRow(url, handle);
+                if (row == null) {
+                    results[index] = result(handle, true, null, null);
+                    continue;
+                }
+                JSONObject plan = pushPlan("remove", url, false, row.optBoolean("deleted"));
+                if ("membership".equals(plan.getString("action"))) {
+                    client.updateCardBooks(
+                            account, row.getString("id"), List.of(), List.of(bookId(url)));
+                    results[index] = result(handle, true, null, null);
+                    continue;
+                }
+                removes.add(index);
+                removeIds.add(row.getString("id"));
+            } else {
+                results[index] = pushOne(url, change);
+            }
+        }
+
+        if (!creates.isEmpty()) {
+            List<Card> created = client.createCards(account, createVcards);
+            for (int at = 0; at < creates.size(); at++) {
+                Card card = created.get(at);
+                int index = creates.get(at);
+
+                JSONArray postCreate = createBooks.get(at);
+                for (int book = 0; postCreate != null && book < postCreate.length(); book++) {
+                    client.updateCardBooks(
+                            account, card.id, List.of(postCreate.optString(book)), List.of());
+                }
+                results[index] =
+                        result(
+                                changes.getJSONObject(index).getString("handle"),
+                                true,
+                                card.uri,
+                                card.etag);
+            }
+        }
+
+        if (!removes.isEmpty()) {
+            client.deleteCards(account, removeIds);
+            for (int index : removes) {
+                results[index] =
+                        result(changes.getJSONObject(index).getString("handle"), true, null, null);
+            }
+        }
+
+        JSONArray ordered = new JSONArray();
+        for (JSONObject result : results) {
+            ordered.put(result);
+        }
+        return ordered;
+    }
+
+    /**
+     * One JMAP or Graph round through the bridge's batch seam: JMAP
+     * folds the whole round (creates, content updates, membership
+     * patches, destroys) into ContactCard/set calls, Graph into $batch
+     * calls of twenty, both answering one outcome per change, so a
+     * rejected card no longer aborts its round. Results keep the
+     * change order.
+     */
+    private JSONArray pushRound(String url, JSONArray changes) throws JSONException {
+        JSONObject[] results = new JSONObject[changes.length()];
+        Map<String, Integer> indexByRef = new HashMap<>();
+        JSONArray batch = new JSONArray();
+
+        for (int index = 0; index < changes.length(); index++) {
+            JSONObject change = changes.getJSONObject(index);
+            String op = change.getString("op");
+            String handle = change.getString("handle");
+
+            if ("add".equals(op)) {
+                JSONObject row = base.loadRow(url, handle);
+                if (row == null) {
+                    results[index] = result(handle, false, null, null);
+                    continue;
+                }
+                JSONObject plan = pushPlan("add", url, !change.isNull("origin"), false);
+                JSONObject item = new JSONObject();
+                item.put("ref", handle);
+                if ("membership".equals(plan.getString("action"))) {
+                    item.put("op", "books");
+                    item.put("id", row.getString("id"));
+                    item.put("add", new JSONArray().put(bookId(url)));
+                } else {
+                    item.put("op", "create");
+                    item.put("vcard", row.getString("vcard"));
+                }
+                indexByRef.put(handle, index);
+                batch.put(item);
+            } else if ("update".equals(op)) {
+                JSONObject row = base.loadRow(url, handle);
+                if (row == null) {
+                    results[index] = result(handle, false, null, null);
+                    continue;
+                }
+                JSONObject item = new JSONObject();
+                item.put("ref", handle);
+                item.put("op", "update");
+                item.put("id", row.getString("id"));
+                item.put("vcard", row.getString("vcard"));
+                if (!row.isNull("baseVcard")) {
+                    item.put("baseVcard", row.getString("baseVcard"));
+                }
+                indexByRef.put(handle, index);
+                batch.put(item);
+            } else if ("remove".equals(op)) {
+                JSONObject row = base.loadRow(url, handle);
+                if (row == null) {
+                    results[index] = result(handle, true, null, null);
+                    continue;
+                }
+                JSONObject plan = pushPlan("remove", url, false, row.optBoolean("deleted"));
+                JSONObject item = new JSONObject();
+                item.put("ref", handle);
+                item.put("id", row.getString("id"));
+                if ("membership".equals(plan.getString("action"))) {
+                    item.put("op", "books");
+                    item.put("remove", new JSONArray().put(bookId(url)));
+                } else {
+                    item.put("op", "destroy");
+                }
+                indexByRef.put(handle, index);
+                batch.put(item);
+            } else {
+                // No flag pushes on any contacts backend.
+                results[index] = result(handle, true, null, null);
+            }
+        }
+
+        if (batch.length() > 0) {
+            JSONArray replies = client.pushCards(account, url, batch);
+            for (int at = 0; at < replies.length(); at++) {
+                JSONObject reply = replies.getJSONObject(at);
+                String ref = reply.getString("ref");
+                Integer index = indexByRef.get(ref);
+                if (index == null) {
+                    continue;
+                }
+
+                boolean accepted = reply.optBoolean("accepted");
+                if (!accepted && !reply.isNull("error")) {
+                    Log.w("cardamum", "push rejected for " + ref + ": " + reply.optString("error"));
+                }
+
+                // Only an add renames its handle: the created id when
+                // the backend assigned one, the handle itself on a
+                // membership add (mirrors the per-card path).
+                String assigned = null;
+                if ("add".equals(changes.getJSONObject(index).getString("op")) && accepted) {
+                    assigned = reply.isNull("id") ? ref : reply.getString("id");
+                }
+                String revision = reply.isNull("etag") ? null : reply.getString("etag");
+                results[index] = result(ref, accepted, assigned, revision);
+            }
+
+            // A ref the bridge failed to answer counts rejected, so the
+            // next sync reconciles it rather than trusting silence.
+            for (Map.Entry<String, Integer> entry : indexByRef.entrySet()) {
+                if (results[entry.getValue()] == null) {
+                    results[entry.getValue()] = result(entry.getKey(), false, null, null);
+                }
+            }
+        }
+
+        JSONArray ordered = new JSONArray();
+        for (JSONObject result : results) {
+            ordered.put(result);
+        }
+        return ordered;
+    }
+
+    /** Dispatches one push change to its verb. */
+    private JSONObject pushOne(String url, JSONObject change) throws JSONException {
+        switch (change.getString("op")) {
+            case "add":
+                return pushAdd(url, change);
+            case "update":
+                return pushUpdate(url, change);
+            case "remove":
+                return pushRemove(url, change);
+            default:
+                // No flag pushes on any contacts backend.
+                return result(change.getString("handle"), true, null, null);
+        }
     }
 
     /**
@@ -599,13 +961,11 @@ final class OfflineEngine implements OfflineDriver {
         JSONObject plan = pushPlan("add", url, !change.isNull("origin"), false);
         if ("membership".equals(plan.getString("action"))) {
             client.updateCardBooks(account, row.getString("id"), List.of(bookId(url)), List.of());
-            invalidate(url);
             return result(handle, true, handle, null);
         }
 
         Card created =
                 client.createCard(account, url, row.getString("id"), row.getString("vcard"));
-        invalidate(url);
 
         JSONArray postCreate = plan.optJSONArray("postCreateBooks");
         for (int index = 0; postCreate != null && index < postCreate.length(); index++) {
@@ -633,7 +993,6 @@ final class OfflineEngine implements OfflineDriver {
                             url,
                             new Card(row.getString("id"), handle, ifMatch, row.getString("vcard")),
                             baseVcard);
-            invalidate(url);
             return result(handle, true, null, updated.etag);
         } catch (RuntimeException failure) {
             if (!isPreconditionFailure(failure)) {
@@ -655,7 +1014,6 @@ final class OfflineEngine implements OfflineDriver {
                             url,
                             new Card(row.getString("id"), handle, null, row.getString("vcard")),
                             baseVcard);
-            invalidate(url);
             return result(handle, true, null, updated.etag);
         }
     }
@@ -676,7 +1034,6 @@ final class OfflineEngine implements OfflineDriver {
         JSONObject plan = pushPlan("remove", url, false, row.optBoolean("deleted"));
         if ("membership".equals(plan.getString("action"))) {
             client.updateCardBooks(account, row.getString("id"), List.of(), List.of(bookId(url)));
-            invalidate(url);
             return result(handle, true, null, null);
         }
 
@@ -696,7 +1053,6 @@ final class OfflineEngine implements OfflineDriver {
                 client.deleteCard(account, url, new Card(row.getString("id"), handle, null, ""));
             }
         }
-        invalidate(url);
         return result(handle, true, null, null);
     }
 
@@ -720,6 +1076,9 @@ final class OfflineEngine implements OfflineDriver {
 
     /** How many resource names one addressbook-multiget carries. */
     private static final int MULTIGET_CHUNK = 50;
+
+    /** How many CardDAV pushes fly concurrently (one request per card). */
+    private static final int PUSH_CONCURRENCY = 4;
 
     /** Drops the pass caches after a push changed the remote. */
     private void invalidate(String url) {
@@ -787,6 +1146,12 @@ final class OfflineEngine implements OfflineDriver {
 
     private boolean isGoogle() {
         return account != null && CardamumClient.isGoogle(account);
+    }
+
+    private boolean isJmap() {
+        return account != null
+                && CardamumClient.isAccountLevel(account)
+                && !CardamumClient.isGoogle(account);
     }
 
     private static String error(String message) {

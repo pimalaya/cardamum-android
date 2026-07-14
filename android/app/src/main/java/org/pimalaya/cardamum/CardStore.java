@@ -1003,6 +1003,58 @@ public class CardStore extends SQLiteOpenHelper {
     }
 
     /**
+     * Whether the book holds phone-axis work for the engine: a card
+     * not yet projected, diverged from its phone base, mid-refetch,
+     * conflicted, or gone while still on the phone. One EXISTS query,
+     * the store half of the phone pass's quiet-path guard (the member
+     * count below matches the provider's side).
+     */
+    public boolean phonePending(String url) {
+        SQLiteDatabase db = getReadableDatabase();
+        String accountEmail = accountEmailOf(db, url);
+        if (accountEmail == null) {
+            return false;
+        }
+        try (Cursor cursor =
+                db.rawQuery(
+                        "SELECT EXISTS (SELECT 1 FROM card c"
+                                + " JOIN membership m ON m.account_email = c.account_email"
+                                + " AND m.card_key = c.key"
+                                + " WHERE m.addressbook_url = ? AND c.account_email = ?"
+                                + " AND (m.phone_stale = 1"
+                                + " OR m.phone_conflict_revision IS NOT NULL"
+                                + " OR ((c.deleted = 1 OR m.state = " + MEMBER_REMOVED + ")"
+                                + " AND (m.phone_revision IS NOT NULL"
+                                + " OR m.phone_base IS NOT NULL))"
+                                + " OR (c.deleted = 0 AND m.state != " + MEMBER_REMOVED
+                                + " AND c.vcard != ''"
+                                + " AND (m.phone_base IS NULL OR m.phone_base != c.vcard))))",
+                        new String[] {url, accountEmail})) {
+            return cursor.moveToFirst() && cursor.getInt(0) == 1;
+        }
+    }
+
+    /** The book's members the phone should mirror (quiet-path count). */
+    public int phoneMemberCount(String url) {
+        SQLiteDatabase db = getReadableDatabase();
+        String accountEmail = accountEmailOf(db, url);
+        if (accountEmail == null) {
+            return 0;
+        }
+        try (Cursor cursor =
+                db.rawQuery(
+                        "SELECT COUNT(*) FROM card c"
+                                + " JOIN membership m ON m.account_email = c.account_email"
+                                + " AND m.card_key = c.key"
+                                + " WHERE m.addressbook_url = ? AND c.account_email = ?"
+                                + " AND c.deleted = 0 AND m.state != " + MEMBER_REMOVED
+                                + " AND c.vcard != ''",
+                        new String[] {url, accountEmail})) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
+    /**
      * Loads one addressbook's phone collection: the same card rows,
      * exposed through the membership rows' phone axis. No checkpoint;
      * the phone enumerates complete rounds.
@@ -2012,12 +2064,26 @@ public class CardStore extends SQLiteOpenHelper {
     /** Inserts or updates one membership row with the given state. */
     private static void setMembership(
             SQLiteDatabase db, String accountEmail, String key, String url, int state) {
+        // Update-then-insert, never INSERT OR REPLACE: the membership
+        // row also carries the phone axis, and REPLACE deletes and
+        // reinserts the row, silently wiping phone_revision and
+        // phone_base on every server-axis upsert. A wiped axis reads
+        // as never-projected, so the next phone pass re-created (and
+        // conflicted) every card the server pass had merely touched.
         ContentValues values = new ContentValues();
-        values.put("account_email", accountEmail);
-        values.put("card_key", key);
-        values.put("addressbook_url", url);
         values.put("state", state);
-        db.insertWithOnConflict("membership", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+        int updated =
+                db.update(
+                        "membership",
+                        values,
+                        "account_email = ? AND card_key = ? AND addressbook_url = ?",
+                        new String[] {accountEmail, key, url});
+        if (updated == 0) {
+            values.put("account_email", accountEmail);
+            values.put("card_key", key);
+            values.put("addressbook_url", url);
+            db.insert("membership", null, values);
+        }
     }
 
     /** Empty write-time index values for a bodiless spine row. */

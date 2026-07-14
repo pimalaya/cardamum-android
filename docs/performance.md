@@ -2,26 +2,17 @@
 
 Living notes on sync throughput and surprising counts. Nothing here is a correctness or data-loss issue; it is speed and things that look off and want a closer look later.
 
-## Per-contact pushes (no batching)
+## Per-contact pushes
 
-The io-offline engine yields one push change per placement, so the client applies creates, updates and deletes one contact at a time. Importing 150 contacts to Google People issues ~150 sequential people.createContact calls, which is why an import crawls.
+The io-offline engine hands the driver one WantsPush yield per collection round carrying the whole change list (sync.rs collects the round's pushes before yielding), so batching is entirely a client-adapter concern; an earlier revision of this note wrongly blamed the seam. What each backend does with the round today:
 
-What each backend could do better:
-
-- Google People: io-google-people already exposes the batch verbs (people.batchCreateContacts, up to 200 per call, plus batchUpdateContacts and batchDeleteContacts), but the sync does not use them. The engine drives per-placement pushes through create_google_card / update_google_card, which wrap a single PeopleContactCreate / PeopleContactUpdate. Batching would need the adapter to group a round's push changes into one batch call.
-- CardDAV: no native batch. Each vCard is its own PUT (and each delete its own DELETE on the href), so the only lever is concurrency (parallel requests), not one call.
-- JMAP: Contact/set is inherently multi-object (many creates/updates/destroys in one request), so JMAP could be one round trip; but the per-placement driving currently serializes it into one Contact/set per contact.
-
-Direction: give the io-offline push seam the whole set of changes for a collection round, so backends with a batch verb (People, JMAP) issue one call and CardDAV parallelizes. Until then, an import is O(n) sequential requests.
+- Google People: creates and deletes group into people.batchCreateContacts (200 a call) and people.batchDeleteContacts (500 a call), one write-quota unit per call, so an import of 150 contacts is one request where it used to be 150 sequential people.createContact calls (which also brushed the 90-writes-per-minute quota). Updates stay per-card on purpose: batchUpdateContacts shares one updateMask across the whole batch (a clientData-carrying card would clobber the others' stash handling), needs a people.get-flavoured etag per person (the list etag the engine holds is rejected, see the per-card retry in update_google_card), and fails as a unit, so per-card guarded updates with the existing etag-gap retry stay the safer shape. Post-cascade-fix, mass update rounds should no longer occur anyway.
+- CardDAV: no batch verb exists in the standards (RFC 6352 batches reads only via addressbook-multiget; RFC 5995's POST add-member is still one resource per request; Apple's CalendarServer bulk POST extension died unstandardized and unimplemented elsewhere), so the round parallelizes instead: up to 4 pushes in flight, each its own guarded PUT or DELETE on its own connection, failures and 412 handling unchanged per request.
+- JMAP: the whole round rides ContactCard/set calls (50 changes each): creates, content updates, membership patches and destroys share one request, and the per-object response maps back to per-change results, so a rejected object reports rejected instead of failing the round.
+- Graph: the round rides $batch calls (20 inner requests each, the endpoint's hard limit), creates as POST, updates as delta-trimmed PATCH, deletes as DELETE, with per-item statuses mapping back likewise (a 404 on a delete reads as already converged).
 
 ## Full push count when disabling phone mirroring
 
 Observed: unchecking a book's local (phone) mirror still runs a sync for a while and reports ~150 pushes at the end, with nothing edited. No data loss, just an unexpected full-set push.
 
-Hypotheses to confirm with a trace:
-
-- setBookState now clears the phone axis for the book when mirroring goes off (the data-loss fix, see docs/phone-sync-plan.md). A sync right after sees every card as not-yet-projected on the phone and may re-touch the whole set before the spoke is torn down.
-- The reconcile that removes the Android account can race a syncPhone pass that still projects the full set once before the account is gone.
-- The count may be phone-axis writes reported as pushes rather than server writes. Which spoke the 150 hit matters: a phone round is only local (cheap, cosmetic), a server round would be real remote writes and the actual concern.
-
-Next step: re-add the syncPhone and server push counters to the log, capture one toggle-off cycle, and confirm which spoke the pushes hit and why the set is full rather than empty.
+Explanation (confirmed by reading the axis code): setBookState clears the phone axis when mirroring goes off (the data-loss fix, see docs/phone-sync-plan.md), so a phone pass that still runs before the spoke tears down sees every card as never-projected (status created) and re-adds the full set; the pushes hit the phone axis only (local, cheap), not the server. The remaining polish would be skipping the phone passes as soon as the mirror flag is off rather than while the Android account still exists.

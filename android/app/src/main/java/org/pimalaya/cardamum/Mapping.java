@@ -316,7 +316,11 @@ final class Mapping {
      * field is taken from the phone only when it differs from what the
      * base itself projects onto the phone, so mapping lossiness never
      * reads as a phone edit, and every field outside {@link #FIELDS}
-     * rides along from the base untouched.
+     * rides along from the base untouched. Returns null when no field
+     * is taken: the phone carries no edit, and the caller must keep
+     * the base card's exact bytes rather than re-encode them (the
+     * engine diffs content by hash, so a re-encoded no-op would read
+     * as a phone edit and cascade to the server).
      */
     static JSONObject merge(JSONObject base, JSONObject phone) throws JSONException {
         JSONObject baseView = model(rows(base));
@@ -327,16 +331,18 @@ final class Mapping {
             merged.put(key, base.get(key));
         }
 
+        boolean edited = false;
         for (String field : FIELDS) {
             // Both sides come out of model(), so equal content prints
             // equal (same construction order on either side).
             String phoneValue = String.valueOf(phone.opt(field));
             if (!phoneValue.equals(String.valueOf(baseView.opt(field)))) {
                 merged.put(field, phone.get(field));
+                edited = true;
             }
         }
 
-        return merged;
+        return edited ? merged : null;
     }
 
     /** vCard TYPE set to the Android phone type, per docs/contacts-mapping.md. */

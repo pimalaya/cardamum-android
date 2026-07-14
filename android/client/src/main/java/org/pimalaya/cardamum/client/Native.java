@@ -271,6 +271,38 @@ final class Native {
             String etag);
 
     /**
+     * Creates a batch of cards (a JSON array of vCard documents) in
+     * the addressbook collection, Google-only (the one backend with a
+     * batch create verb); returns a JSON array of the created
+     * {@code {id, uri, etag, vcard}} in input order.
+     */
+    static native String createCards(
+            Transport transport, String baseUrl, String login, String password, String vcards);
+
+    /**
+     * Deletes a batch of cards (a JSON array of card ids) from the
+     * addressbook collection, Google-only (the one backend with a
+     * batch delete verb); returns {@code {}}.
+     */
+    static native String deleteCards(
+            Transport transport, String baseUrl, String login, String password, String ids);
+
+    /**
+     * Pushes a round of changes (a JSON array of {@code {ref, op, id?,
+     * vcard?, baseVcard?, add?, remove?}}) to the addressbook
+     * collection as batch calls, JMAP (ContactCard/set) and Graph
+     * ($batch) only; returns a JSON array of {@code {ref, accepted,
+     * id?, etag?, error?}}, one outcome per change.
+     */
+    static native String pushCards(
+            Transport transport,
+            String baseUrl,
+            String addressbookUrl,
+            String login,
+            String password,
+            String changes);
+
+    /**
      * Enumerates the addressbook's card spine (resource name plus
      * ETag, no body) as a JSON array of {@code {id, uri, etag}};
      * CardDAV only, the incremental primitive behind

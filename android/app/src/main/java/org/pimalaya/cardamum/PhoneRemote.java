@@ -66,6 +66,48 @@ final class PhoneRemote {
     }
 
     /**
+     * Whether the account's raw contacts carry anything for the hub to
+     * ingest: a user edit (DIRTY), a contacts-app creation (no
+     * SOURCE_ID yet) or a deletion (DELETED). One indexed provider
+     * count, half of the phone pass's quiet-path guard.
+     */
+    boolean changed(String url) {
+        Account account = requireAccount(url);
+        try (Cursor cursor =
+                context.getContentResolver()
+                        .query(
+                                rawContactsUri(account),
+                                new String[] {RawContacts._ID},
+                                RawContacts.DIRTY
+                                        + " = 1 OR "
+                                        + RawContacts.SOURCE_ID
+                                        + " IS NULL OR "
+                                        + RawContacts.SOURCE_ID
+                                        + " = '' OR "
+                                        + RawContacts.DELETED
+                                        + " = 1",
+                                null,
+                                null)) {
+            return cursor != null && cursor.getCount() > 0;
+        }
+    }
+
+    /** The account's live raw contacts, for the quiet-path count match. */
+    int count(String url) {
+        Account account = requireAccount(url);
+        try (Cursor cursor =
+                context.getContentResolver()
+                        .query(
+                                rawContactsUri(account),
+                                new String[] {RawContacts._ID},
+                                RawContacts.DELETED + " = 0",
+                                null,
+                                null)) {
+            return cursor == null ? 0 : cursor.getCount();
+        }
+    }
+
+    /**
      * Services an enumerate yield: the account's raw contacts, each as
      * (handle = SOURCE_ID, revision = the SYNC1 token). A delta round,
      * never complete: only rows the contacts app explicitly deleted
@@ -95,6 +137,8 @@ final class PhoneRemote {
                             RawContacts.SOURCE_ID,
                             RawContacts.VERSION,
                             RawContacts.DELETED,
+                            RawContacts.SYNC1,
+                            RawContacts.DIRTY,
                         },
                         null,
                         null,
@@ -132,7 +176,10 @@ final class PhoneRemote {
                 } else {
                     handle = sourceId;
                 }
-                String revision = phoneRevision(resolver, account, rawId);
+                // The revision rides the same cursor (one provider
+                // query per round, not one per contact).
+                String token = cursor.isNull(4) ? null : cursor.getString(4);
+                String revision = revisionOf(token, cursor.getInt(5) != 0, cursor.getInt(2));
 
                 rawIds.put(handle, rawId);
                 JSONObject item = new JSONObject();
@@ -161,7 +208,10 @@ final class PhoneRemote {
      * is never a bare reverse-mapped vCard: the phone's field model is
      * merged over the last converged vCard's own model (field-space
      * diff, Mapping.merge) and applied onto it as a patch, so unknown
-     * properties and mapping lossiness survive every round-trip.
+     * properties and mapping lossiness survive every round-trip. A
+     * phone untouched at field level rides back byte for byte, and
+     * every read stamps the row converged, so a fetch is content-quiet
+     * on both sides.
      */
     JSONObject fetch(String collection, JSONArray handles) throws JSONException {
         JSONArray items = new JSONArray();
@@ -187,10 +237,71 @@ final class PhoneRemote {
             return null;
         }
 
+        // The sync signals are captured before the data rows: the
+        // convergence stamp below is guarded on this VERSION, so a
+        // contacts-app edit racing the read loses the stamp, stays
+        // dirty and is ingested by the next round instead of vanishing.
+        String heldToken = null;
+        boolean dirty = false;
+        int version = 0;
+        try (Cursor cursor =
+                resolver.query(
+                        rawContactUri(account, rawId),
+                        new String[] {
+                            RawContacts.SYNC1, RawContacts.DIRTY, RawContacts.VERSION
+                        },
+                        null,
+                        null,
+                        null)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                return null;
+            }
+            heldToken = cursor.isNull(0) ? null : cursor.getString(0);
+            dirty = cursor.getInt(1) != 0;
+            version = cursor.getInt(2);
+        }
+
         String baseVcard = phoneBase(url, handle);
         JSONObject baseModel = client.projectCard(baseVcard);
         JSONObject phoneModel = Mapping.model(dataRows(resolver, account, rawId));
-        String body = client.applyCard(baseVcard, Mapping.merge(baseModel, phoneModel));
+        JSONObject merged = Mapping.merge(baseModel, phoneModel);
+
+        // No field taken from the phone means no edit: the base card
+        // rides back byte for byte. Re-encoding a no-op through
+        // applyCard would change the bytes (managed properties are
+        // rewritten in canonical form), and the engine diffs content by
+        // hash, so the no-op would read as a phone edit and cascade to
+        // the server.
+        String body = merged == null ? baseVcard : client.applyCard(baseVcard, merged);
+        if (merged != null) {
+            // Which fields the phone won: the one trace that explains a
+            // phone-won hub change when hunting phantom edits.
+            StringBuilder taken = new StringBuilder();
+            for (String field : Mapping.FIELDS) {
+                if (!String.valueOf(merged.opt(field))
+                        .equals(String.valueOf(baseModel.opt(field)))) {
+                    taken.append(taken.length() == 0 ? "" : ", ").append(field);
+                }
+            }
+            android.util.Log.d(
+                    "cardamum", "phone edit on " + handle + " (fields: " + taken + ")");
+        }
+
+        // The row is converged as of this read: stamp it clean so it
+        // stops enumerating as a pending edit. This heals contacts-app
+        // edits once pulled (nothing else clears DIRTY on the pull
+        // path) and rows projected before the SYNC1 scheme existed,
+        // both of which otherwise refetch on every provider VERSION
+        // bump. Already-stamped rows skip the write.
+        String token = CardStore.byteHash(body);
+        String revision;
+        if (!dirty && token.equals(heldToken)) {
+            revision = token;
+        } else if (stampIfUnchanged(resolver, account, rawId, token, version)) {
+            revision = token;
+        } else {
+            revision = revisionOf(heldToken, dirty, version);
+        }
 
         JSONObject index = client.indexCard(body);
         String uid = index.optString("uid");
@@ -199,9 +310,9 @@ final class PhoneRemote {
         item.put("handle", handle);
         item.put("linkId", uid.isEmpty() ? handle : uid);
         item.put("meta", index.toString());
-        item.put("hash", CardStore.byteHash(body));
+        item.put("hash", token);
         item.put("body", body);
-        item.put("revision", phoneRevision(resolver, account, rawId));
+        item.put("revision", revision);
         return item;
     }
 
@@ -393,13 +504,16 @@ final class PhoneRemote {
         };
 
         List<Map<String, Object>> rows = new ArrayList<>();
+        // Insertion order, pinned: the field-space diff against the
+        // base's own projection compares multi-valued fields as lists,
+        // so an unordered listing could read as a permutation edit.
         try (Cursor cursor =
                 resolver.query(
                         dataUri(account),
                         projection,
                         Data.RAW_CONTACT_ID + " = ?",
                         new String[] {String.valueOf(rawId)},
-                        null)) {
+                        Data._ID)) {
             while (cursor != null && cursor.moveToNext()) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 for (int column = 0; column < projection.length; column++) {
@@ -502,14 +616,38 @@ final class PhoneRemote {
                         null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 String token = cursor.isNull(0) ? null : cursor.getString(0);
-                boolean dirty = cursor.getInt(1) != 0;
-                if (token != null && !dirty) {
-                    return token;
-                }
-                return "dirty:" + cursor.getInt(2);
+                return revisionOf(token, cursor.getInt(1) != 0, cursor.getInt(2));
             }
         }
         return null;
+    }
+
+    /** The revision rule: the stamped token while clean, else the sentinel. */
+    private static String revisionOf(String token, boolean dirty, int version) {
+        if (token != null && !dirty) {
+            return token;
+        }
+        return "dirty:" + version;
+    }
+
+    /**
+     * Stamps the raw contact converged at the given token, guarded on
+     * the VERSION observed before the data rows were read: an edit
+     * racing the ingestion bumps VERSION, the guarded update matches
+     * nothing, and the row stays dirty for the next round.
+     */
+    private static boolean stampIfUnchanged(
+            ContentResolver resolver, Account account, long rawId, String token, int version) {
+        ContentValues values = new ContentValues();
+        values.put(RawContacts.SYNC1, token);
+        values.put(RawContacts.DIRTY, 0);
+        int stamped =
+                resolver.update(
+                        rawContactUri(account, rawId),
+                        values,
+                        RawContacts.VERSION + " = ?",
+                        new String[] {String.valueOf(version)});
+        return stamped == 1;
     }
 
     /**

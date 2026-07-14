@@ -32,7 +32,7 @@ use crate::{
         merge_cards, merge_conflict, merge_conflict_form, project, set_uid,
     },
     store,
-    types::{CardDelta, Credentials},
+    types::{CardDelta, Credentials, PushChange},
 };
 
 /// `Native.discover`: resolves the email's domain to a CardDAV context
@@ -801,6 +801,132 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCard<'loca
         ) {
             Ok(()) => "{}".to_string(),
             Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.createCards`: creates a batch of cards (a JSON array of
+/// vCard documents) in the addressbook collection, Google-only (the
+/// one backend with a batch create verb). Returns a JSON array of the
+/// created `{id, uri, etag, vcard}` in input order.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    base_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    vcards: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let vcards = read_string(env, &vcards);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match parse_strings(&vcards) {
+            Ok(vcards) => {
+                match Client::new(env, &transport).create_cards(&base_url, &credentials, &vcards) {
+                    Ok(cards) => serde_json::to_string(&cards)
+                        .unwrap_or_else(|err| error_json(&err.to_string())),
+                    Err(err) => error_json(&err),
+                }
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.deleteCards`: deletes a batch of cards (a JSON array of
+/// card ids) from the addressbook collection, Google-only (the one
+/// backend with a batch delete verb). Returns `{}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_deleteCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    base_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    ids: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let ids = read_string(env, &ids);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match parse_strings(&ids) {
+            Ok(ids) => {
+                match Client::new(env, &transport).delete_cards(&base_url, &credentials, &ids) {
+                    Ok(()) => "{}".to_string(),
+                    Err(err) => error_json(&err),
+                }
+            }
+            Err(err) => error_json(&err),
+        };
+
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.pushCards`: pushes a round of changes (a JSON array of
+/// `{ref, op, id?, vcard?, baseVcard?, add?, remove?}`) to the
+/// addressbook collection as batch calls, JMAP (ContactCard/set) and
+/// Graph ($batch) only. Returns a JSON array of `{ref, accepted, id?,
+/// etag?, error?}`, one outcome per change.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_pushCards<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    transport: JObject<'local>,
+    base_url: JString<'local>,
+    addressbook_url: JString<'local>,
+    login: JString<'local>,
+    password: JString<'local>,
+    changes: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let base_url = read_string(env, &base_url);
+        let addressbook_url = read_string(env, &addressbook_url);
+        let login = read_string(env, &login);
+        let password = read_string(env, &password);
+        let changes = read_string(env, &changes);
+        let credentials = Credentials {
+            login: &login,
+            password: &password,
+        };
+
+        let json = match serde_json::from_str::<Vec<PushChange>>(&changes) {
+            Ok(changes) => {
+                match Client::new(env, &transport).push_cards(
+                    &base_url,
+                    &addressbook_url,
+                    &credentials,
+                    &changes,
+                ) {
+                    Ok(outcomes) => serde_json::to_string(&outcomes)
+                        .unwrap_or_else(|err| error_json(&err.to_string())),
+                    Err(err) => error_json(&err),
+                }
+            }
+            Err(err) => error_json(&format!("Unreadable push changes: {err}")),
         };
 
         Ok(env.new_string(json)?.into())

@@ -86,7 +86,15 @@
     <string name="sync_conflicts">%1$d modification(s) en conflit avec le serveur restent locales</string>
     <string name="sync_conflicts_pending">%1$d contact(s) divergent ; résolvez-les pour synchroniser</string>
     <string name="conflict_auto_resolved">Conflit résolu automatiquement ; les modifications partent à la prochaine synchronisation</string>
+    <string name="contact_diverged_pending">Des champs divergents attendent une revue</string>
     <string name="sync_local_requested">Synchronisation locale planifiée</string>
+    <string name="sync_overlay_preparing">Préparation de la synchronisation</string>
+    <string name="sync_step_server">Recherche des changements sur le serveur</string>
+    <string name="sync_step_download">Téléchargement de %1$d contact(s)</string>
+    <string name="sync_step_upload">Envoi de %1$d changement(s) au serveur</string>
+    <string name="sync_step_phone">Rapprochement avec les contacts du téléphone</string>
+    <string name="sync_step_project">Écriture de %1$d contact(s) sur le téléphone</string>
+    <string name="sync_step_resolve">Résolution de %1$d conflit(s)</string>
     <string name="notif_channel_sync">Synchronisation en arrière-plan</string>
     <string name="notif_conflicts_sub">Conflits détectés ; ouvrez l\'application pour les résoudre</string>
 

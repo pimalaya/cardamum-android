@@ -26,8 +26,10 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -50,9 +52,11 @@ import org.pimalaya.cardamum.client.CardamumClient;
  * (summaries, type spinner positions, picker dates): the type tables
  * and their vCard semantics live there, this class only localizes the
  * labels the positions address. A diverged contact loads in conflict
- * mode: only the disagreeing items show, and the dialogs of
- * conflicted single fields carry one tappable chip per candidate
- * value.
+ * mode, the exact same page as a plain edit (every field shows, fields
+ * can be added): the difference is that each disagreeing row wears the
+ * diverged glyph until reviewed, the dialogs of conflicted single
+ * fields carry one tappable chip per candidate value, and the host
+ * blocks saving until every glyph cleared.
  */
 final class ContactForm {
     private static final int TEXT_NAME =
@@ -117,8 +121,9 @@ final class ContactForm {
     /** Conflict rows still awaiting review, rebuilt on every render. */
     private final Set<String> pending = new HashSet<>();
 
-    /** Numbers the conflict rows of a render, so each gets a stable key. */
-    private int conflictRow;
+    /** Items each changed list held at load time: rows past that count
+     *  were added this session and never wear the diverged glyph. */
+    private final Map<String, Integer> loadedCounts = new HashMap<>();
 
     /** The row a just-opened dialog resolves on OK; null when none. */
     private String pendingResolveKey;
@@ -138,9 +143,10 @@ final class ContactForm {
 
     /**
      * Loads the field model (null for a new contact) and renders the
-     * page. A non-null `changed` turns on conflict mode: only the
-     * disagreeing items show, and `alternatives` feeds the value chips
-     * of the conflicted single-field dialogs.
+     * page. A non-null `changed` turns on conflict mode: the same full
+     * page, with the diverged glyph on every disagreeing row and
+     * `alternatives` feeding the value chips of the conflicted
+     * single-field dialogs.
      */
     void load(JSONObject model, JSONObject alternatives, JSONArray changed) {
         this.model = model != null ? model : new JSONObject();
@@ -148,11 +154,14 @@ final class ContactForm {
         this.changedLists = null;
         this.revealed.clear();
         this.resolved.clear();
+        this.loadedCounts.clear();
         this.pendingResolveKey = null;
         if (changed != null) {
             changedLists = new HashSet<>();
             for (int index = 0; index < changed.length(); index++) {
-                changedLists.add(changed.optString(index));
+                String section = changed.optString(index);
+                changedLists.add(section);
+                loadedCounts.put(section, array(section).length());
             }
         } else if (this.model.length() == 0) {
             // A brand-new contact starts on the common fields rather than a
@@ -203,14 +212,15 @@ final class ContactForm {
     }
 
     /**
-     * Whether a field or list section shows in normal (non-conflict)
-     * mode: one that carries a value or was added through a chooser this
-     * session. So the editor opens showing only the sections that hold
-     * data. Conflict mode shows the disagreeing items instead, via the
-     * {@code || conflicted / changed} branch kept at each render site.
+     * Whether a field or list section shows: one that carries a value
+     * or was added through a chooser this session, in conflict mode
+     * like in a plain edit. So the editor opens showing only the
+     * sections that hold data; the {@code || conflicted / changed}
+     * branch at each render site adds the rows that diverge while
+     * empty on the merged side.
      */
     private boolean shown(String key, boolean filled) {
-        return !conflict() && (filled || revealed.contains(key));
+        return filled || revealed.contains(key);
     }
 
     /** Whether the field or list section currently carries a value. */
@@ -251,8 +261,13 @@ final class ContactForm {
      *  was revealed, or (in conflict mode) disagrees. */
     private void namePartRow(List<View> identity, String part, int hint) {
         String key = "name." + part;
-        if (shown(key, filled(key)) || conflicted(key)) {
-            identity.add(entryItem(getS(hint), value(namePart(part)), () -> namePartDialog(part, hint)));
+        if (shown(key, filled(key)) || unreviewed(key)) {
+            identity.add(
+                    entryItem(
+                            getS(hint),
+                            value(namePart(part)),
+                            divergedField(key),
+                            () -> namePartDialog(part, hint)));
         }
     }
 
@@ -430,18 +445,18 @@ final class ContactForm {
     private void render() {
         view = client.formView(model);
         container.removeAllViews();
-        conflictRow = 0;
         pending.clear();
 
         // Identity holds the solo fields: the display name (its own
         // line), the name parts, the dates and the gender. Every
         // multi-valued list is its own section below.
         List<View> identity = new ArrayList<>();
-        if (shown("displayName", filled("displayName")) || conflicted("displayName")) {
+        if (shown("displayName", filled("displayName")) || unreviewed("displayName")) {
             identity.add(
                     entryItem(
                             getS(R.string.hint_display_name),
                             value(model.optString("displayName")),
+                            divergedField("displayName"),
                             this::displayNameDialog));
         }
         namePartRow(identity, "prefix", R.string.hint_prefix);
@@ -449,35 +464,42 @@ final class ContactForm {
         namePartRow(identity, "middle", R.string.hint_middle);
         namePartRow(identity, "family", R.string.hint_family);
         namePartRow(identity, "suffix", R.string.hint_suffix);
-        if (shown("birthday", filled("birthday")) || conflicted("birthday")) {
+        if (shown("birthday", filled("birthday")) || unreviewed("birthday")) {
             identity.add(
                     entryItem(
                             getS(R.string.hint_birthday),
                             value(model.optString("birthday")),
+                            divergedField("birthday"),
                             () -> pickDate("birthday")));
         }
-        if (shown("anniversary", filled("anniversary")) || conflicted("anniversary")) {
+        if (shown("anniversary", filled("anniversary")) || unreviewed("anniversary")) {
             identity.add(
                     entryItem(
                             getS(R.string.item_anniversary),
                             value(model.optString("anniversary")),
+                            divergedField("anniversary"),
                             () -> pickDate("anniversary")));
         }
-        if (shown("gender", filled("gender")) || conflicted("gender.sex", "gender.identity")) {
+        if (shown("gender", filled("gender")) || unreviewed("gender", "gender.sex", "gender.identity")) {
             identity.add(
-                    entryItem(getS(R.string.item_gender), genderSummary(), this::genderDialog));
+                    entryItem(
+                            getS(R.string.item_gender),
+                            genderSummary(),
+                            divergedField("gender", "gender.sex", "gender.identity"),
+                            this::genderDialog));
         }
         section(R.string.section_identity, R.drawable.ic_section_person, identity);
 
-        if (shown("nicknames", filled("nicknames")) || (conflict() && changedLists.contains("nicknames"))) {
+        if (shown("nicknames", filled("nicknames")) || unreviewedList("nicknames")) {
             List<View> items = new ArrayList<>();
             JSONArray nicknames = array("nicknames");
             for (int index = 0; index < nicknames.length(); index++) {
                 int at = index;
                 items.add(
                         entryItem(
+                                getS(R.string.item_nickname),
                                 nicknames.optString(index),
-                                null,
+                                divergedItem("nicknames", at),
                                 () -> stringDialog("nicknames", at, R.string.item_nickname, 0,
                                         TEXT_NAME)));
             }
@@ -489,38 +511,42 @@ final class ContactForm {
         // the identity section.
         List<View> work = new ArrayList<>();
         if (shown("organization.company", filled("organization.company"))
-                || conflicted("organization.company")) {
+                || unreviewed("organization.company")) {
             work.add(
                     entryItem(
                             getS(R.string.hint_company),
                             value(organizationPart("company")),
+                            divergedField("organization.company"),
                             () -> organizationPartDialog("company", R.string.hint_company)));
         }
         if (shown("organization.department", filled("organization.department"))
-                || conflicted("organization.department")) {
+                || unreviewed("organization.department")) {
             work.add(
                     entryItem(
                             getS(R.string.hint_department),
                             value(organizationPart("department")),
+                            divergedField("organization.department"),
                             () -> organizationPartDialog("department", R.string.hint_department)));
         }
-        if (shown("title", filled("title")) || conflicted("title")) {
+        if (shown("title", filled("title")) || unreviewed("title")) {
             work.add(
                     entryItem(
                             getS(R.string.hint_job_title),
                             value(model.optString("title")),
+                            divergedField("title"),
                             () -> simpleFieldDialog("title", R.string.hint_job_title)));
         }
-        if (shown("role", filled("role")) || conflicted("role")) {
+        if (shown("role", filled("role")) || unreviewed("role")) {
             work.add(
                     entryItem(
                             getS(R.string.hint_role),
                             value(model.optString("role")),
+                            divergedField("role"),
                             () -> simpleFieldDialog("role", R.string.hint_role)));
         }
         section(R.string.tab_work, R.drawable.ic_section_work, work);
 
-        if (shown("relations", filled("relations")) || (conflict() && changedLists.contains("relations"))) {
+        if (shown("relations", filled("relations")) || unreviewedList("relations")) {
             List<View> items = new ArrayList<>();
             JSONArray relations = array("relations");
             for (int index = 0; index < relations.length(); index++) {
@@ -528,14 +554,15 @@ final class ContactForm {
                 JSONObject entry = relations.optJSONObject(index);
                 items.add(
                         entryItem(
-                                entry.optString("value"),
                                 typeLabel(R.array.relation_types, typeAt("relations", index)),
+                                entry.optString("value"),
+                                divergedItem("relations", at),
                                 () -> relationDialog(at)));
             }
             section(R.string.section_relations, R.drawable.ic_section_group, items);
         }
 
-        if (shown("phones", filled("phones")) || (conflict() && changedLists.contains("phones"))) {
+        if (shown("phones", filled("phones")) || unreviewedList("phones")) {
             List<View> items = new ArrayList<>();
             JSONArray phones = array("phones");
             for (int index = 0; index < phones.length(); index++) {
@@ -543,8 +570,9 @@ final class ContactForm {
                 JSONObject entry = phones.optJSONObject(index);
                 items.add(
                         entryItem(
-                                entry.optString("number"),
                                 typeLabel(R.array.phone_types, typeAt("phones", index)),
+                                entry.optString("number"),
+                                divergedItem("phones", at),
                                 () -> phoneDialog(at)));
             }
             // A fresh contact reveals the section as an empty header (with
@@ -552,7 +580,7 @@ final class ContactForm {
             section(R.string.section_phones, R.drawable.ic_section_call, items, true);
         }
 
-        if (shown("emails", filled("emails")) || (conflict() && changedLists.contains("emails"))) {
+        if (shown("emails", filled("emails")) || unreviewedList("emails")) {
             List<View> items = new ArrayList<>();
             JSONArray emails = array("emails");
             for (int index = 0; index < emails.length(); index++) {
@@ -560,22 +588,24 @@ final class ContactForm {
                 JSONObject entry = emails.optJSONObject(index);
                 items.add(
                         entryItem(
-                                entry.optString("address"),
                                 typeLabel(R.array.email_types, typeAt("emails", index)),
+                                entry.optString("address"),
+                                divergedItem("emails", at),
                                 () -> emailDialog(at)));
             }
             section(R.string.section_emails, R.drawable.ic_section_mail, items, true);
         }
 
-        if (shown("impps", filled("impps")) || (conflict() && changedLists.contains("impps"))) {
+        if (shown("impps", filled("impps")) || unreviewedList("impps")) {
             List<View> items = new ArrayList<>();
             JSONArray impps = array("impps");
             for (int index = 0; index < impps.length(); index++) {
                 int at = index;
                 items.add(
                         entryItem(
+                                getS(R.string.item_impp),
                                 impps.optString(index),
-                                null,
+                                divergedItem("impps", at),
                                 () -> stringDialog("impps", at, R.string.item_impp,
                                         R.string.hint_impp,
                                         InputType.TYPE_CLASS_TEXT
@@ -584,31 +614,33 @@ final class ContactForm {
             section(R.string.section_impps, R.drawable.ic_section_chat, items);
         }
 
-        if (shown("addresses", filled("addresses")) || (conflict() && changedLists.contains("addresses"))) {
+        if (shown("addresses", filled("addresses")) || unreviewedList("addresses")) {
             List<View> items = new ArrayList<>();
             JSONArray entries = array("addresses");
             for (int index = 0; index < entries.length(); index++) {
                 int at = index;
                 items.add(
                         entryItem(
-                                value(addressAt(index).optString("summary")),
                                 typeLabel(
                                         R.array.address_types,
                                         addressAt(index).optInt("index")),
+                                value(addressAt(index).optString("summary")),
+                                divergedItem("addresses", at),
                                 () -> addressDialog(at)));
             }
             section(R.string.section_addresses, R.drawable.ic_section_location_on, items);
         }
 
-        if (shown("websites", filled("websites")) || (conflict() && changedLists.contains("websites"))) {
+        if (shown("websites", filled("websites")) || unreviewedList("websites")) {
             List<View> items = new ArrayList<>();
             JSONArray websites = array("websites");
             for (int index = 0; index < websites.length(); index++) {
                 int at = index;
                 items.add(
                         entryItem(
+                                getS(R.string.item_website),
                                 websites.optString(index),
-                                null,
+                                divergedItem("websites", at),
                                 () -> stringDialog("websites", at, R.string.item_website,
                                         R.string.hint_url,
                                         InputType.TYPE_CLASS_TEXT
@@ -617,27 +649,33 @@ final class ContactForm {
             section(R.string.section_websites, R.drawable.ic_section_language, items);
         }
 
-        if (shown("languages", filled("languages")) || (conflict() && changedLists.contains("languages"))) {
+        if (shown("languages", filled("languages")) || unreviewedList("languages")) {
             List<View> items = new ArrayList<>();
             JSONArray languages = array("languages");
             for (int index = 0; index < languages.length(); index++) {
                 int at = index;
                 items.add(
                         entryItem(
+                                getS(R.string.item_language),
                                 languages.optString(index),
-                                null,
+                                divergedItem("languages", at),
                                 () -> stringDialog("languages", at, R.string.item_language,
                                         R.string.hint_language, InputType.TYPE_CLASS_TEXT)));
             }
             section(R.string.section_languages, R.drawable.ic_section_translate, items);
         }
 
-        if (shown("notes", filled("notes")) || (conflict() && changedLists.contains("notes"))) {
+        if (shown("notes", filled("notes")) || unreviewedList("notes")) {
             List<View> items = new ArrayList<>();
             JSONArray notes = array("notes");
             for (int index = 0; index < notes.length(); index++) {
                 int at = index;
-                items.add(entryItem(notes.optString(index), null, () -> noteDialog(at)));
+                items.add(
+                        entryItem(
+                                getS(R.string.item_note),
+                                notes.optString(index),
+                                divergedItem("notes", at),
+                                () -> noteDialog(at)));
             }
             section(R.string.section_notes, R.drawable.ic_section_notes, items);
         }
@@ -657,12 +695,52 @@ final class ContactForm {
         render();
     }
 
+    /** The review key of a diverged single field, null when settled:
+     *  the row key itself, checked against the alternative paths (a
+     *  compound field like gender checks each of its components). */
+    private String divergedField(String key, String... paths) {
+        return conflicted(paths.length == 0 ? new String[] {key} : paths) ? key : null;
+    }
+
+    /** The review key of one row of a changed list section, null when
+     *  the section is settled or the row was added this session. */
+    private String divergedItem(String section, int index) {
+        if (!conflict() || !changedLists.contains(section)) {
+            return null;
+        }
+        Integer loaded = loadedCounts.get(section);
+        return loaded != null && index < loaded ? section + ":" + index : null;
+    }
+
+    /** Whether a diverged single field still awaits review: it renders
+     *  even while empty so the divergence can be seen; once reviewed it
+     *  follows the plain rules again, so clearing its value drops the
+     *  row exactly like in a plain edit. */
+    private boolean unreviewed(String key, String... paths) {
+        return divergedField(key, paths) != null && !resolved.contains(key);
+    }
+
+    /** Whether a changed list section still awaits review on any of
+     *  its loaded rows, so it renders even once emptied; all reviewed,
+     *  it follows the plain rules again. */
+    private boolean unreviewedList(String section) {
+        if (!conflict() || !changedLists.contains(section)) {
+            return false;
+        }
+        for (int index = 0; index < loadedCounts.getOrDefault(section, 0); index++) {
+            if (!resolved.contains(section + ":" + index)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Adds a section: its icon and accent label, then a right-aligned add
      * icon opening the chooser filtered to this section (so its header
      * only offers its own fields), then its items, separated from the
      * previous section by a line in the app bar tone. An empty section
-     * vanishes, and the add icon is hidden in conflict mode.
+     * vanishes.
      */
     private void section(int title, int icon, List<View> items) {
         section(title, icon, items, false);
@@ -708,9 +786,7 @@ final class ContactForm {
                 items.isEmpty() ? dp(12) : dp(0));
         header.addView(iconView, new LinearLayout.LayoutParams(dp(18), dp(18)));
         header.addView(label, labelParams);
-        if (!conflict()) {
-            header.addView(addIcon(R.string.contact_add_field, () -> addToSection(title)));
-        }
+        header.addView(addIcon(R.string.contact_add_field, () -> addToSection(title)));
         container.addView(header);
 
         for (View item : items) {
@@ -731,13 +807,17 @@ final class ContactForm {
     }
 
     /**
-     * A tappable row: title over a diminished subtitle. In conflict mode
-     * every row diverges, so it carries a trailing warning (the same one
-     * the list shows) until the user opens it and confirms with OK; its
-     * key is positional, stable while rows only get reviewed, not added.
+     * A tappable row: title over a diminished subtitle. A non-null
+     * `diverged` key marks the row as disagreeing in a conflict: it
+     * carries a trailing warning (the same glyph the list shows) until
+     * the user opens it and confirms with OK. Single fields key by
+     * their path, list rows by section and loaded position (stable
+     * while rows only get reviewed; a row added this session never
+     * wears the glyph).
      */
-    private View entryItem(CharSequence title, CharSequence subtitle, Runnable onClick) {
-        String key = conflict() ? "row" + conflictRow++ : null;
+    private View entryItem(
+            CharSequence title, CharSequence subtitle, String diverged, Runnable onClick) {
+        String key = diverged;
 
         TextView titleView = new TextView(activity);
         titleView.setText(title);
@@ -774,13 +854,15 @@ final class ContactForm {
             pending.add(key);
             ImageView warn = new ImageView(activity);
             warn.setImageResource(R.drawable.ic_diverged);
-            // The exact glyph the list shows: same 32dp box, same error
-            // tint, centred against the row (the row is CENTER_VERTICAL).
+            // The glyph the list shows, error-tinted, but at the form
+            // icons' own 24dp (the list uses 32dp): its centre then
+            // sits on the same column as the section headers' add
+            // icons instead of reading bigger and off-axis.
             warn.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.colorError)));
             LinearLayout.LayoutParams warnParams =
-                    new LinearLayout.LayoutParams(dp(32), dp(32));
+                    new LinearLayout.LayoutParams(dp(24), dp(24));
             warnParams.setMarginStart(dp(12));
             row.addView(warn, warnParams);
         }

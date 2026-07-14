@@ -292,6 +292,51 @@
 
     </FrameLayout>
 
+    <!-- The sync loader: a whole-frame modal overlay shown while any
+         sync runs (drawer, overflow menu, pull-down and Sync local all
+         share the one syncing state). Clickable so it swallows every
+         touch; back is ignored and the drawer locked while it shows,
+         so the wait is explicit instead of an ambiguous spinner. The
+         title carries the addressbook, the detail the current step.
+         Invisible rather than gone, so it is measured from the first
+         layout pass and the entrance zoom pivots on its centre from
+         the very first show (a never-laid-out view resolves the 50%
+         pivot at its left edge, which read as a sideways slide). -->
+    <LinearLayout
+        android:id="@+id/sync_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:clickable="true"
+        android:elevation="16dp"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="invisible">
+
+        <ProgressBar
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:indeterminateTint="?android:attr/colorAccent" />
+
+        <TextView
+            android:id="@+id/sync_overlay_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:textColor="?android:attr/textColorPrimary"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/sync_overlay_detail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
     </FrameLayout>
 
     <!-- The addressbooks drawer: a title bar over the scrollable accounts

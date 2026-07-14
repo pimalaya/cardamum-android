@@ -26,6 +26,8 @@ use io_google_people::{
             },
             people::{
                 PeoplePerson, PeoplePersonField,
+                batch_create_contacts::PeopleContactsBatchCreate,
+                batch_delete_contacts::PeopleContactsBatchDelete,
                 connections::list::{PeopleConnectionsList, PeopleConnectionsListParams},
                 create_contact::PeopleContactCreate,
                 delete_contact::PeopleContactDelete,
@@ -47,7 +49,8 @@ use io_jmap::{
     rfc9610::{
         address_book::{JmapAddressBook, get::*},
         contact_card::{
-            JmapContactCard, JmapContactCardPatch, changes::*, get::*, query::*, set::*,
+            JmapContactCard, JmapContactCardPatch, JmapContactCardSetItemError, changes::*, get::*,
+            query::*, set::*,
         },
     },
 };
@@ -121,6 +124,7 @@ use pimconf::{
     },
 };
 use secrecy::SecretString;
+use serde::{Deserialize, Serialize};
 use url::Url;
 use vcard::tree::cst::VcardCst;
 
@@ -128,7 +132,7 @@ use crate::{
     account::{self, Backend},
     google, jmap, msgraph,
     oauth::parse_pkce_verifier,
-    types::{Addressbook, Card, CardDelta, Credentials},
+    types::{Addressbook, Card, CardDelta, Credentials, PushChange, PushOutcome},
 };
 
 /// RFC 8484 DNS-over-HTTPS resolver used for the discovery DNS lookups
@@ -139,6 +143,20 @@ const DNS_RESOLVER: &str = "https://cloudflare-dns.com/dns-query";
 
 /// Sent as the `User-Agent` on every WebDAV request.
 const USER_AGENT: &str = concat!("cardamum-android/", env!("CARGO_PKG_VERSION"));
+
+/// How many contacts one people.batchCreateContacts call carries.
+const GOOGLE_CREATE_CHUNK: usize = 200;
+
+/// How many resource names one people.batchDeleteContacts call carries.
+const GOOGLE_DELETE_CHUNK: usize = 500;
+
+/// How many changes one JMAP ContactCard/set call carries: well under
+/// every server's advertised maxObjectsInSet, so no session lookup.
+const JMAP_SET_CHUNK: usize = 50;
+
+/// How many inner requests one Graph $batch call carries (the
+/// endpoint's hard limit).
+const GRAPH_BATCH_CHUNK: usize = 20;
 
 /// One native call's CardDAV client: a mutable `Env` and the Java
 /// transport it upcalls for socket I/O.
@@ -772,6 +790,64 @@ impl<'a, 'local> Client<'a, 'local> {
         }
     }
 
+    /// Creates a batch of cards in the addressbook collection,
+    /// returning the created cards in input order. Google-only: People
+    /// is the one backend with a batch create verb, and its per-minute
+    /// write quota throttles per-card calls on large rounds.
+    pub fn create_cards(
+        &mut self,
+        base_url: &str,
+        credentials: &Credentials,
+        vcards: &[String],
+    ) -> Result<Vec<Card>, String> {
+        match Backend::of(base_url) {
+            Backend::Google => self.create_google_cards(credentials.password, vcards),
+            _ => Err("Batch card creation is Google-only".to_string()),
+        }
+    }
+
+    /// Deletes a batch of cards from the addressbook collection by id.
+    /// Google-only, like [`Self::create_cards`].
+    pub fn delete_cards(
+        &mut self,
+        base_url: &str,
+        credentials: &Credentials,
+        ids: &[String],
+    ) -> Result<(), String> {
+        match Backend::of(base_url) {
+            Backend::Google => self.delete_google_cards(credentials.password, ids),
+            _ => Err("Batch card deletion is Google-only".to_string()),
+        }
+    }
+
+    /// Pushes one round of changes as batch calls: JMAP folds the
+    /// whole round (creates, content updates, membership patches,
+    /// destroys) into ContactCard/set requests, Graph into $batch
+    /// requests, both answering one outcome per change so a rejected
+    /// card no longer fails its round. The other backends have their
+    /// own shapes (Google batch verbs, CardDAV per-card requests).
+    pub fn push_cards(
+        &mut self,
+        base_url: &str,
+        addressbook_url: &str,
+        credentials: &Credentials,
+        changes: &[PushChange],
+    ) -> Result<Vec<PushOutcome>, String> {
+        match Backend::of(base_url) {
+            Backend::Jmap => {
+                let session_url = account::jmap_session_url(base_url)?;
+                let book_id = account::book_segment(base_url, addressbook_url);
+                self.push_jmap_cards(&session_url, credentials, book_id, changes)
+            }
+            Backend::Graph => self.push_graph_cards(
+                credentials.password,
+                account::graph_folder(base_url, addressbook_url),
+                changes,
+            ),
+            _ => Err("Batch card push is JMAP and Graph only".to_string()),
+        }
+    }
+
     /// Adds and removes the card's addressbook memberships on an
     /// account-level backend, by book id: JMAP patches addressBookIds,
     /// Google modifies group members.
@@ -1203,6 +1279,121 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    /// Pushes one round of changes as $batch calls (chunks of
+    /// [`GRAPH_BATCH_CHUNK`], the endpoint's hard limit): creates
+    /// POST, updates PATCH (delta-trimmed like the per-card path),
+    /// destroys DELETE, each inner status mapping back to one outcome
+    /// per change (a 404 on a destroy reads as already converged, and
+    /// a rejected change no longer fails its round).
+    fn push_graph_cards(
+        &mut self,
+        token: &str,
+        folder: &str,
+        changes: &[PushChange],
+    ) -> Result<Vec<PushOutcome>, String> {
+        let auth = HttpAuthBearer::new(token);
+        let create_url = if folder.is_empty() {
+            "/me/contacts".to_string()
+        } else {
+            format!("/me/contactFolders/{folder}/contacts")
+        };
+
+        let mut outcomes = Vec::with_capacity(changes.len());
+        for chunk in changes.chunks(GRAPH_BATCH_CHUNK) {
+            let mut requests = Vec::with_capacity(chunk.len());
+            for (index, change) in chunk.iter().enumerate() {
+                let request = match change.op.as_str() {
+                    "create" => {
+                        let vcard = required(&change.vcard, "create", "vcard")?;
+                        GraphBatchRequest {
+                            id: index.to_string(),
+                            method: "POST",
+                            url: create_url.clone(),
+                            headers: Some(GraphBatchHeaders::JSON),
+                            body: Some(msgraph::to_new_contact(vcard)?),
+                        }
+                    }
+                    "update" => {
+                        let id = required(&change.id, "update", "id")?;
+                        let vcard = required(&change.vcard, "update", "vcard")?;
+                        let contact = match change.base_vcard.as_deref() {
+                            Some(base) => msgraph::to_contact_delta(vcard, base)?,
+                            None => msgraph::to_new_contact(vcard)?,
+                        };
+                        GraphBatchRequest {
+                            id: index.to_string(),
+                            method: "PATCH",
+                            url: format!("/me/contacts/{id}"),
+                            headers: Some(GraphBatchHeaders::JSON),
+                            body: Some(contact),
+                        }
+                    }
+                    "destroy" => {
+                        let id = required(&change.id, "destroy", "id")?;
+                        GraphBatchRequest {
+                            id: index.to_string(),
+                            method: "DELETE",
+                            url: format!("/me/contacts/{id}"),
+                            headers: None,
+                            body: None,
+                        }
+                    }
+                    op => return Err(format!("Unknown Graph push op `{op}`")),
+                };
+                requests.push(request);
+            }
+
+            let url = parse_graph_url(&format!("{MSGRAPH_API_BASE}$batch"))?;
+            let batch = GraphBatch { requests };
+            let coroutine = MsgraphSend::<GraphBatchReplies>::post_json(&auth, url, &batch)
+                .map_err(|err| err.to_string())?;
+            let out = self.run_msgraph(coroutine)?;
+
+            let mut replies: BTreeMap<String, GraphBatchReply> = out
+                .responses
+                .into_iter()
+                .map(|reply| (reply.id.clone(), reply))
+                .collect();
+
+            for (index, change) in chunk.iter().enumerate() {
+                let Some(reply) = replies.remove(&index.to_string()) else {
+                    return Err(format!("Graph batch response is missing request {index}"));
+                };
+
+                let accepted = (200..300).contains(&reply.status)
+                    || (change.op == "destroy" && reply.status == 404);
+                if accepted {
+                    let body = reply.body.unwrap_or_default();
+                    outcomes.push(PushOutcome {
+                        reference: change.reference.clone(),
+                        accepted: true,
+                        id: body.get("id").and_then(|id| id.as_str()).map(Into::into),
+                        etag: body
+                            .get("changeKey")
+                            .and_then(|key| key.as_str())
+                            .map(Into::into),
+                        ..Default::default()
+                    });
+                } else {
+                    let message = reply
+                        .body
+                        .as_ref()
+                        .and_then(|body| body.get("error"))
+                        .and_then(|error| error.get("message"))
+                        .and_then(|message| message.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    outcomes.push(rejected(
+                        change.reference.clone(),
+                        format!("HTTP {} {message}", reply.status),
+                    ));
+                }
+            }
+        }
+
+        Ok(outcomes)
+    }
+
     /// Lists the Graph contact changes since `delta_link` (removals
     /// ride as `@removed` rows); without a link, the initial round
     /// enumerates every contact and ends with the link to delta from
@@ -1596,6 +1787,131 @@ impl<'a, 'local> Client<'a, 'local> {
         Ok(())
     }
 
+    /// Pushes one round of changes as ContactCard/set calls (chunks of
+    /// [`JMAP_SET_CHUNK`]): creates, content updates, membership
+    /// patches and destroys ride the same request, and the per-object
+    /// response maps back to one outcome per change (a destroy the
+    /// server no longer finds reads as already converged, and a
+    /// rejected object no longer fails its round).
+    fn push_jmap_cards(
+        &mut self,
+        session_url: &Url,
+        credentials: &Credentials,
+        book_id: &str,
+        changes: &[PushChange],
+    ) -> Result<Vec<PushOutcome>, String> {
+        let auth = jmap_auth(credentials);
+        let session = self.jmap_session(session_url, &auth)?;
+        let api_url = session.api_url.clone();
+
+        let mut outcomes = Vec::with_capacity(changes.len());
+        for chunk in changes.chunks(JMAP_SET_CHUNK) {
+            let mut create = BTreeMap::new();
+            let mut create_refs = BTreeMap::new();
+            let mut update = BTreeMap::new();
+            let mut update_refs = BTreeMap::new();
+            let mut destroy = Vec::new();
+            let mut destroy_refs = BTreeMap::new();
+
+            for (index, change) in chunk.iter().enumerate() {
+                match change.op.as_str() {
+                    "create" => {
+                        let vcard = required(&change.vcard, "create", "vcard")?;
+                        let key = format!("c{index}");
+                        create.insert(
+                            key.clone(),
+                            JmapContactCard {
+                                id: None,
+                                address_book_ids: BTreeMap::from([(book_id.to_string(), true)]),
+                                card: jmap::to_jscontact(vcard)?,
+                            },
+                        );
+                        create_refs.insert(key, change.reference.clone());
+                    }
+                    "update" => {
+                        let id = required(&change.id, "update", "id")?;
+                        let vcard = required(&change.vcard, "update", "vcard")?;
+                        let patch = jmap::to_patch(vcard, change.base_vcard.as_deref())?;
+                        update.insert(id.to_string(), JmapContactCardPatch(patch));
+                        update_refs.insert(id.to_string(), change.reference.clone());
+                    }
+                    "books" => {
+                        let id = required(&change.id, "books", "id")?;
+                        let mut patch = BTreeMap::new();
+                        for book in &change.add {
+                            patch.insert(
+                                format!("addressBookIds/{book}"),
+                                serde_json::Value::Bool(true),
+                            );
+                        }
+                        for book in &change.remove {
+                            patch.insert(format!("addressBookIds/{book}"), serde_json::Value::Null);
+                        }
+                        update.insert(id.to_string(), JmapContactCardPatch(patch));
+                        update_refs.insert(id.to_string(), change.reference.clone());
+                    }
+                    "destroy" => {
+                        let id = required(&change.id, "destroy", "id")?;
+                        destroy.push(id.to_string());
+                        destroy_refs.insert(id.to_string(), change.reference.clone());
+                    }
+                    op => return Err(format!("Unknown push op `{op}`")),
+                }
+            }
+
+            let args = JmapContactCardSetArgs {
+                create: (!create.is_empty()).then_some(create),
+                update: (!update.is_empty()).then_some(update),
+                destroy: (!destroy.is_empty()).then_some(destroy),
+                ..Default::default()
+            };
+            let coroutine =
+                JmapContactCardSet::new(&session, &auth, args).map_err(|err| err.to_string())?;
+            let out = self.run_jmap(&api_url, coroutine)?;
+
+            for (key, reference) in create_refs {
+                if let Some(err) = out.not_created.get(&key) {
+                    outcomes.push(rejected(reference, format!("{err:?}")));
+                } else if let Some(id) = out.created.get(&key).and_then(|card| card.id.clone()) {
+                    outcomes.push(PushOutcome {
+                        reference,
+                        accepted: true,
+                        id: Some(id),
+                        ..Default::default()
+                    });
+                } else {
+                    return Err("JMAP create response is missing the card id".to_string());
+                }
+            }
+            for (id, reference) in update_refs {
+                match out.not_updated.get(&id) {
+                    Some(err) => outcomes.push(rejected(reference, format!("{err:?}"))),
+                    None => outcomes.push(PushOutcome {
+                        reference,
+                        accepted: true,
+                        ..Default::default()
+                    }),
+                }
+            }
+            for (id, reference) in destroy_refs {
+                match out.not_destroyed.get(&id) {
+                    // NOTE: NotFound means already gone upstream, the
+                    // destroy converged.
+                    Some(JmapContactCardSetItemError::NotFound { .. }) | None => {
+                        outcomes.push(PushOutcome {
+                            reference,
+                            accepted: true,
+                            ..Default::default()
+                        })
+                    }
+                    Some(err) => outcomes.push(rejected(reference, format!("{err:?}"))),
+                }
+            }
+        }
+
+        Ok(outcomes)
+    }
+
     // ---- Google People operations -------------------------------------------
 
     /// Lists the Google account's contact groups as addressbooks: the
@@ -1901,6 +2217,64 @@ impl<'a, 'local> Client<'a, 'local> {
         let coroutine = PeopleContactDelete::new(&auth, &format!("people/{id}"))
             .map_err(|err| err.to_string())?;
         self.run_google(coroutine)?;
+
+        Ok(())
+    }
+
+    /// Creates the vCards as People contacts by batch calls (200 per
+    /// request instead of one), returning the created cards in input
+    /// order: a create carries no correlation key, so request order is
+    /// the response's contract. The server names the resources, so the
+    /// returned cards carry the server-assigned ids.
+    pub fn create_google_cards(
+        &mut self,
+        token: &str,
+        vcards: &[String],
+    ) -> Result<Vec<Card>, String> {
+        let auth = HttpAuthBearer::new(token);
+
+        let persons = vcards
+            .iter()
+            .map(|vcard| google::to_person(vcard))
+            .collect::<Result<Vec<_>, String>>()?;
+
+        let mut cards = Vec::with_capacity(persons.len());
+        for chunk in persons.chunks(GOOGLE_CREATE_CHUNK) {
+            let coroutine = PeopleContactsBatchCreate::new(&auth, chunk, google::READ_FIELDS, &[])
+                .map_err(|err| err.to_string())?;
+            let response = self.run_google(coroutine)?;
+
+            // NOTE: a count mismatch would misattribute server ids to
+            // vCards, so it aborts the batch instead of guessing.
+            if response.created_people.len() != chunk.len() {
+                return Err(format!(
+                    "Google batch create answered {} contacts for {}",
+                    response.created_people.len(),
+                    chunk.len()
+                ));
+            }
+            for created in response.created_people {
+                let person = created
+                    .person
+                    .ok_or("Google batch create answered a personless entry")?;
+                cards.push(google_card(person));
+            }
+        }
+
+        Ok(cards)
+    }
+
+    /// Deletes the People contacts `ids` by batch calls (500 per
+    /// request instead of one).
+    pub fn delete_google_cards(&mut self, token: &str, ids: &[String]) -> Result<(), String> {
+        let auth = HttpAuthBearer::new(token);
+
+        let names: Vec<String> = ids.iter().map(|id| format!("people/{id}")).collect();
+        for chunk in names.chunks(GOOGLE_DELETE_CHUNK) {
+            let coroutine =
+                PeopleContactsBatchDelete::new(&auth, chunk).map_err(|err| err.to_string())?;
+            self.run_google(coroutine)?;
+        }
 
         Ok(())
     }
@@ -2532,6 +2906,67 @@ fn google_card(person: PeoplePerson) -> Card {
 }
 
 /// Parses an OData paging link served by Graph.
+/// A required field of a push change, named in the error when absent.
+fn required<'a>(field: &'a Option<String>, op: &str, name: &str) -> Result<&'a str, String> {
+    field
+        .as_deref()
+        .ok_or_else(|| format!("Push {op} change is missing its {name}"))
+}
+
+/// One rejected push outcome carrying what the server objected.
+fn rejected(reference: String, error: String) -> PushOutcome {
+    PushOutcome {
+        reference,
+        accepted: false,
+        error: Some(error),
+        ..Default::default()
+    }
+}
+
+/// The Graph JSON batching envelope (`POST $batch`).
+#[derive(Serialize)]
+struct GraphBatch {
+    requests: Vec<GraphBatchRequest>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphBatchRequest {
+    id: String,
+    method: &'static str,
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    headers: Option<GraphBatchHeaders>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<MsgraphContact>,
+}
+
+#[derive(Serialize)]
+struct GraphBatchHeaders {
+    #[serde(rename = "Content-Type")]
+    content_type: &'static str,
+}
+
+impl GraphBatchHeaders {
+    const JSON: Self = Self {
+        content_type: "application/json",
+    };
+}
+
+#[derive(Deserialize)]
+struct GraphBatchReplies {
+    #[serde(default)]
+    responses: Vec<GraphBatchReply>,
+}
+
+#[derive(Deserialize)]
+struct GraphBatchReply {
+    id: String,
+    status: u16,
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+}
+
 fn parse_graph_url(raw: &str) -> Result<Url, String> {
     Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}"))
 }

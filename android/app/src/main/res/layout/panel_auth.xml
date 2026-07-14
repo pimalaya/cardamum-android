@@ -5,14 +5,17 @@
      the flow slides only the step content. The shared FAB is the
      step's continue action. The arrow steps back (leaving from the
      welcome step), the cross always leaves; both land on the drawer,
-     empty or not. -->
+     empty or not. Invisible rather than gone, so it is measured from
+     the first layout pass and the entrance zoom pivots on its centre
+     from the very first show (a never-laid-out view resolves the 50%
+     pivot at its left edge, which read as a sideways slide). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/overlay_auth"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="?android:attr/colorBackground"
     android:orientation="vertical"
-    android:visibility="gone">
+    android:visibility="invisible">
 
     <LinearLayout
         android:id="@+id/auth_bar"

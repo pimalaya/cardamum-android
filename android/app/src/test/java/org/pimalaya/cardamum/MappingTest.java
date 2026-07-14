@@ -7,7 +7,6 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -331,18 +330,13 @@ public class MappingTest {
     }
 
     @Test
-    public void mergeOfAnUntouchedPhoneIsTheBase() throws Exception {
+    public void mergeOfAnUntouchedPhoneIsNull() throws Exception {
         JSONObject base = divergentBase();
         JSONObject phone = Mapping.model(Mapping.rows(base));
 
-        JSONObject merged = Mapping.merge(base, phone);
-        for (Iterator<String> keys = base.keys(); keys.hasNext(); ) {
-            String key = keys.next();
-            assertEquals(
-                    key,
-                    String.valueOf(base.opt(key)),
-                    String.valueOf(merged.opt(key)));
-        }
+        // No field taken means no phone edit: the caller keeps the base
+        // card's exact bytes instead of re-encoding a no-op.
+        assertNull(Mapping.merge(base, phone));
     }
 
     /** A base model whose FN diverges from N (lossy on the phone). */
