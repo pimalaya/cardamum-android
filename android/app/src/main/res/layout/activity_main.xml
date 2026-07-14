@@ -140,6 +140,26 @@
             android:src="@drawable/ic_search"
             android:tint="?android:attr/textColorPrimary" />
 
+        <!-- Contacts: the next-birthday dialog. -->
+        <ImageButton
+            android:id="@+id/contacts_birthdays"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/birthdays_title"
+            android:src="@drawable/ic_birthday"
+            android:tint="?android:attr/textColorPrimary" />
+
+        <!-- Contacts: the duplicate remover. -->
+        <ImageButton
+            android:id="@+id/contacts_duplicates"
+            android:layout_width="@dimen/app_bar_button"
+            android:layout_height="@dimen/app_bar_button"
+            android:background="@drawable/ripple_circle"
+            android:contentDescription="@string/dup_find"
+            android:src="@drawable/ic_duplicates"
+            android:tint="?android:attr/textColorPrimary" />
+
         <!-- Contacts selection mode: merge the selected cards. -->
         <ImageButton
             android:id="@+id/contacts_merge"
@@ -180,9 +200,9 @@
 
         </FrameLayout>
 
-        <!-- Contacts: the overflow menu (Synchronize, Import, Export, Find
-             duplicates). A running sync shows on the FAB, not here, so the
-             icon stays put. The slot id gates its whole visibility. -->
+        <!-- Contacts: the overflow menu (Import, Export). A running sync
+             shows on the FAB, not here, so the icon stays put. The slot
+             id gates its whole visibility. -->
         <FrameLayout
             android:id="@+id/contacts_more_slot"
             android:layout_width="@dimen/app_bar_button"
@@ -293,8 +313,9 @@
     </FrameLayout>
 
     <!-- The sync loader: a whole-frame modal overlay shown while any
-         sync runs (drawer, overflow menu, pull-down and Sync local all
-         share the one syncing state). Clickable so it swallows every
+         sync runs (drawer, pull-down and Sync local all share the one
+         syncing state). Its translucent scrim keeps the contacts list
+         readable behind the wait. Clickable so it swallows every
          touch; back is ignored and the drawer locked while it shows,
          so the wait is explicit instead of an ambiguous spinner. The
          title carries the addressbook, the detail the current step.
@@ -306,7 +327,7 @@
         android:id="@+id/sync_overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/surface"
+        android:background="@color/scrim"
         android:clickable="true"
         android:elevation="16dp"
         android:focusable="true"
@@ -523,6 +544,40 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/sync_accounts"
+                    android:textColor="?android:attr/textColorPrimary"
+                    android:textSize="@dimen/item_text" />
+
+            </LinearLayout>
+
+            <!-- Opens the support panel on demand (the same one the
+                 Google build prompts with); hidden on the FOSS build,
+                 which carries no billing (setUpHomePanel). -->
+            <LinearLayout
+                android:id="@+id/drawer_support"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minHeight="@dimen/item_height"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/item_padding"
+                android:paddingEnd="@dimen/item_padding"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="@dimen/item_icon"
+                    android:layout_height="@dimen/item_icon"
+                    android:layout_marginEnd="@dimen/item_gap"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_support"
+                    android:tint="?android:attr/textColorPrimary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/support"
                     android:textColor="?android:attr/textColorPrimary"
                     android:textSize="@dimen/item_text" />
 

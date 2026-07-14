@@ -38,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.billing.Billing;
 import org.pimalaya.cardamum.billing.BillingFactory;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Addressbook;
@@ -61,7 +62,7 @@ import org.pimalaya.cardamum.client.ServiceConfig;
  * stay strictly per-replica). A merged row opens one edit form for the
  * whole contact and saving fans the form out onto every replica.
  * Addressbooks live behind a management screen; syncs are manual, from
- * the Sync menu.
+ * the drawer or the pull-down.
  */
 public class MainActivity extends Activity {
     // NOTE: contacts, contact, advanced and source are the content
@@ -310,9 +311,9 @@ public class MainActivity extends Activity {
         findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
         findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
 
-        // Every sync entry point (drawer, overflow menu, pull-down,
-        // Sync local, post-onboarding) drives the one syncing flag, so
-        // the modal loader binds here once and covers them all.
+        // Every sync entry point (drawer, pull-down, Sync local,
+        // post-onboarding) drives the one syncing flag, so the modal
+        // loader binds here once and covers them all.
         observeSync(this::showSyncOverlay);
 
         // The built-in local book is always present and subscribed, so
@@ -329,7 +330,7 @@ public class MainActivity extends Activity {
         BackgroundSync.reconcile(this, base.loadAllAddressbooks());
 
         // Offline first: the merged contacts root renders instantly from
-        // the store, syncs are manual (the Sync menu).
+        // the store, syncs are manual (the drawer or the pull-down).
         goHome();
 
         // NOTE: adb-only hooks, so syncs can be driven headlessly:
@@ -2216,11 +2217,20 @@ public class MainActivity extends Activity {
     // ---- Addressbooks management screen -----------------------------------------
 
     private void setUpHomePanel() {
-        // The drawer's bottom band: sync, add an account, or open About
-        // (its dialog carries the app name and version).
+        // The drawer's bottom band: sync, add an account, support the
+        // app, or open About (its dialog carries the app name and
+        // version).
         findViewById(R.id.drawer_sync).setOnClickListener(view -> syncAll());
         findViewById(R.id.drawer_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
+
+        // The support row opens the same panel the Google build prompts
+        // with, on demand this time; the FOSS build carries no billing,
+        // so the row stays hidden there.
+        Billing billing = BillingFactory.create(this);
+        View support = findViewById(R.id.drawer_support);
+        support.setVisibility(billing.supported() ? View.VISIBLE : View.GONE);
+        support.setOnClickListener(view -> billing.open(this));
 
         // While a sync runs the button shows its spinner and goes inert.
         observeSync(
@@ -2759,26 +2769,21 @@ public class MainActivity extends Activity {
      * Store-to-remote spoke: per addressbook, fetches the remote into
      * the store, pushes the staged local changes, and re-fetches the
      * pushed state. The phone is not touched; that is the local sync.
-     * When `toHome`, this is the onboarding's first sync (the books
-     * Continue button owns the spinner); otherwise it is a manual sync
-     * from the contacts screen (the app-bar sync icon owns it).
+     * When `toHome`, this is the onboarding's first sync, landing on
+     * the contacts list; either way the shared syncing state drives
+     * the modal loader over whatever is on screen (the auth sheet
+     * included, the loader sits above it).
      */
     private void syncRemote(boolean toHome) {
-        if (!toHome) {
-            setSyncing(true);
-        }
+        setSyncing(true);
 
         io.execute(
                 () -> {
                     SyncOutcome outcome = runRemoteSync();
                     main.post(
                             () -> {
-                                if (toHome) {
-                                    finishSync(true);
-                                } else {
-                                    setSyncing(false);
-                                    finishSync(false);
-                                }
+                                setSyncing(false);
+                                finishSync(toHome);
                                 reportSync(outcome);
                             });
                 });
@@ -3121,13 +3126,14 @@ public class MainActivity extends Activity {
 
     private void setUpContactsPanel() {
         findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
+        findViewById(R.id.contacts_birthdays).setOnClickListener(view -> showBirthdays());
+        findViewById(R.id.contacts_duplicates).setOnClickListener(view -> findDuplicates());
         // A running sync shows on the FAB, whose icon gives way to an
         // on-disc loader (the overflow icon stays put).
         observeSync(active -> setAuthLoading(R.id.fab, R.id.fab_progress, active));
-        // Pull down on the list to run the very same sync as the overflow
-        // menu and the drawer (syncAll, with its outcome toast); the swipe
-        // spinner tracks the shared sync state, so a menu-triggered sync
-        // shows it too.
+        // Pull down on the list to run the very same sync as the drawer
+        // (syncAll, with its outcome toast); the swipe spinner tracks the
+        // shared sync state, so a drawer-triggered sync shows it too.
         androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh =
                 findViewById(R.id.contacts_refresh);
         refresh.setColorSchemeColors(resolveColor(android.R.attr.colorAccent));
@@ -3208,28 +3214,21 @@ public class MainActivity extends Activity {
 
     }
 
-    /** The contacts overflow menu: Synchronize, Find duplicates, Import,
-     *  Export. Text-only: the framework popup renders forced icons flush
-     *  against their labels on some Android releases. */
+    /** The contacts overflow menu: Import, Export (sync lives in the
+     *  drawer and the pull-down, duplicates and birthdays on their own
+     *  bar buttons). Text-only: the framework popup renders forced
+     *  icons flush against their labels on some Android releases. */
     private void showMoreMenu(View anchor) {
         android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, R.string.menu_synchronize);
-        menu.getMenu().add(0, 2, 1, R.string.dup_find);
-        menu.getMenu().add(0, 3, 2, R.string.import_contacts);
-        menu.getMenu().add(0, 4, 3, R.string.export_contacts);
+        menu.getMenu().add(0, 1, 0, R.string.import_contacts);
+        menu.getMenu().add(0, 2, 1, R.string.export_contacts);
         menu.setOnMenuItemClickListener(
                 item -> {
                     switch (item.getItemId()) {
                         case 1:
-                            syncAll();
-                            return true;
-                        case 2:
-                            findDuplicates();
-                            return true;
-                        case 3:
                             importContacts();
                             return true;
-                        case 4:
+                        case 2:
                             exportContacts();
                             return true;
                         default:
@@ -3237,6 +3236,100 @@ public class MainActivity extends Activity {
                     }
                 });
         menu.show();
+    }
+
+    /**
+     * The cake button: scans every merged contact for a birthday (as
+     * projected by the bridge, full yyyy-mm-dd dates only) and shows
+     * the one(s) whose next occurrence comes soonest, with the date and
+     * the wait. The projections run off the UI thread: one bridge call
+     * per replica until a birthday turns up.
+     */
+    private void showBirthdays() {
+        List<Group> snapshot = new ArrayList<>(sortedContacts);
+        io.execute(
+                () -> {
+                    java.util.Calendar today = java.util.Calendar.getInstance();
+                    today.set(java.util.Calendar.HOUR_OF_DAY, 0);
+                    today.set(java.util.Calendar.MINUTE, 0);
+                    today.set(java.util.Calendar.SECOND, 0);
+                    today.set(java.util.Calendar.MILLISECOND, 0);
+
+                    long soonest = Long.MAX_VALUE;
+                    java.util.Calendar date = null;
+                    List<String> names = new ArrayList<>();
+                    for (Group group : snapshot) {
+                        // The group's birthday: the first replica
+                        // projecting one wins, like the merged form.
+                        String birthday = null;
+                        for (Entry entry : group.replicas) {
+                            try {
+                                String projected =
+                                        client.projectCard(entry.card).optString("birthday");
+                                if (projected.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                                    birthday = projected;
+                                    break;
+                                }
+                            } catch (Exception error) {
+                                // NOTE: an unparsable card does not compete.
+                            }
+                        }
+                        if (birthday == null) {
+                            continue;
+                        }
+
+                        // The next occurrence, at local midnight; a lenient
+                        // calendar rolls Feb 29 to Mar 1 off leap years. The
+                        // rounding absorbs the DST hour between midnights.
+                        java.util.Calendar next = (java.util.Calendar) today.clone();
+                        next.set(java.util.Calendar.MONTH,
+                                Integer.parseInt(birthday.substring(5, 7)) - 1);
+                        next.set(java.util.Calendar.DAY_OF_MONTH,
+                                Integer.parseInt(birthday.substring(8, 10)));
+                        if (next.before(today)) {
+                            next.add(java.util.Calendar.YEAR, 1);
+                        }
+                        long days =
+                                Math.round(
+                                        (next.getTimeInMillis() - today.getTimeInMillis())
+                                                / 86400000.0);
+
+                        if (days < soonest) {
+                            soonest = days;
+                            date = next;
+                            names.clear();
+                        }
+                        if (days == soonest) {
+                            names.add(displayName(group.primary()));
+                        }
+                    }
+
+                    String message;
+                    if (names.isEmpty()) {
+                        message = getString(R.string.birthdays_none);
+                    } else {
+                        String when =
+                                soonest == 0
+                                        ? getString(R.string.birthday_today)
+                                        : getResources()
+                                                .getQuantityString(
+                                                        R.plurals.birthday_in_days,
+                                                        (int) soonest,
+                                                        (int) soonest);
+                        String day =
+                                new java.text.SimpleDateFormat(
+                                                "d MMMM", java.util.Locale.getDefault())
+                                        .format(date.getTime());
+                        message = day + " (" + when + ")\n\n" + String.join("\n", names);
+                    }
+                    main.post(
+                            () ->
+                                    new AlertDialog.Builder(this)
+                                            .setTitle(R.string.birthdays_title)
+                                            .setMessage(message)
+                                            .setPositiveButton(android.R.string.ok, null)
+                                            .show());
+                });
     }
 
     /**
@@ -4237,6 +4330,8 @@ public class MainActivity extends Activity {
         findViewById(R.id.bar_title).setVisibility(View.GONE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.GONE);
         findViewById(R.id.contacts_search).setVisibility(View.GONE);
+        findViewById(R.id.contacts_birthdays).setVisibility(View.GONE);
+        findViewById(R.id.contacts_duplicates).setVisibility(View.GONE);
         findViewById(R.id.contacts_search_pill).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search_close).setVisibility(View.VISIBLE);
 
@@ -4267,6 +4362,10 @@ public class MainActivity extends Activity {
         findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
         findViewById(R.id.contacts_search)
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_birthdays)
+                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_duplicates)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_more_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -4303,6 +4402,10 @@ public class MainActivity extends Activity {
                 .setVisibility(searchOpen ? View.VISIBLE : View.GONE);
 
         findViewById(R.id.contacts_search)
+                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_birthdays)
+                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
+        findViewById(R.id.contacts_duplicates)
                 .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_menu).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         findViewById(R.id.contacts_close)
@@ -5444,6 +5547,8 @@ public class MainActivity extends Activity {
                     R.id.contacts_search_pill,
                     R.id.contacts_search_close,
                     R.id.contacts_search,
+                    R.id.contacts_birthdays,
+                    R.id.contacts_duplicates,
                     R.id.contacts_merge,
                     R.id.contacts_delete,
                     R.id.contacts_select_all_slot,

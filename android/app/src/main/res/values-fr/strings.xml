@@ -56,6 +56,7 @@
     <string name="accounts_failed">Impossible de créer les comptes</string>
     <string name="add_account">Ajouter un compte</string>
     <string name="sync_accounts">Synchroniser les comptes</string>
+    <string name="support">Soutenir Cardamum</string>
     <string name="about">À propos</string>
     <string name="about_body">Version %1$s\n\nVos contacts, hors-ligne et multi-comptes.\n\nRéalisé par Pimalaya.</string>
     <string name="about_website">Site web</string>
@@ -101,7 +102,13 @@
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Synchroniser</string>
     <string name="contacts_more">Plus</string>
-    <string name="menu_synchronize">Synchroniser</string>
+    <string name="birthdays_title">Prochain anniversaire</string>
+    <string name="birthdays_none">Aucune date de naissance renseignée sur vos contacts.</string>
+    <string name="birthday_today">aujourd\'hui</string>
+    <plurals name="birthday_in_days">
+        <item quantity="one">dans %1$d jour</item>
+        <item quantity="other">dans %1$d jours</item>
+    </plurals>
     <string name="sync_line_local">Local : %1$d reçu(s), %2$d envoyé(s), %3$d modifié(s)</string>
     <string name="sync_line_remote">Distant : %1$d reçu(s), %2$d envoyé(s), %3$d modifié(s)</string>
     <string name="contacts_add">Ajouter</string>

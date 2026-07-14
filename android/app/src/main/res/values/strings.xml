@@ -64,6 +64,7 @@
     <string name="accounts_failed">Could not create the accounts</string>
     <string name="add_account">Add account</string>
     <string name="sync_accounts">Synchronize accounts</string>
+    <string name="support">Support Cardamum</string>
     <string name="about">About</string>
     <string name="about_body">Version %1$s\n\nYour contacts, offline-first and multi-account.\n\nMade by Pimalaya.</string>
     <string name="about_website">Website</string>
@@ -109,7 +110,13 @@
     <string name="contacts_title">Contacts</string>
     <string name="contacts_sync">Sync</string>
     <string name="contacts_more">More</string>
-    <string name="menu_synchronize">Synchronize</string>
+    <string name="birthdays_title">Next birthday</string>
+    <string name="birthdays_none">No birthday recorded on your contacts.</string>
+    <string name="birthday_today">today</string>
+    <plurals name="birthday_in_days">
+        <item quantity="one">in %1$d day</item>
+        <item quantity="other">in %1$d days</item>
+    </plurals>
     <string name="sync_line_local">Local: %1$d in, %2$d out, %3$d changed</string>
     <string name="sync_line_remote">Remote: %1$d in, %2$d out, %3$d changed</string>
     <string name="contacts_add">Add</string>

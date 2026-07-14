@@ -3,5 +3,6 @@
 
     <color name="divider">#424242</color>
     <color name="surface">#2A2A2A</color>
+    <color name="scrim">#BF2A2A2A</color>
 
 </resources>
