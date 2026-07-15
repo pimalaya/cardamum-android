@@ -26,6 +26,15 @@ import org.pimalaya.cardamum.client.Account;
  * blob, keyed by the account email.
  */
 public class SecureStore {
+    /**
+     * Serializes every read-modify-write across the process: the blob
+     * is rewritten whole, and instances are built ad-hoc (activity,
+     * worker, sync service), so two concurrent token refreshes could
+     * interleave last-writer-wins and persist a stale rotated refresh
+     * token, permanently logging the account out.
+     */
+    private static final Object LOCK = new Object();
+
     private static final String PREFS = "cardamum.account";
     private static final String KEY_PAYLOAD = "payload";
     private static final String KEY_IV = "iv";
@@ -42,38 +51,44 @@ public class SecureStore {
 
     /** Every cached account, empty on first launch. */
     public List<AccountEntry> loadAll() {
-        String payload = prefs.getString(KEY_PAYLOAD, null);
-        String iv = prefs.getString(KEY_IV, null);
-        if (payload == null || iv == null) {
-            return new ArrayList<>();
-        }
+        synchronized (LOCK) {
+            String payload = prefs.getString(KEY_PAYLOAD, null);
+            String iv = prefs.getString(KEY_IV, null);
+            if (payload == null || iv == null) {
+                return new ArrayList<>();
+            }
 
-        try {
-            Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            GCMParameterSpec spec =
-                    new GCMParameterSpec(GCM_TAG_BITS, Base64.decode(iv, Base64.NO_WRAP));
-            cipher.init(Cipher.DECRYPT_MODE, secretKey(), spec);
+            try {
+                Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+                GCMParameterSpec spec =
+                        new GCMParameterSpec(GCM_TAG_BITS, Base64.decode(iv, Base64.NO_WRAP));
+                cipher.init(Cipher.DECRYPT_MODE, secretKey(), spec);
 
-            byte[] plaintext = cipher.doFinal(Base64.decode(payload, Base64.NO_WRAP));
-            return decode(new String(plaintext, StandardCharsets.UTF_8));
-        } catch (Exception error) {
-            throw new IllegalStateException("Could not load the accounts", error);
+                byte[] plaintext = cipher.doFinal(Base64.decode(payload, Base64.NO_WRAP));
+                return decode(new String(plaintext, StandardCharsets.UTF_8));
+            } catch (Exception error) {
+                throw new IllegalStateException("Could not load the accounts", error);
+            }
         }
     }
 
     /** Adds an account (replacing any with the same email), then persists. */
     public void add(AccountEntry entry) {
-        List<AccountEntry> entries = loadAll();
-        entries.removeIf(candidate -> candidate.email.equals(entry.email));
-        entries.add(entry);
-        save(entries);
+        synchronized (LOCK) {
+            List<AccountEntry> entries = loadAll();
+            entries.removeIf(candidate -> candidate.email.equals(entry.email));
+            entries.add(entry);
+            save(entries);
+        }
     }
 
     /** Removes the account with the given email, then persists. */
     public void remove(String email) {
-        List<AccountEntry> entries = loadAll();
-        entries.removeIf(entry -> entry.email.equals(email));
-        save(entries);
+        synchronized (LOCK) {
+            List<AccountEntry> entries = loadAll();
+            entries.removeIf(entry -> entry.email.equals(email));
+            save(entries);
+        }
     }
 
     private void save(List<AccountEntry> entries) {

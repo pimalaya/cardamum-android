@@ -9,10 +9,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.locks.ReentrantLock;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -20,6 +22,7 @@ import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardDelta;
 import org.pimalaya.cardamum.client.CardamumClient;
+import org.pimalaya.cardamum.client.CardamumException;
 import org.pimalaya.cardamum.client.OfflineDriver;
 
 /**
@@ -40,6 +43,17 @@ import org.pimalaya.cardamum.client.OfflineDriver;
  * blocks; callers run it off the main thread.
  */
 final class OfflineEngine implements OfflineDriver {
+    /**
+     * One lock per book URL, process-wide: the in-app sync, the
+     * background worker and the OS-scheduled sync service can each
+     * run an engine pass over the same book, and a pass spans many
+     * store transactions, so interleaved passes could double-push
+     * staged creates or clobber the sync checkpoint. Reentrant, so
+     * syncBook's own phone passes nest freely under its hold.
+     */
+    private static final ConcurrentHashMap<String, ReentrantLock> SYNC_LOCKS =
+            new ConcurrentHashMap<>();
+
     private final CardStore base;
     private final CardamumClient client;
     private final Account account;
@@ -174,13 +188,19 @@ final class OfflineEngine implements OfflineDriver {
      * the server.
      */
     Report syncBook(String url, boolean remote) throws JSONException {
-        Report report = new Report();
-        syncPhone(url, report);
-        if (remote) {
-            syncServer(url, report);
+        ReentrantLock lock = syncLock(url);
+        lock.lock();
+        try {
+            Report report = new Report();
             syncPhone(url, report);
+            if (remote) {
+                syncServer(url, report);
+                syncPhone(url, report);
+            }
+            return report;
+        } finally {
+            lock.unlock();
         }
-        return report;
     }
 
     /**
@@ -230,37 +250,49 @@ final class OfflineEngine implements OfflineDriver {
             return;
         }
 
-        // The quiet path: nothing to ingest phone-side (no dirty, new
-        // or deleted raw contact), nothing staged hub-side and both
-        // sides count the same members, so the engine pass (placement
-        // load, enumerate, per-row bridge calls) would reconcile
-        // nothing. Three cheap counts stand in for it; ContactsContract
-        // has no per-account changes token to compare instead.
-        if (!phone.changed(url)
-                && !base.phonePending(url)
-                && phone.count(url) == base.phoneMemberCount(url)) {
-            return;
-        }
-
-        tally = report;
-        String collection = CardStore.phoneCollection(url);
-        step(Progress.STAGE_PHONE, 0);
-
-        Log.d(
-                "cardamum",
-                "phone sync " + url + ": " + client.offlineSync(this, collection, false));
-        hydrate(collection);
-
-        List<JSONObject> conflicts = base.loadConflicts(collection);
-        if (!conflicts.isEmpty()) {
-            step(Progress.STAGE_RESOLVE, conflicts.size());
-            for (JSONObject conflict : conflicts) {
-                resolvePhoneConflict(collection, conflict);
+        ReentrantLock lock = syncLock(url);
+        lock.lock();
+        try {
+            // The quiet path: nothing to ingest phone-side (no dirty,
+            // new or deleted raw contact), nothing staged hub-side and
+            // both sides count the same members, so the engine pass
+            // (placement load, enumerate, per-row bridge calls) would
+            // reconcile nothing. Three cheap counts stand in for it;
+            // ContactsContract has no per-account changes token to
+            // compare instead.
+            if (!phone.changed(url)
+                    && !base.phonePending(url)
+                    && phone.count(url) == base.phoneMemberCount(url)) {
+                return;
             }
 
-            client.offlineSync(this, collection, false);
+            tally = report;
+            String collection = CardStore.phoneCollection(url);
+            step(Progress.STAGE_PHONE, 0);
+
+            Log.d(
+                    "cardamum",
+                    "phone sync " + url + ": " + client.offlineSync(this, collection, false));
             hydrate(collection);
+
+            List<JSONObject> conflicts = base.loadConflicts(collection);
+            if (!conflicts.isEmpty()) {
+                step(Progress.STAGE_RESOLVE, conflicts.size());
+                for (JSONObject conflict : conflicts) {
+                    resolvePhoneConflict(collection, conflict);
+                }
+
+                client.offlineSync(this, collection, false);
+                hydrate(collection);
+            }
+        } finally {
+            lock.unlock();
         }
+    }
+
+    /** The book's process-wide sync lock, keyed by its collection URL. */
+    private static ReentrantLock syncLock(String url) {
+        return SYNC_LOCKS.computeIfAbsent(url, key -> new ReentrantLock());
     }
 
     /** Raises every bodiless or stale placement to its full body. */
@@ -389,8 +421,7 @@ final class OfflineEngine implements OfflineDriver {
             }
         } catch (Exception failure) {
             Log.w("cardamum", "offline driver failed", failure);
-            String message = failure.getMessage();
-            return error(message == null ? failure.toString() : message);
+            return error(failure);
         }
     }
 
@@ -1135,14 +1166,19 @@ final class OfflineEngine implements OfflineDriver {
         }
     }
 
+    /** The HTTP status a bridge failure carries, null on any other failure. */
+    private static Integer status(Exception failure) {
+        return failure instanceof CardamumException
+                ? ((CardamumException) failure).status
+                : null;
+    }
+
     private static boolean isPreconditionFailure(Exception failure) {
-        String message = failure.getMessage();
-        return message != null && message.contains("HTTP 412");
+        return Integer.valueOf(412).equals(status(failure));
     }
 
     private static boolean isGone(Exception failure) {
-        String message = failure.getMessage();
-        return message != null && message.contains("HTTP 404");
+        return Integer.valueOf(404).equals(status(failure));
     }
 
     private boolean isGraph() {
@@ -1163,6 +1199,27 @@ final class OfflineEngine implements OfflineDriver {
         JSONObject reply = new JSONObject();
         try {
             reply.put("error", message);
+        } catch (JSONException ignored) {
+            return "{\"error\": \"driver failure\"}";
+        }
+        return reply.toString();
+    }
+
+    /**
+     * A failure as the driver error reply, keeping the HTTP status a
+     * bridge failure carries so it survives the round trip through
+     * the engine (the sync entry points branch on it for the token
+     * refresh).
+     */
+    private static String error(Exception failure) {
+        String message = failure.getMessage();
+        JSONObject reply = new JSONObject();
+        try {
+            reply.put("error", message == null ? failure.toString() : message);
+            Integer status = status(failure);
+            if (status != null) {
+                reply.put("status", status);
+            }
         } catch (JSONException ignored) {
             return "{\"error\": \"driver failure\"}";
         }

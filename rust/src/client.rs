@@ -9,7 +9,7 @@
 //! or CardDAV cycle can talk to several endpoints; the bridge only
 //! tells it which URL each yield wants.
 
-use core::fmt::Display;
+use core::error::Error as StdError;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -44,7 +44,8 @@ use io_http::{
 use io_jmap::{
     coroutine::{JmapCoroutine, JmapCoroutineState, JmapYield},
     rfc8620::{
-        JmapMethodError, JmapSession, changes::*, coroutine::JmapRedirectYield, session_get::*,
+        JmapMethodError, JmapSession, changes::*, coroutine::JmapRedirectYield,
+        send::JmapSendError, session_get::*,
     },
     rfc9610::{
         address_book::{JmapAddressBook, get::*},
@@ -106,7 +107,10 @@ use io_pim_discovery::{
 };
 use io_webdav::{
     coroutine::{WebdavCoroutine, WebdavCoroutineState, WebdavYield},
-    rfc4918::{GETETAG, WebdavAuth, coroutine::WebdavRedirectYield},
+    rfc4918::{
+        GETETAG, WebdavAuth, coroutine::WebdavRedirectYield,
+        follow_redirects::FollowRedirectsError, send::SendError as WebdavSendError,
+    },
     rfc5397::current_user_principal::CurrentUserPrincipal,
     rfc6352::{
         addressbook::{
@@ -134,7 +138,7 @@ use crate::{
     account::{self, Backend},
     google, jmap, msgraph,
     oauth::parse_pkce_verifier,
-    types::{Addressbook, Card, CardDelta, Credentials, PushChange, PushOutcome},
+    types::{Addressbook, BridgeError, Card, CardDelta, Credentials, PushChange, PushOutcome},
 };
 
 /// RFC 8484 DNS-over-HTTPS resolver used for the discovery DNS lookups
@@ -181,11 +185,11 @@ impl<'a, 'local> Client<'a, 'local> {
     /// `.well-known`. When the resolver is unreachable it retries with
     /// the `.well-known` probe alone, whose HTTPS socket resolves the
     /// domain through the OS.
-    pub fn discover(&mut self, email: &str, resolver: Option<&str>) -> Result<Url, String> {
+    pub fn discover(&mut self, email: &str, resolver: Option<&str>) -> Result<Url, BridgeError> {
         let domain = email.rsplit('@').next().unwrap_or(email).trim();
 
         if domain.is_empty() {
-            return Err("Email address is missing a domain".to_string());
+            return Err("Email address is missing a domain".into());
         }
 
         let resolver = resolver.unwrap_or(DNS_RESOLVER);
@@ -207,7 +211,7 @@ impl<'a, 'local> Client<'a, 'local> {
             // RFC 6764 §5: no redirect means nothing authoritative on
             // the origin; keep the origin itself as context root.
             Ok(redirect) => Ok(redirect.unwrap_or(origin)),
-            Err(err) => Err(format!("{err} (SRV/TXT lookup failed first: {srv_err})")),
+            Err(err) => Err(format!("{err} (SRV/TXT lookup failed first: {srv_err})").into()),
         }
     }
 
@@ -221,7 +225,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, String> {
+    ) -> Result<Vec<ServiceConfig>, BridgeError> {
         let (email, domain) = search_domain(email)?;
 
         let mx = DiscoveryDnsMx::new(&domain, self.search_resolver(resolver)?);
@@ -254,7 +258,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, String> {
+    ) -> Result<Vec<ServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
         let pacc = DiscoveryPacc::new(&domain, self.search_resolver(resolver)?)
@@ -270,7 +274,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, String> {
+    ) -> Result<Vec<ServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
         let resolve = ResolveDav::new(
@@ -289,7 +293,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, String> {
+    ) -> Result<Vec<ServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
         let resolve = ResolveJmap::new(&domain, self.search_resolver(resolver)?);
@@ -307,7 +311,10 @@ impl<'a, 'local> Client<'a, 'local> {
     /// The URLs are tried in order until one advertises any scheme; a
     /// probe that fails or learns nothing leaves the config as
     /// discovered.
-    pub fn search_probe(&mut self, mut config: ServiceConfig) -> Result<ServiceConfig, String> {
+    pub fn search_probe(
+        &mut self,
+        mut config: ServiceConfig,
+    ) -> Result<ServiceConfig, BridgeError> {
         for url in config.probe_urls() {
             match self.run_mechanism(ProbeAuth::new(url)) {
                 Ok(schemes) if !schemes.is_empty() => {
@@ -324,9 +331,10 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// The DNS resolver URL for the search mechanisms, DoH by default.
-    fn search_resolver(&self, resolver: Option<&str>) -> Result<Url, String> {
+    fn search_resolver(&self, resolver: Option<&str>) -> Result<Url, BridgeError> {
         let resolver = resolver.unwrap_or(DNS_RESOLVER);
-        Url::parse(resolver).map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))
+        Url::parse(resolver)
+            .map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}").into())
     }
 
     /// Fetches an authorization server's RFC 8414 metadata from its
@@ -334,7 +342,10 @@ impl<'a, 'local> Client<'a, 'local> {
     /// first and falling back to the OpenID Connect Discovery
     /// document (the mailmaint OAuth draft requires servers to serve
     /// at least one).
-    pub fn oauth_server_metadata(&mut self, issuer: &Url) -> Result<OauthServerMetadata, String> {
+    pub fn oauth_server_metadata(
+        &mut self,
+        issuer: &Url,
+    ) -> Result<OauthServerMetadata, BridgeError> {
         let primary = OauthServerMetadata::well_known_url(issuer);
         match self.run_discovery(ResolveOauthServer::new(primary)) {
             Ok(metadata) => Ok(metadata),
@@ -343,6 +354,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 self.run_discovery(ResolveOauthServer::new(fallback))
                     .map_err(|fallback_err| {
                         format!("{primary_err} (OpenID fallback also failed: {fallback_err})")
+                            .into()
                     })
             }
         }
@@ -355,7 +367,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         registration_endpoint: &Url,
         params: &Oauth20RegisterClientParams,
-    ) -> Result<Oauth20ClientInformation, String> {
+    ) -> Result<Oauth20ClientInformation, BridgeError> {
         let request = oauth_post_request(registration_endpoint);
         let mut coroutine =
             Oauth20RegisterClient::new(request, params).map_err(|err| err.to_string())?;
@@ -368,9 +380,9 @@ impl<'a, 'local> Client<'a, 'local> {
                     let detail = err
                         .error_description
                         .unwrap_or_else(|| format!("{:?}", err.error));
-                    return Err(format!("Client registration rejected: {detail}"));
+                    return Err(format!("Client registration rejected: {detail}").into());
                 }
-                Oauth20RegisterClientResult::Err(err) => return Err(err.to_string()),
+                Oauth20RegisterClientResult::Err(err) => return Err(err.to_string().into()),
                 Oauth20RegisterClientResult::WantsRead => {
                     arg = Some(self.read(registration_endpoint.as_str())?);
                 }
@@ -394,7 +406,7 @@ impl<'a, 'local> Client<'a, 'local> {
         code: &str,
         redirect_uri: &str,
         pkce_verifier: &str,
-    ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
+    ) -> Result<Oauth20IssueAccessTokenSuccessParams, BridgeError> {
         let verifier = parse_pkce_verifier(pkce_verifier)?;
         let params = Oauth20RequestAccessTokenParams {
             code: code.into(),
@@ -411,8 +423,10 @@ impl<'a, 'local> Client<'a, 'local> {
         loop {
             match coroutine.resume(arg.as_deref()) {
                 Oauth20RequestAccessTokenResult::Ok(Ok(success)) => return Ok(success),
-                Oauth20RequestAccessTokenResult::Ok(Err(err)) => return Err(oauth_error(err)),
-                Oauth20RequestAccessTokenResult::Err(err) => return Err(err.to_string()),
+                Oauth20RequestAccessTokenResult::Ok(Err(err)) => {
+                    return Err(oauth_error(err).into());
+                }
+                Oauth20RequestAccessTokenResult::Err(err) => return Err(err.to_string().into()),
                 Oauth20RequestAccessTokenResult::WantsRead => {
                     arg = Some(self.read(token_endpoint.as_str())?);
                 }
@@ -435,7 +449,7 @@ impl<'a, 'local> Client<'a, 'local> {
         client_secret: Option<&str>,
         refresh_token: &str,
         scope: &str,
-    ) -> Result<Oauth20IssueAccessTokenSuccessParams, String> {
+    ) -> Result<Oauth20IssueAccessTokenSuccessParams, BridgeError> {
         let mut params = Oauth20RefreshAccessTokenParams::new(client_id, refresh_token);
         params.client_secret = client_secret.map(SecretString::from);
         params.scopes = scope.split_whitespace().map(Cow::Borrowed).collect();
@@ -447,8 +461,10 @@ impl<'a, 'local> Client<'a, 'local> {
         loop {
             match coroutine.resume(arg.as_deref()) {
                 Oauth20RefreshAccessTokenResult::Ok(Ok(success)) => return Ok(success),
-                Oauth20RefreshAccessTokenResult::Ok(Err(err)) => return Err(oauth_error(err)),
-                Oauth20RefreshAccessTokenResult::Err(err) => return Err(err.to_string()),
+                Oauth20RefreshAccessTokenResult::Ok(Err(err)) => {
+                    return Err(oauth_error(err).into());
+                }
+                Oauth20RefreshAccessTokenResult::Err(err) => return Err(err.to_string().into()),
                 Oauth20RefreshAccessTokenResult::WantsRead => {
                     arg = Some(self.read(token_endpoint.as_str())?);
                 }
@@ -471,7 +487,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         base_url: &str,
         credentials: &Credentials,
-    ) -> Result<Vec<Addressbook>, String> {
+    ) -> Result<Vec<Addressbook>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Carddav => self.list_carddav_addressbooks(&parse_url(base_url)?, credentials),
             Backend::Graph => {
@@ -513,7 +529,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         base_url: &str,
         credentials: &Credentials,
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Jmap => {
                 let session_url = account::jmap_session_url(base_url)?;
@@ -523,7 +539,8 @@ impl<'a, 'local> Client<'a, 'local> {
             backend => Err(format!(
                 "Cards of a {} account are listed per collection",
                 backend.name(),
-            )),
+            )
+            .into()),
         }
     }
 
@@ -535,7 +552,7 @@ impl<'a, 'local> Client<'a, 'local> {
         base_url: &str,
         addressbook_url: &str,
         credentials: &Credentials,
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Carddav => self.list_carddav_cards(&parse_url(addressbook_url)?, credentials),
             Backend::Graph => self.list_graph_cards(
@@ -545,7 +562,8 @@ impl<'a, 'local> Client<'a, 'local> {
             backend => Err(format!(
                 "Cards of a {} account are listed account-wide",
                 backend.name(),
-            )),
+            )
+            .into()),
         }
     }
 
@@ -564,7 +582,7 @@ impl<'a, 'local> Client<'a, 'local> {
         addressbook_url: &str,
         credentials: &Credentials,
         cursor: Option<&str>,
-    ) -> Result<CardDelta, String> {
+    ) -> Result<CardDelta, BridgeError> {
         let round = self.sync_cards_round(base_url, addressbook_url, credentials, cursor);
 
         let delta = match round {
@@ -609,7 +627,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 delta.complete = true;
                 Ok(delta)
             }
-            None => Err(format!("Initial sync round rejected for {addressbook_url}")),
+            None => Err(format!("Initial sync round rejected for {addressbook_url}").into()),
         }
     }
 
@@ -621,7 +639,7 @@ impl<'a, 'local> Client<'a, 'local> {
         addressbook_url: &str,
         credentials: &Credentials,
         cursor: Option<&str>,
-    ) -> Result<Option<CardDelta>, String> {
+    ) -> Result<Option<CardDelta>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Carddav => {
                 let url = parse_url(addressbook_url)?;
@@ -652,7 +670,7 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
         id: &str,
         vcard: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         match Backend::of(base_url) {
             Backend::Carddav => {
                 let url = parse_url(addressbook_url)?;
@@ -688,7 +706,7 @@ impl<'a, 'local> Client<'a, 'local> {
         addressbook_url: &str,
         credentials: &Credentials,
         uri: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         match Backend::of(base_url) {
             Backend::Carddav => {
                 self.read_carddav_card(&parse_url(addressbook_url)?, credentials, uri)
@@ -719,7 +737,7 @@ impl<'a, 'local> Client<'a, 'local> {
         vcard: &str,
         base_vcard: Option<&str>,
         etag: Option<&str>,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let backend = Backend::of(base_url);
         let key = account::addressing_key(backend, id, uri);
 
@@ -757,7 +775,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         uri: &str,
         etag: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         let backend = Backend::of(base_url);
         let key = account::addressing_key(backend, id, uri);
 
@@ -783,10 +801,10 @@ impl<'a, 'local> Client<'a, 'local> {
         base_url: &str,
         credentials: &Credentials,
         vcards: &[String],
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Google => self.create_google_cards(credentials.password, vcards),
-            _ => Err("Batch card creation is Google-only".to_string()),
+            _ => Err("Batch card creation is Google-only".into()),
         }
     }
 
@@ -797,10 +815,10 @@ impl<'a, 'local> Client<'a, 'local> {
         base_url: &str,
         credentials: &Credentials,
         ids: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         match Backend::of(base_url) {
             Backend::Google => self.delete_google_cards(credentials.password, ids),
-            _ => Err("Batch card deletion is Google-only".to_string()),
+            _ => Err("Batch card deletion is Google-only".into()),
         }
     }
 
@@ -816,7 +834,7 @@ impl<'a, 'local> Client<'a, 'local> {
         addressbook_url: &str,
         credentials: &Credentials,
         changes: &[PushChange],
-    ) -> Result<Vec<PushOutcome>, String> {
+    ) -> Result<Vec<PushOutcome>, BridgeError> {
         match Backend::of(base_url) {
             Backend::Jmap => {
                 let session_url = account::jmap_session_url(base_url)?;
@@ -828,7 +846,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 account::graph_folder(base_url, addressbook_url),
                 changes,
             ),
-            _ => Err("Batch card push is JMAP and Graph only".to_string()),
+            _ => Err("Batch card push is JMAP and Graph only".into()),
         }
     }
 
@@ -842,7 +860,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         add: &[String],
         remove: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         match Backend::of(base_url) {
             Backend::Jmap => {
                 let session_url = account::jmap_session_url(base_url)?;
@@ -852,7 +870,8 @@ impl<'a, 'local> Client<'a, 'local> {
             backend => Err(format!(
                 "Memberships of a {} card are fixed to its collection",
                 backend.name(),
-            )),
+            )
+            .into()),
         }
     }
 
@@ -866,7 +885,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         base_url: &Url,
         credentials: &Credentials,
-    ) -> Result<Vec<Addressbook>, String> {
+    ) -> Result<Vec<Addressbook>, BridgeError> {
         let auth = auth(credentials);
 
         // RFC 6764 §5: a bare origin (e.g. the carddav.example.com a
@@ -911,7 +930,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         url: &Url,
         credentials: &Credentials,
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         let auth = auth(credentials);
         let coroutine = ListCards::new(url, &auth, USER_AGENT, url.path());
         let cards: BTreeSet<CardEntry> = self.run(url, coroutine)?;
@@ -927,7 +946,7 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
         id: &str,
         vcard: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, BridgeError> {
         let auth = auth(credentials);
         let coroutine = CreateCard::new(
             url,
@@ -949,7 +968,7 @@ impl<'a, 'local> Client<'a, 'local> {
         url: &Url,
         credentials: &Credentials,
         uri: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let auth = auth(credentials);
         let coroutine = ReadCard::new(url, &auth, USER_AGENT, url.path(), uri);
         let body = self.run(url, coroutine)?;
@@ -974,7 +993,7 @@ impl<'a, 'local> Client<'a, 'local> {
         uri: &str,
         vcard: &str,
         if_match: Option<&str>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, BridgeError> {
         let auth = auth(credentials);
         let coroutine = UpdateCard::new(
             url,
@@ -998,7 +1017,7 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
         uri: &str,
         if_match: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         let auth = auth(credentials);
         let coroutine = DeleteCard::new(url, &auth, USER_AGENT, url.path(), uri, if_match);
         self.run(url, coroutine)?;
@@ -1012,7 +1031,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         url: &Url,
         credentials: &Credentials,
-    ) -> Result<Vec<CardRef>, String> {
+    ) -> Result<Vec<CardRef>, BridgeError> {
         let auth = auth(credentials);
         let coroutine = EnumCards::new(url, &auth, USER_AGENT, url.path());
         let refs: BTreeSet<CardRef> = self.run(url, coroutine)?;
@@ -1029,7 +1048,7 @@ impl<'a, 'local> Client<'a, 'local> {
         url: &Url,
         credentials: &Credentials,
         sync_token: Option<&str>,
-    ) -> Result<Option<SyncDelta>, String> {
+    ) -> Result<Option<SyncDelta>, BridgeError> {
         let auth = auth(credentials);
         let mut token = sync_token.map(str::to_string);
         let mut delta = SyncDelta::default();
@@ -1067,7 +1086,7 @@ impl<'a, 'local> Client<'a, 'local> {
         url: &Url,
         credentials: &Credentials,
         uris: &[&str],
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         let auth = auth(credentials);
         let coroutine = MultigetCards::new(url, &auth, USER_AGENT, url.path(), uris);
         let cards: Vec<CardEntry> = self.run(url, coroutine)?;
@@ -1082,7 +1101,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         target: &Url,
         mut coroutine: SyncCollection,
-    ) -> Result<Option<SyncDelta>, String> {
+    ) -> Result<Option<SyncDelta>, BridgeError> {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
@@ -1091,7 +1110,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 WebdavCoroutineState::Complete(Err(SyncCollectionError::InvalidSyncToken)) => {
                     return Ok(None);
                 }
-                WebdavCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                WebdavCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 WebdavCoroutineState::Yielded(WebdavYield::WantsWrite(bytes)) => {
                     self.write(target.as_str(), &bytes)?;
                     arg = None;
@@ -1110,7 +1129,10 @@ impl<'a, 'local> Client<'a, 'local> {
     /// the folder list, addressed by an empty folder id). Collection
     /// URLs are left empty: the caller composes them, since only it
     /// knows the account they belong to.
-    pub fn list_graph_addressbooks(&mut self, token: &str) -> Result<Vec<Addressbook>, String> {
+    pub fn list_graph_addressbooks(
+        &mut self,
+        token: &str,
+    ) -> Result<Vec<Addressbook>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         let mut books = vec![Addressbook {
@@ -1157,7 +1179,11 @@ impl<'a, 'local> Client<'a, 'local> {
     /// Lists the contacts of the Graph folder (empty id means the
     /// default Contacts folder), each projected onto a vCard document;
     /// the Graph id is the addressing key and the changeKey the ETag.
-    pub fn list_graph_cards(&mut self, token: &str, folder: &str) -> Result<Vec<Card>, String> {
+    pub fn list_graph_cards(
+        &mut self,
+        token: &str,
+        folder: &str,
+    ) -> Result<Vec<Card>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let folder = (!folder.is_empty()).then_some(folder);
 
@@ -1196,7 +1222,7 @@ impl<'a, 'local> Client<'a, 'local> {
         token: &str,
         folder: &str,
         vcard: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let contact = msgraph::to_new_contact(vcard)?;
         let auth = HttpAuthBearer::new(token);
         let folder = (!folder.is_empty()).then_some(folder);
@@ -1214,7 +1240,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Reads the Graph contact `id`, projected onto a vCard document.
-    pub fn read_graph_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
+    pub fn read_graph_card(&mut self, token: &str, id: &str) -> Result<Card, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let expand = graph_expand();
         let coroutine = MsgraphContactGet::new(&auth, "me", id, Some(&expand))
@@ -1234,7 +1260,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         vcard: &str,
         base_vcard: Option<&str>,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let contact = match base_vcard {
             Some(base) => msgraph::to_contact_delta(vcard, base)?,
             None => msgraph::to_new_contact(vcard)?,
@@ -1254,7 +1280,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Deletes the Graph contact `id`.
-    pub fn delete_graph_card(&mut self, token: &str, id: &str) -> Result<(), String> {
+    pub fn delete_graph_card(&mut self, token: &str, id: &str) -> Result<(), BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let coroutine =
             MsgraphContactDelete::new(&auth, "me", id).map_err(|err| err.to_string())?;
@@ -1274,7 +1300,7 @@ impl<'a, 'local> Client<'a, 'local> {
         token: &str,
         folder: &str,
         changes: &[PushChange],
-    ) -> Result<Vec<PushOutcome>, String> {
+    ) -> Result<Vec<PushOutcome>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let create_url = if folder.is_empty() {
             "/me/contacts".to_string()
@@ -1322,7 +1348,7 @@ impl<'a, 'local> Client<'a, 'local> {
                             body: None,
                         }
                     }
-                    op => return Err(format!("Unknown Graph push op `{op}`")),
+                    op => return Err(format!("Unknown Graph push op `{op}`").into()),
                 };
                 requests.push(request);
             }
@@ -1341,7 +1367,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
             for (index, change) in chunk.iter().enumerate() {
                 let Some(reply) = replies.remove(&index.to_string()) else {
-                    return Err(format!("Graph batch response is missing request {index}"));
+                    return Err(format!("Graph batch response is missing request {index}").into());
                 };
 
                 let accepted = (200..300).contains(&reply.status)
@@ -1391,7 +1417,7 @@ impl<'a, 'local> Client<'a, 'local> {
         token: &str,
         folder: &str,
         delta_link: Option<&str>,
-    ) -> Result<Option<CardDelta>, String> {
+    ) -> Result<Option<CardDelta>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let folder = (!folder.is_empty()).then_some(folder);
 
@@ -1460,7 +1486,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         session_url: &Url,
         credentials: &Credentials,
-    ) -> Result<Vec<Addressbook>, String> {
+    ) -> Result<Vec<Addressbook>, BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1485,7 +1511,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         session_url: &Url,
         credentials: &Credentials,
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1495,7 +1521,8 @@ impl<'a, 'local> Client<'a, 'local> {
             JmapContactCardQuery::new(&session, &auth, opts).map_err(|err| err.to_string())?;
         let out = self.run_jmap(&api_url, coroutine)?;
 
-        out.cards.into_iter().map(jmap::to_card).collect()
+        let cards: Result<Vec<Card>, String> = out.cards.into_iter().map(jmap::to_card).collect();
+        Ok(cards?)
     }
 
     /// Creates the vCard as a ContactCard in the AddressBook
@@ -1507,7 +1534,7 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
         book_id: &str,
         vcard: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let card = jmap::to_jscontact(vcard)?;
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
@@ -1530,7 +1557,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let out = self.run_jmap(&api_url, coroutine)?;
 
         if let Some(err) = out.not_created.into_values().next() {
-            return Err(format!("JMAP ContactCard create rejected: {err:?}"));
+            return Err(format!("JMAP ContactCard create rejected: {err:?}").into());
         }
         let id = out
             .created
@@ -1554,7 +1581,7 @@ impl<'a, 'local> Client<'a, 'local> {
         session_url: &Url,
         credentials: &Credentials,
         id: &str,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1573,7 +1600,7 @@ impl<'a, 'local> Client<'a, 'local> {
             .next()
             .ok_or_else(|| format!("JMAP ContactCard `{id}` not found"))?;
 
-        jmap::to_card(card)
+        Ok(jmap::to_card(card)?)
     }
 
     /// Lists the ContactCard changes since `since_state` (RFC 8620
@@ -1588,7 +1615,7 @@ impl<'a, 'local> Client<'a, 'local> {
         session_url: &Url,
         credentials: &Credentials,
         since_state: Option<&str>,
-    ) -> Result<Option<CardDelta>, String> {
+    ) -> Result<Option<CardDelta>, BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1675,7 +1702,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         vcard: &str,
         base_vcard: Option<&str>,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let patch = jmap::to_patch(vcard, base_vcard)?;
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
@@ -1691,7 +1718,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let out = self.run_jmap(&api_url, coroutine)?;
 
         if let Some(err) = out.not_updated.into_values().next() {
-            return Err(format!("JMAP ContactCard update rejected: {err:?}"));
+            return Err(format!("JMAP ContactCard update rejected: {err:?}").into());
         }
 
         Ok(Card {
@@ -1709,7 +1736,7 @@ impl<'a, 'local> Client<'a, 'local> {
         session_url: &Url,
         credentials: &Credentials,
         id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1723,7 +1750,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let out = self.run_jmap(&api_url, coroutine)?;
 
         if let Some(err) = out.not_destroyed.into_values().next() {
-            return Err(format!("JMAP ContactCard destroy rejected: {err:?}"));
+            return Err(format!("JMAP ContactCard destroy rejected: {err:?}").into());
         }
 
         Ok(())
@@ -1739,7 +1766,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         add: &[String],
         remove: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1765,7 +1792,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let out = self.run_jmap(&api_url, coroutine)?;
 
         if let Some(err) = out.not_updated.into_values().next() {
-            return Err(format!("JMAP membership update rejected: {err:?}"));
+            return Err(format!("JMAP membership update rejected: {err:?}").into());
         }
 
         Ok(())
@@ -1783,7 +1810,7 @@ impl<'a, 'local> Client<'a, 'local> {
         credentials: &Credentials,
         book_id: &str,
         changes: &[PushChange],
-    ) -> Result<Vec<PushOutcome>, String> {
+    ) -> Result<Vec<PushOutcome>, BridgeError> {
         let auth = jmap_auth(credentials);
         let session = self.jmap_session(session_url, &auth)?;
         let api_url = session.api_url.clone();
@@ -1839,7 +1866,7 @@ impl<'a, 'local> Client<'a, 'local> {
                         destroy.push(id.to_string());
                         destroy_refs.insert(id.to_string(), change.reference.clone());
                     }
-                    op => return Err(format!("Unknown push op `{op}`")),
+                    op => return Err(format!("Unknown push op `{op}`").into()),
                 }
             }
 
@@ -1864,7 +1891,7 @@ impl<'a, 'local> Client<'a, 'local> {
                         ..Default::default()
                     });
                 } else {
-                    return Err("JMAP create response is missing the card id".to_string());
+                    return Err("JMAP create response is missing the card id".into());
                 }
             }
             for (id, reference) in update_refs {
@@ -1904,7 +1931,10 @@ impl<'a, 'local> Client<'a, 'local> {
     /// are m:n labels, so one card can appear under several books.
     /// Doubles as the connection check during onboarding. Collection
     /// URLs are left empty: the caller composes them.
-    pub fn list_google_addressbooks(&mut self, token: &str) -> Result<Vec<Addressbook>, String> {
+    pub fn list_google_addressbooks(
+        &mut self,
+        token: &str,
+    ) -> Result<Vec<Addressbook>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         let mut books = Vec::new();
@@ -1973,7 +2003,7 @@ impl<'a, 'local> Client<'a, 'local> {
     /// Lists the account's contacts (`people.connections.list`), each
     /// projected onto a vCard document; the person id is the addressing
     /// key and the person etag the ETag.
-    pub fn list_google_cards(&mut self, token: &str) -> Result<Vec<Card>, String> {
+    pub fn list_google_cards(&mut self, token: &str) -> Result<Vec<Card>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         let params = PeopleConnectionsListParams {
@@ -2015,7 +2045,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         token: &str,
         sync_token: Option<&str>,
-    ) -> Result<Option<CardDelta>, String> {
+    ) -> Result<Option<CardDelta>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         // The person metadata carries the deleted marker of sync
@@ -2047,7 +2077,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 .map_err(|err| err.to_string())?;
             let page = match self.run_google(coroutine) {
                 Ok(page) => page,
-                Err(err) if err.contains("EXPIRED_SYNC_TOKEN") => return Ok(None),
+                Err(err) if err.message.contains("EXPIRED_SYNC_TOKEN") => return Ok(None),
                 Err(err) => return Err(err),
             };
 
@@ -2080,7 +2110,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Creates the vCard as a People contact. The server names the
     /// resource, so the returned card carries the server-assigned id.
-    pub fn create_google_card(&mut self, token: &str, vcard: &str) -> Result<Card, String> {
+    pub fn create_google_card(&mut self, token: &str, vcard: &str) -> Result<Card, BridgeError> {
         let person = google::to_person(vcard)?;
         let auth = HttpAuthBearer::new(token);
 
@@ -2090,7 +2120,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Reads the People contact `id`, projected onto a vCard document.
-    pub fn read_google_card(&mut self, token: &str, id: &str) -> Result<Card, String> {
+    pub fn read_google_card(&mut self, token: &str, id: &str) -> Result<Card, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let coroutine =
             PeoplePersonGet::new(&auth, &format!("people/{id}"), google::READ_FIELDS, &[])
@@ -2114,7 +2144,7 @@ impl<'a, 'local> Client<'a, 'local> {
         vcard: &str,
         base_vcard: Option<&str>,
         etag: Option<&str>,
-    ) -> Result<Card, String> {
+    ) -> Result<Card, BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let resource_name = format!("people/{id}");
 
@@ -2176,7 +2206,9 @@ impl<'a, 'local> Client<'a, 'local> {
             // enumerate to guard: a real remote change since the base
             // re-conflicts the row before this push runs, so the retry only
             // bridges the etag representation gap.
-            Err(err) if err.contains("HTTP 400") && err.to_ascii_lowercase().contains("etag") => {
+            Err(err)
+                if err.status == Some(400) && err.message.to_ascii_lowercase().contains("etag") =>
+            {
                 let coroutine = PeoplePersonGet::new(
                     &auth,
                     &resource_name,
@@ -2196,7 +2228,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Deletes the People contact `id`.
-    pub fn delete_google_card(&mut self, token: &str, id: &str) -> Result<(), String> {
+    pub fn delete_google_card(&mut self, token: &str, id: &str) -> Result<(), BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let coroutine = PeopleContactDelete::new(&auth, &format!("people/{id}"))
             .map_err(|err| err.to_string())?;
@@ -2214,7 +2246,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         token: &str,
         vcards: &[String],
-    ) -> Result<Vec<Card>, String> {
+    ) -> Result<Vec<Card>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         let persons = vcards
@@ -2235,7 +2267,8 @@ impl<'a, 'local> Client<'a, 'local> {
                     "Google batch create answered {} contacts for {}",
                     response.created_people.len(),
                     chunk.len()
-                ));
+                )
+                .into());
             }
             for created in response.created_people {
                 let person = created
@@ -2250,7 +2283,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Deletes the People contacts `ids` by batch calls (500 per
     /// request instead of one).
-    pub fn delete_google_cards(&mut self, token: &str, ids: &[String]) -> Result<(), String> {
+    pub fn delete_google_cards(&mut self, token: &str, ids: &[String]) -> Result<(), BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
         let names: Vec<String> = ids.iter().map(|id| format!("people/{id}")).collect();
@@ -2273,7 +2306,7 @@ impl<'a, 'local> Client<'a, 'local> {
         id: &str,
         add: &[String],
         remove: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<(), BridgeError> {
         let auth = HttpAuthBearer::new(token);
         let person = vec![format!("people/{id}")];
 
@@ -2291,7 +2324,8 @@ impl<'a, 'local> Client<'a, 'local> {
                 return Err(format!(
                     "Google group member add rejected: {:?} not found",
                     out.not_found_resource_names
-                ));
+                )
+                .into());
             }
         }
 
@@ -2309,13 +2343,14 @@ impl<'a, 'local> Client<'a, 'local> {
                 .can_not_remove_last_contact_group_resource_names
                 .is_empty()
             {
-                return Err("Google refused to remove the contact from its last group".to_string());
+                return Err("Google refused to remove the contact from its last group".into());
             }
             if !out.not_found_resource_names.is_empty() {
                 return Err(format!(
                     "Google group member removal rejected: {:?} not found",
                     out.not_found_resource_names
-                ));
+                )
+                .into());
             }
         }
 
@@ -2325,7 +2360,7 @@ impl<'a, 'local> Client<'a, 'local> {
     // ---- Discovery walk steps ---------------------------------------------
 
     /// PROPFIND the context root for `DAV:current-user-principal`.
-    fn principal(&mut self, base_url: &Url, auth: &WebdavAuth) -> Result<Option<Url>, String> {
+    fn principal(&mut self, base_url: &Url, auth: &WebdavAuth) -> Result<Option<Url>, BridgeError> {
         self.run_redirect(base_url, |url| {
             CurrentUserPrincipal::new(url, auth, USER_AGENT)
         })
@@ -2336,7 +2371,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         principal: &Url,
         auth: &WebdavAuth,
-    ) -> Result<Option<Url>, String> {
+    ) -> Result<Option<Url>, BridgeError> {
         self.run_redirect(principal, |url| {
             AddressbookHomeSet::new(url, auth, USER_AGENT, url.path())
         })
@@ -2346,17 +2381,17 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Drives a discovery coroutine to completion, routing each yield
     /// to the stream the Java transport opens for the yielded URL.
-    fn run_discovery<C, T, E>(&mut self, mut coroutine: C) -> Result<T, String>
+    fn run_discovery<C, T, E>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: DiscoveryCoroutine<Yield = DiscoveryYield, Return = Result<T, E>>,
-        E: Display,
+        E: StdError + 'static,
     {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
                 DiscoveryCoroutineState::Complete(Ok(url)) => return Ok(url),
-                DiscoveryCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                DiscoveryCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsRead { url }) => {
                     arg = Some(self.read(url.as_str())?);
                 }
@@ -2373,17 +2408,17 @@ impl<'a, 'local> Client<'a, 'local> {
     /// slice) so the coroutine can run its own fallbacks (the JMAP
     /// resolve falls back to the domain when the resolver is
     /// unreachable) and errors out on its own terms.
-    fn run_mechanism<C, T, E>(&mut self, mut coroutine: C) -> Result<T, String>
+    fn run_mechanism<C, T, E>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: DiscoveryCoroutine<Yield = DiscoveryYield, Return = Result<T, E>>,
-        E: Display,
+        E: StdError + 'static,
     {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
                 DiscoveryCoroutineState::Complete(Ok(output)) => return Ok(output),
-                DiscoveryCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                DiscoveryCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 DiscoveryCoroutineState::Yielded(DiscoveryYield::WantsRead { url }) => {
                     arg = Some(self.read(url.as_str()).unwrap_or_default());
                 }
@@ -2399,7 +2434,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Runs a Microsoft Graph coroutine to completion, routing every
     /// yield to the transport stream opened on the Graph origin.
-    fn run_msgraph<C, T>(&mut self, mut coroutine: C) -> Result<T, String>
+    fn run_msgraph<C, T>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: MsgraphCoroutine<
                 Yield = MsgraphYield,
@@ -2411,7 +2446,7 @@ impl<'a, 'local> Client<'a, 'local> {
         loop {
             match coroutine.resume(arg.as_deref()) {
                 MsgraphCoroutineState::Complete(Ok(output)) => return Ok(output.response),
-                MsgraphCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                MsgraphCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 MsgraphCoroutineState::Yielded(MsgraphYield::WantsRead) => {
                     arg = Some(self.read(MSGRAPH_API_BASE)?);
                 }
@@ -2425,7 +2460,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Runs a Google People coroutine to completion, routing every
     /// yield to the transport stream opened on the People API origin.
-    fn run_google<C, T>(&mut self, mut coroutine: C) -> Result<T, String>
+    fn run_google<C, T>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: PeopleCoroutine<
                 Yield = PeopleYield,
@@ -2437,7 +2472,7 @@ impl<'a, 'local> Client<'a, 'local> {
         loop {
             match coroutine.resume(arg.as_deref()) {
                 PeopleCoroutineState::Complete(Ok(output)) => return Ok(output.response),
-                PeopleCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                PeopleCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 PeopleCoroutineState::Yielded(PeopleYield::WantsRead) => {
                     arg = Some(self.read(PEOPLE_API_BASE)?);
                 }
@@ -2456,7 +2491,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         session_url: &Url,
         http_auth: &SecretString,
-    ) -> Result<JmapSession, String> {
+    ) -> Result<JmapSession, BridgeError> {
         let mut target = session_url.clone();
 
         loop {
@@ -2466,7 +2501,7 @@ impl<'a, 'local> Client<'a, 'local> {
             loop {
                 match coroutine.resume(arg.as_deref()) {
                     JmapCoroutineState::Complete(Ok(out)) => return Ok(out.session),
-                    JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                    JmapCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                     JmapCoroutineState::Yielded(JmapRedirectYield::WantsWrite(bytes)) => {
                         self.write(target.as_str(), &bytes)?;
                         arg = None;
@@ -2487,17 +2522,17 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Runs a JMAP method coroutine to completion, routing every yield
     /// to the transport stream opened on the session's API URL.
-    fn run_jmap<C, T, E>(&mut self, api_url: &Url, mut coroutine: C) -> Result<T, String>
+    fn run_jmap<C, T, E>(&mut self, api_url: &Url, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: JmapCoroutine<Yield = JmapYield, Return = Result<T, E>>,
-        E: Display,
+        E: StdError + 'static,
     {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
                 JmapCoroutineState::Complete(Ok(value)) => return Ok(value),
-                JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                JmapCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 JmapCoroutineState::Yielded(JmapYield::WantsRead) => {
                     arg = Some(self.read(api_url.as_str())?);
                 }
@@ -2516,7 +2551,7 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         api_url: &Url,
         mut coroutine: JmapContactCardChanges,
-    ) -> Result<Option<JmapChangesOutput>, String> {
+    ) -> Result<Option<JmapChangesOutput>, BridgeError> {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
@@ -2525,7 +2560,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 JmapCoroutineState::Complete(Err(JmapContactCardChangesError::Changes(
                     JmapChangesError::Method(JmapMethodError::CannotCalculateChanges { .. }),
                 ))) => return Ok(None),
-                JmapCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                JmapCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 JmapCoroutineState::Yielded(JmapYield::WantsRead) => {
                     arg = Some(self.read(api_url.as_str())?);
                 }
@@ -2544,7 +2579,7 @@ impl<'a, 'local> Client<'a, 'local> {
     fn run_msgraph_delta<C>(
         &mut self,
         mut coroutine: C,
-    ) -> Result<Option<MsgraphContactsDeltaResponse>, String>
+    ) -> Result<Option<MsgraphContactsDeltaResponse>, BridgeError>
     where
         C: MsgraphCoroutine<
                 Yield = MsgraphYield,
@@ -2561,7 +2596,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 MsgraphCoroutineState::Complete(Err(err)) if err.status() == Some(410) => {
                     return Ok(None);
                 }
-                MsgraphCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                MsgraphCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 MsgraphCoroutineState::Yielded(MsgraphYield::WantsRead) => {
                     arg = Some(self.read(MSGRAPH_API_BASE)?);
                 }
@@ -2574,17 +2609,17 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 
     /// Drives a plain (non-redirect) coroutine against `target`.
-    fn run<C, T, E>(&mut self, target: &Url, mut coroutine: C) -> Result<T, String>
+    fn run<C, T, E>(&mut self, target: &Url, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: WebdavCoroutine<Yield = WebdavYield, Return = Result<T, E>>,
-        E: Display,
+        E: StdError + 'static,
     {
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
                 WebdavCoroutineState::Complete(Ok(value)) => return Ok(value),
-                WebdavCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                WebdavCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                 WebdavCoroutineState::Yielded(WebdavYield::WantsWrite(bytes)) => {
                     self.write(target.as_str(), &bytes)?;
                     arg = None;
@@ -2600,10 +2635,14 @@ impl<'a, 'local> Client<'a, 'local> {
     /// new target whenever the server answers 3xx; the transport pools
     /// one connection per origin, so a cross-origin redirect just
     /// opens a new socket.
-    fn run_redirect<C, T, E>(&mut self, start: &Url, make: impl Fn(&Url) -> C) -> Result<T, String>
+    fn run_redirect<C, T, E>(
+        &mut self,
+        start: &Url,
+        make: impl Fn(&Url) -> C,
+    ) -> Result<T, BridgeError>
     where
         C: WebdavCoroutine<Yield = WebdavRedirectYield, Return = Result<T, E>>,
-        E: Display,
+        E: StdError + 'static,
     {
         let mut target = start.clone();
 
@@ -2614,7 +2653,7 @@ impl<'a, 'local> Client<'a, 'local> {
             loop {
                 match coroutine.resume(arg.as_deref()) {
                     WebdavCoroutineState::Complete(Ok(value)) => return Ok(value),
-                    WebdavCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                    WebdavCoroutineState::Complete(Err(err)) => return Err(coroutine_error(&err)),
                     WebdavCoroutineState::Yielded(WebdavRedirectYield::WantsWrite(bytes)) => {
                         self.write(target.as_str(), &bytes)?;
                         arg = None;
@@ -2640,7 +2679,7 @@ impl<'a, 'local> Client<'a, 'local> {
 
     /// Upcalls the Java transport to read the next chunk from the
     /// stream open on `url`.
-    fn read(&mut self, url: &str) -> Result<Vec<u8>, String> {
+    fn read(&mut self, url: &str) -> Result<Vec<u8>, BridgeError> {
         // NOTE: an empty slice signals EOF to the coroutine.
         let url = self.env.new_string(url).map_err(|err| err.to_string())?;
         let value = self
@@ -2657,12 +2696,12 @@ impl<'a, 'local> Client<'a, 'local> {
 
         self.env
             .convert_byte_array(&array)
-            .map_err(|err| err.to_string())
+            .map_err(|err| err.to_string().into())
     }
 
     /// Upcalls the Java transport to write and flush bytes to the
     /// stream open on `url`.
-    fn write(&mut self, url: &str, bytes: &[u8]) -> Result<(), String> {
+    fn write(&mut self, url: &str, bytes: &[u8]) -> Result<(), BridgeError> {
         let url = self.env.new_string(url).map_err(|err| err.to_string())?;
         let array = self
             .env
@@ -2727,8 +2766,8 @@ fn href_resource(href: &str) -> Option<String> {
 }
 
 /// Parses an absolute URL off the JNI wire.
-fn parse_url(raw: &str) -> Result<Url, String> {
-    Url::parse(raw).map_err(|err| format!("Invalid URL `{raw}`: {err}"))
+fn parse_url(raw: &str) -> Result<Url, BridgeError> {
+    Url::parse(raw).map_err(|err| format!("Invalid URL `{raw}`: {err}").into())
 }
 
 /// Auth scheme from the credentials: an empty login means the
@@ -2813,6 +2852,44 @@ fn oauth_error(err: Oauth20IssueAccessTokenErrorParams) -> String {
     }
 }
 
+/// A completed coroutine failure as the bridge error: the display
+/// message, plus the HTTP status dug out of the failure itself.
+fn coroutine_error(err: &(impl StdError + 'static)) -> BridgeError {
+    BridgeError {
+        message: err.to_string(),
+        status: http_status(err),
+    }
+}
+
+/// Walks the failure's source chain down to the transport leaf that
+/// knows the HTTP status of the failed round, if the failure was one:
+/// io-webdav and io-jmap carry it on their send errors, io-msgraph
+/// and io-google-people expose it as an accessor.
+fn http_status(err: &(dyn StdError + 'static)) -> Option<u16> {
+    let mut cause = Some(err);
+
+    while let Some(err) = cause {
+        if let Some(WebdavSendError::HttpStatus(status, _)) = err.downcast_ref() {
+            return Some(*status);
+        }
+        if let Some(FollowRedirectsError::HttpStatus(status, _)) = err.downcast_ref() {
+            return Some(*status);
+        }
+        if let Some(JmapSendError::HttpStatus(status)) = err.downcast_ref() {
+            return Some(*status);
+        }
+        if let Some(send) = err.downcast_ref::<MsgraphSendError>() {
+            return send.status();
+        }
+        if let Some(send) = err.downcast_ref::<PeopleSendError>() {
+            return send.status();
+        }
+        cause = err.source();
+    }
+
+    None
+}
+
 /// io-webdav addressbook to the JNI-facing shape: the display name
 /// defaults to the id when the server returned none, and the absolute
 /// collection URL is rebuilt from the home set (io-webdav only keeps
@@ -2881,10 +2958,10 @@ fn google_card(person: PeoplePerson) -> Card {
 
 /// Parses an OData paging link served by Graph.
 /// A required field of a push change, named in the error when absent.
-fn required<'a>(field: &'a Option<String>, op: &str, name: &str) -> Result<&'a str, String> {
+fn required<'a>(field: &'a Option<String>, op: &str, name: &str) -> Result<&'a str, BridgeError> {
     field
         .as_deref()
-        .ok_or_else(|| format!("Push {op} change is missing its {name}"))
+        .ok_or_else(|| format!("Push {op} change is missing its {name}").into())
 }
 
 /// One rejected push outcome carrying what the server objected.
@@ -2941,15 +3018,15 @@ struct GraphBatchReply {
     body: Option<serde_json::Value>,
 }
 
-fn parse_graph_url(raw: &str) -> Result<Url, String> {
-    Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}"))
+fn parse_graph_url(raw: &str) -> Result<Url, BridgeError> {
+    Url::parse(raw).map_err(|err| format!("Invalid Graph page URL `{raw}`: {err}").into())
 }
 
 /// Splits a trimmed search input into (email, domain), the domain
 /// lowercased. A bare domain (no `@`) yields an empty email and the
 /// whole input as domain: every mechanism the app drives is
 /// domain-driven, so a domain searches just as well as an address.
-fn search_domain(input: &str) -> Result<(String, String), String> {
+fn search_domain(input: &str) -> Result<(String, String), BridgeError> {
     let input = input.trim();
 
     let (email, domain) = match input.split_once('@') {
@@ -2960,7 +3037,7 @@ fn search_domain(input: &str) -> Result<(String, String), String> {
     let domain = domain.trim_matches('.').to_ascii_lowercase();
 
     if domain.is_empty() {
-        return Err(format!("Search input `{input}` has no domain"));
+        return Err(format!("Search input `{input}` has no domain").into());
     }
 
     Ok((email.to_string(), domain))

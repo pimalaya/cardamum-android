@@ -44,6 +44,7 @@ import org.pimalaya.cardamum.client.Addressbook;
 import org.pimalaya.cardamum.client.AuthMethod;
 import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardamumClient;
+import org.pimalaya.cardamum.client.CardamumException;
 import org.pimalaya.cardamum.client.OauthSession;
 import org.pimalaya.cardamum.client.OauthTokens;
 import org.pimalaya.cardamum.client.ServerMetadata;
@@ -529,6 +530,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         io.shutdownNow();
+        // shutdownNow interrupts, but a blocking accept() only wakes
+        // on close: without this the OAuth loopback listener would
+        // outlive the activity by up to its 300s timeout.
+        closeLoopback();
         super.onDestroy();
     }
 
@@ -2905,7 +2910,7 @@ public class MainActivity extends Activity {
         io.execute(
                 () -> {
                     SyncOutcome outcome = runRemoteSync();
-                    main.post(
+                    postAlive(
                             () -> {
                                 setSyncing(false);
                                 finishSync(toHome);
@@ -3082,16 +3087,22 @@ public class MainActivity extends Activity {
                         entry.clientId,
                         entry.clientSecret);
 
-        accounts.removeIf(candidate -> candidate.email.equals(entry.email));
-        accounts.add(updated);
+        // The store write is synchronized; the in-memory cache is
+        // main-thread-owned (the drawer iterates it), and this runs on
+        // the io executor, so its mutation marshals over.
+        main.post(
+                () -> {
+                    accounts.removeIf(candidate -> candidate.email.equals(entry.email));
+                    accounts.add(updated);
+                });
         store.add(updated);
         return fresh;
     }
 
-    /** True for an HTTP 401 from either backend (expired or revoked token). */
+    /** True for an HTTP 401 from any backend (expired or revoked token). */
     private static boolean expiredToken(Exception error) {
-        String message = error.getMessage();
-        return message != null && message.contains("HTTP 401");
+        return error instanceof CardamumException
+                && Integer.valueOf(401).equals(((CardamumException) error).status);
     }
 
     /**
@@ -3119,7 +3130,7 @@ public class MainActivity extends Activity {
                     if (outcome.failure == null) {
                         outcome.failure = failure;
                     }
-                    main.post(
+                    postAlive(
                             () -> {
                                 setSyncing(false);
                                 finishSync(false);
@@ -3156,7 +3167,7 @@ public class MainActivity extends Activity {
                 () -> {
                     OfflineEngine.Report report = new OfflineEngine.Report();
                     Exception failure = runLocalSync(report);
-                    main.post(
+                    postAlive(
                             () -> {
                                 setSyncing(false);
                                 if (failure != null) {
@@ -5884,6 +5895,21 @@ public class MainActivity extends Activity {
 
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * Posts a UI continuation that only runs while the activity is
+     * alive: the io executor's sync outcomes land here, and one
+     * arriving after a rotation or a finish would raise dialogs
+     * against a dead window (BadTokenException).
+     */
+    private void postAlive(Runnable action) {
+        main.post(
+                () -> {
+                    if (!isDestroyed()) {
+                        action.run();
+                    }
+                });
     }
 
     /**

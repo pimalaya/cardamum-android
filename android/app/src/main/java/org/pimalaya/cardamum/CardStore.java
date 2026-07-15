@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,14 +33,13 @@ import org.pimalaya.cardamum.client.CardamumClient;
  */
 public class CardStore extends SQLiteOpenHelper {
     private static final String DATABASE = "cards.db";
-    // NOTE: 2 = the remote_synced switch on addressbook; 15 = the
-    // phone axis columns on membership (phone_revision, phone_base,
-    // phone_stale, phone_conflict_revision); 14 = the io-offline
-    // engine columns (conflict_revision and stale on card, checkpoint
-    // on addressbook); 13 = the dismissed_duplicate table; 12 = the
-    // index gained the info fallback line; 11 = the divergence hash
-    // covering the extended model fields; index changes rebuild the
-    // card tables.
+    // NOTE: the version log restarted at 1 for the first shipped
+    // build; every pre-release bump (index columns, engine columns,
+    // phone axis) is folded into onCreate. 2 = the remote_synced
+    // switch on addressbook. A schema or index change rebuilds the
+    // card tables (bump this and the rebuild carries over what no
+    // remote can re-hydrate, see rebuildCardTables); addressbook's
+    // own additions land as ALTERs in onUpgrade instead.
     private static final int VERSION = 2;
 
     /** Indexes vCards at write time (pure bridge computation). */
@@ -238,11 +238,75 @@ public class CardStore extends SQLiteOpenHelper {
                     "ALTER TABLE addressbook"
                             + " ADD COLUMN remote_synced INTEGER NOT NULL DEFAULT 1");
         }
-        db.execSQL("DROP TABLE IF EXISTS card");
-        db.execSQL("DROP TABLE IF EXISTS membership");
+        rebuildCardTables(db);
+    }
+
+    @Override
+    public void onDowngrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        // An older build over a newer store (a rollback, a sideload):
+        // the default helper throws and strands the app; rebuild on
+        // this build's schema like an upgrade instead.
+        rebuildCardTables(db);
+    }
+
+    /**
+     * Rebuilds the card tables on the current schema, carrying over
+     * what no remote can re-hydrate: every card of the local account
+     * (its only copy lives here) and the unpushed rows of the others
+     * (dirty edits, staged deletions), plus their membership rows.
+     * Only the columns both schemas share cross over, so the carry
+     * works for any version pair, in both directions. The surviving
+     * addressbooks' checkpoints clear along the way: an incremental
+     * round from an old cursor would never re-download the dropped
+     * cards, so the next sync must enumerate in full.
+     */
+    private void rebuildCardTables(SQLiteDatabase db) {
         db.execSQL("DROP TABLE IF EXISTS detached");
         db.execSQL("DROP TABLE IF EXISTS link");
+        db.execSQL("DROP TABLE IF EXISTS card_carry");
+        db.execSQL("DROP TABLE IF EXISTS membership_carry");
+        db.execSQL("ALTER TABLE card RENAME TO card_carry");
+        db.execSQL("ALTER TABLE membership RENAME TO membership_carry");
         onCreate(db);
+
+        String cards = sharedColumns(db, "card_carry", "card");
+        db.execSQL(
+                "INSERT INTO card (" + cards + ") SELECT " + cards
+                        + " FROM card_carry WHERE account_email LIKE 'local://%'"
+                        + " OR dirty != 0 OR deleted != 0");
+        String memberships = sharedColumns(db, "membership_carry", "membership");
+        db.execSQL(
+                "INSERT INTO membership (" + memberships + ") SELECT " + memberships
+                        + " FROM membership_carry WHERE EXISTS (SELECT 1 FROM card"
+                        + " WHERE card.account_email = membership_carry.account_email"
+                        + " AND card.key = membership_carry.card_key)");
+
+        db.execSQL("DROP TABLE card_carry");
+        db.execSQL("DROP TABLE membership_carry");
+        db.execSQL("UPDATE addressbook SET checkpoint = NULL");
+    }
+
+    /** The comma-joined column names two tables share. */
+    private static String sharedColumns(SQLiteDatabase db, String from, String to) {
+        Set<String> target = new HashSet<>(columnsOf(db, to));
+        List<String> shared = new ArrayList<>();
+        for (String column : columnsOf(db, from)) {
+            if (target.contains(column)) {
+                shared.add(column);
+            }
+        }
+        return String.join(", ", shared);
+    }
+
+    /** A table's column names, per PRAGMA table_info. */
+    private static List<String> columnsOf(SQLiteDatabase db, String table) {
+        List<String> columns = new ArrayList<>();
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (cursor.moveToNext()) {
+                columns.add(cursor.getString(cursor.getColumnIndexOrThrow("name")));
+            }
+        }
+        return columns;
     }
 
     /** A replica reference for the link layer (emails hold no newline). */

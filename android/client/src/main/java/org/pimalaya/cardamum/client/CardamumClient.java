@@ -971,13 +971,18 @@ public class CardamumClient {
         return configs;
     }
 
-    /** Parses an object reply, surfacing the bridge's {@code error} field. */
+    /**
+     * Parses an object reply, surfacing the bridge's {@code error}
+     * field along with the HTTP status riding it, when the failure
+     * was an HTTP round.
+     */
     static JSONObject object(String json) {
         try {
             JSONObject reply = new JSONObject(json.trim());
             String error = reply.optString("error");
             if (!error.isEmpty()) {
-                throw new CardamumException(error);
+                Integer status = reply.has("status") ? reply.getInt("status") : null;
+                throw new CardamumException(error, status);
             }
             return reply;
         } catch (JSONException error) {

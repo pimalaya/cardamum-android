@@ -35,7 +35,7 @@ use jni::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::client::clear_and_fail;
+use crate::{client::clear_and_fail, types::BridgeError};
 
 /// Reconciles `collection` with its remote through the Java driver,
 /// returning the sync report as JSON. With `full` the checkpoint is
@@ -45,7 +45,7 @@ pub fn sync<'local>(
     driver: &JObject<'local>,
     collection: &str,
     full: bool,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     let opts = OfflineSyncOptions { push: true, full };
     let report = Driver::new(env, driver).run(OfflineSync::new(collection, opts))?;
 
@@ -66,7 +66,7 @@ pub fn upgrade<'local>(
     driver: &JObject<'local>,
     collection: &str,
     handles: Vec<String>,
-) -> Result<Value, String> {
+) -> Result<Value, BridgeError> {
     let handles = handles.into_iter().map(Handle::from).collect();
     let coroutine = OfflineUpgrade::new(collection, handles, Tier::Full);
     let report = Driver::new(env, driver).run(coroutine)?;
@@ -85,7 +85,7 @@ pub fn mutate<'local>(
     driver: &JObject<'local>,
     collection: &str,
     mutation: &str,
-) -> Result<(), String> {
+) -> Result<(), BridgeError> {
     let mutation: MutationJson =
         serde_json::from_str(mutation).map_err(|err| format!("Invalid mutation: {err}"))?;
     Driver::new(env, driver).run(OfflineMutate::new(collection, mutation.into()))
@@ -104,7 +104,7 @@ impl<'a, 'local> Driver<'a, 'local> {
 
     /// Runs an offline coroutine to completion, servicing every yield
     /// through the Java driver.
-    fn run<C, T, E>(&mut self, mut coroutine: C) -> Result<T, String>
+    fn run<C, T, E>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
     where
         C: OfflineCoroutine<Yield = OfflineYield, Return = Result<T, E>>,
         E: Display,
@@ -114,7 +114,7 @@ impl<'a, 'local> Driver<'a, 'local> {
         loop {
             match coroutine.resume(arg.take()) {
                 OfflineCoroutineState::Complete(Ok(value)) => return Ok(value),
-                OfflineCoroutineState::Complete(Err(err)) => return Err(err.to_string()),
+                OfflineCoroutineState::Complete(Err(err)) => return Err(err.to_string().into()),
                 OfflineCoroutineState::Yielded(yielded) => {
                     let reply = self.upcall(&yield_json(&yielded))?;
                     arg = Some(parse_arg(&yielded, &reply)?);
@@ -194,12 +194,16 @@ fn yield_json(yielded: &OfflineYield) -> String {
 
 /// Parses the Java reply matching the pending yield into the engine
 /// arg fed back on the next resume. A reply carrying an `error` field
-/// aborts the drive.
-fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, String> {
+/// aborts the run, keeping the HTTP status the driver reported (a 401
+/// surfacing here is what triggers the token refresh upstairs).
+fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeError> {
     let probe: ErrorJson =
         serde_json::from_str(reply).map_err(|err| format!("Unreadable driver reply: {err}"))?;
     if let Some(error) = probe.error {
-        return Err(error);
+        return Err(BridgeError {
+            message: error,
+            status: probe.status,
+        });
     }
 
     let arg = match yielded {
@@ -294,11 +298,14 @@ fn checkpoint_str(checkpoint: &Checkpoint) -> String {
 
 // ---- Wire types -----------------------------------------------------------
 
-/// Probe for the `error` field any driver reply may carry.
+/// Probe for the `error` field any driver reply may carry, plus the
+/// HTTP status the driver attaches when the failure was an HTTP round.
 #[derive(Deserialize)]
 struct ErrorJson {
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    status: Option<u16>,
 }
 
 /// One placement on the JSON wire, both directions.

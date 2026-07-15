@@ -1,6 +1,45 @@
 //! Payloads threaded across the JNI boundary.
 
+use core::fmt;
+
 use serde::{Deserialize, Serialize};
+
+/// One failed bridge operation, serialized as the error reply the
+/// Java client parses: the message every layer displays, plus the
+/// HTTP status when the failure was an HTTP round. Java branches on
+/// the status (412 retries unguarded, 404 converges a removal, 401
+/// refreshes the token), so it crosses as its own field instead of
+/// riding the message prose.
+#[derive(Debug, Serialize)]
+pub struct BridgeError {
+    /// Human-readable failure message.
+    #[serde(rename = "error")]
+    pub message: String,
+    /// Status of the failed HTTP round, absent on non-HTTP failures.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+}
+
+impl fmt::Display for BridgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(f)
+    }
+}
+
+impl From<String> for BridgeError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            status: None,
+        }
+    }
+}
+
+impl From<&str> for BridgeError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
 
 /// Borrowed account credentials threaded through one connection. An
 /// empty login means the password field carries an OAuth 2.0 access

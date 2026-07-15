@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.CardamumClient;
+import org.pimalaya.cardamum.client.CardamumException;
 import org.pimalaya.cardamum.client.OauthTokens;
 
 /**
@@ -178,10 +179,10 @@ public class SyncWorker extends Worker {
         return fresh;
     }
 
-    /** True for an HTTP 401 from either backend (expired or revoked token). */
+    /** True for an HTTP 401 from any backend (expired or revoked token). */
     private static boolean expiredToken(Exception error) {
-        String message = error.getMessage();
-        return message != null && message.contains("HTTP 401");
+        return error instanceof CardamumException
+                && Integer.valueOf(401).equals(((CardamumException) error).status);
     }
 
     /**

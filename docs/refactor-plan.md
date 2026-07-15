@@ -2,7 +2,7 @@
 
 Three independent cold reviews (code quality, Rust/Java separation of concerns, codebase structure) ran on 2026-07-15, each with no prior context, then merged with maintainer knowledge. Their strongest signal is fourfold: the sync path has three unserialized entry points and a logic fork between the in-app path and the worker; error semantics cross the bridge as prose that three layers must preserve verbatim; MainActivity is a ~6,000-line god object; and a shared vocabulary (hashes, enums, TYPE tables) is maintained on both sides of the bridge by convention. This plan sequences the fixes and maps which responsibilities migrate into Rust. Nothing here changes behavior except where a finding is itself a bug.
 
-Constraint while the io-oauth upgrade session is in flight: no work on oauth.rs, the Java OAuth flows or the token-refresh call sites until it lands; the phases below mark the affected steps.
+The io-oauth upgrade this plan was originally gated on landed first (2026-07-15), so the steps that waited for it (the 401 call sites, the SecureStore coordination) shipped with their phase.
 
 ## Phase 0: correctness
 
@@ -66,3 +66,7 @@ The split holds at the resource level: every socket, SQLite row, WorkManager sch
 ### Chatter, not ownership
 
 The storage seam pays O(cards) bridge crossings: offlinePlacement per cursor row on every collection load, offlineUpsertPlan per engine upsert, indexCard per write. The decisions are on the right side; batch the facts per collection (arrays in, arrays out) so the boundary tax is paid per phase, as offline.rs already claims.
+
+## Landed
+
+- 2026-07-15: Phase 0 in full. The error envelope carries the HTTP status as its own field end to end: types.rs gained BridgeError (the serialized wire shape), client.rs returns it everywhere and digs the status out of the coroutine failures (a source-chain walk to the io-webdav/io-jmap send errors, the io-msgraph and io-google-people status accessors), the driver seam round-trips it through OfflineEngine.error and offline.rs, and CardamumException exposes it; the 412/404/401 checks and Google's etag-gap 400 heuristic all branch on the field, and this also delivered the migration map's error-classification move. syncBook and syncPhone serialize on a process-wide per-book ReentrantLock. Schema rebuilds carry over the local book's cards and every dirty or deleted row on the shared-column intersection, clear the surviving checkpoints (an incremental round from an old cursor would never re-download the dropped cards) and onDowngrade rebuilds instead of crashing. SecureStore serializes loadAll, add and remove on a class lock and refreshAccount marshals the in-memory cache mutation to the main thread. The sync completion posts run behind an isDestroyed guard and onDestroy closes the OAuth loopback listener.
