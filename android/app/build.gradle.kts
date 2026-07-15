@@ -102,14 +102,24 @@ android {
 // The engine-level unit tests load the real Rust bridge: cargo builds
 // libcardamum.so for the host, and the test JVM's library path points at
 // it, so the :client Native class binds against the same code the app
-// ships (needs cargo on the PATH, which the nix devshell provides).
+// ships (needs cargo on the PATH, which the nix devshell provides). The
+// crate sources are declared inputs and the .so an output, so editing
+// the bridge rebuilds it; that .so is then an input of the test task, so
+// a bridge change re-runs the tests (a stale .so would let a drift the
+// tests exist to catch slip through).
+val hostLibrary = file("../../rust/target/debug/libcardamum.so")
 val cargoHostBuild = tasks.register<Exec>("cargoHostBuild") {
     workingDir = file("../../rust")
     commandLine("cargo", "build")
+    inputs.dir("../../rust/src")
+    inputs.file("../../rust/Cargo.toml")
+    inputs.file("../../rust/Cargo.lock")
+    outputs.file(hostLibrary)
 }
 
 tasks.withType<Test>().configureEach {
     dependsOn(cargoHostBuild)
+    inputs.file(hostLibrary)
     systemProperty("java.library.path", file("../../rust/target/debug").absolutePath)
 }
 

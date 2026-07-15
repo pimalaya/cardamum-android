@@ -1463,8 +1463,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        JSONObject alternatives = resolution.optJSONObject("alternatives");
-        if (alternatives == null || alternatives.length() == 0) {
+        if (resolution.optBoolean("resolved")) {
             // Nothing needs the user: stage the clean merge and clear the
             // conflict. The toast is the tap's only visible outcome (no
             // form opens), so without it the vanishing flag reads as a
@@ -1481,6 +1480,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        JSONObject alternatives = resolution.optJSONObject("alternatives");
         edit = new EditSession();
         edit.book = replica.book;
         edit.accountEmail = replica.accountEmail;

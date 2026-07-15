@@ -811,6 +811,23 @@ pub fn form_entry(kind: &str, index: i64, value: &str, pref: bool) -> Result<Val
     Ok(Value::Object(entry))
 }
 
+/// The ordered type vocabularies the edit-form spinners address, by
+/// kind: each spinner position's vCard TYPE set (the sex code alone
+/// for `gender`), in the exact order the Android string-arrays must
+/// mirror. The ordering has a single owner here; a cross-language
+/// test pins the `arrays.xml` labels to it, so a reorder or resize on
+/// either side fails loudly instead of silently mismapping types.
+pub fn card_type_order(kind: &str) -> Vec<Vec<&'static str>> {
+    let table: &[&[&str]] = match kind {
+        "phone" => &PHONE_TYPES,
+        "email" | "address" => &HOME_WORK_OTHER,
+        "relation" => &RELATION_TYPES,
+        "gender" => return GENDER_SEXES.iter().map(|code| vec![*code]).collect(),
+        _ => &[],
+    };
+    table.iter().map(|set| set.to_vec()).collect()
+}
+
 /// One picked date on the model wire (the vCard `yyyy-mm-dd` form the
 /// BDAY and ANNIVERSARY patches expect; the month is 1-based).
 pub fn form_date(year: i64, month: i64, day: i64) -> String {
@@ -1119,11 +1136,20 @@ pub fn merge_conflict_form(base: &str, local: &str, remote: &str) -> Result<Valu
         }
     }
 
+    // The auto-resolve verdict: with no field both sides edited
+    // differently, the three-way merge needs no user choice and the
+    // caller stages `merged` straight away; a genuine collision leaves
+    // the alternatives for the resolution form. Owned here so the sync
+    // pass and the tap-time form read one decision instead of each
+    // re-checking the alternatives.
+    let resolved = alternatives.is_empty();
+
     Ok(json!({
         "vcard": merged,
         "model": model,
         "alternatives": Value::Object(alternatives),
         "changed": Vec::<&str>::new(),
+        "resolved": resolved,
     }))
 }
 
@@ -1987,8 +2013,32 @@ mod tests {
         assert_eq!(org[0], "Company31");
         assert_eq!(org[1], "Company30");
 
+        // A genuine collision needs the user: not auto-resolvable.
+        assert_eq!(form["resolved"], false);
+
         // Lists never conflict, so `changed` is empty but present.
         assert_eq!(form["changed"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn merge_conflict_form_resolves_one_sided_changes() {
+        // Each side moved a different field from the base (local the
+        // TITLE, remote the ORG): no field collides, so the merge takes
+        // both and needs no user choice.
+        let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company20\r\nTITLE:Dev\r\nREV:2026-07-11T17:00:00Z\r\nEND:VCARD\r\n";
+        let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company20\r\nTITLE:Lead\r\nREV:2026-07-11T17:08:14Z\r\nEND:VCARD\r\n";
+        let remote = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
+            ORG:Company30\r\nTITLE:Dev\r\nREV:2026-07-11T17:25:59Z\r\nEND:VCARD\r\n";
+
+        let form = merge_conflict_form(base, local, remote).unwrap();
+
+        assert!(form["alternatives"].as_object().unwrap().is_empty());
+        assert_eq!(form["resolved"], true);
+        // Both one-sided changes flow into the auto-taken merge.
+        assert_eq!(form["model"]["title"], "Lead");
+        assert_eq!(form["model"]["organization"]["company"], "Company30");
     }
 
     #[test]

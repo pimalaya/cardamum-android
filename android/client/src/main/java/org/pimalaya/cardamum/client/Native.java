@@ -517,6 +517,15 @@ final class Native {
     static native String cardPropLabels(String name);
 
     /**
+     * The ordered type-set vocabulary the edit form's spinners address
+     * for the kind ({@code phone}, {@code email}, {@code address},
+     * {@code relation}, {@code gender}), each position's vCard TYPE set
+     * in the order the Android string-arrays must mirror; pure
+     * computation, no transport. Returns {@code {"order": [[..], ..]}}.
+     */
+    static native String cardTypeOrder(String kind);
+
+    /**
      * Validates a hand-edited vCard source (it must reparse) and
      * returns it re-serialized; pure computation, no transport.
      * Returns {@code {"vcard": ".."}}.

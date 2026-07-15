@@ -345,8 +345,9 @@ final class OfflineEngine implements OfflineDriver {
                 conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
         JSONObject resolution = Cards.mergeConflictForm(baseVcard, local, remote.vcard);
 
-        JSONObject alternatives = resolution.optJSONObject("alternatives");
-        if (alternatives != null && alternatives.length() > 0) {
+        // The bridge decides whether the merge needs the user; a genuine
+        // collision leaves the row conflicted for the resolution form.
+        if (!resolution.optBoolean("resolved")) {
             return false;
         }
 

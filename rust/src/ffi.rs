@@ -29,8 +29,8 @@ use crate::{
     offline,
     project::{
         apply, card_prop_labels, card_props, card_set_prop, card_set_prop_parts, card_source,
-        duplicate_group, find_duplicates, form_date, form_entry, form_view, group_contacts, index,
-        merge_cards, merge_conflict, merge_conflict_form, project, set_uid,
+        card_type_order, duplicate_group, find_duplicates, form_date, form_entry, form_view,
+        group_contacts, index, merge_cards, merge_conflict, merge_conflict_form, project, set_uid,
     },
     store,
     types::{BridgeError, CardDelta, Credentials, PushChange},
@@ -1606,6 +1606,25 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardPropLabels<'
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let name = read_string(env, &name);
         let json = serde_json::json!({ "labels": card_prop_labels(&name) }).to_string();
+        Ok(env.new_string(json)?.into())
+    })
+    .resolve::<LogErrorAndDefault>()
+}
+
+/// `Native.cardTypeOrder`: the ordered type-set vocabulary the edit
+/// form's spinners address for the kind (`phone`, `email`, `address`,
+/// `relation`, `gender`), each position's vCard TYPE set in the order
+/// the Android string-arrays must mirror; pure computation, no
+/// transport. Returns `{"order": [[..], ..]}`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardTypeOrder<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    kind: JString<'local>,
+) -> JObject<'local> {
+    env.with_env(|env| -> Result<JObject<'local>, Error> {
+        let kind = read_string(env, &kind);
+        let json = serde_json::json!({ "order": card_type_order(&kind) }).to_string();
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()

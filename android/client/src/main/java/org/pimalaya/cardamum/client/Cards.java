@@ -199,6 +199,18 @@ public final class Cards {
     }
 
     /**
+     * The ordered type-set vocabulary the edit form's spinners address
+     * for the kind ({@code phone}, {@code email}, {@code address},
+     * {@code relation}, {@code gender}): each position's vCard TYPE set
+     * (a one-element list of the sex code for {@code gender}), in the
+     * order the Android string-arrays mirror. The Rust side owns the
+     * order; a test pins the arrays to it.
+     */
+    public static JSONArray cardTypeOrder(String kind) {
+        return CardamumClient.object(Native.cardTypeOrder(kind)).optJSONArray("order");
+    }
+
+    /**
      * Validates a hand-edited vCard source (it must reparse) and
      * returns it re-serialized.
      */
