@@ -69,7 +69,7 @@ final class Transport {
             try {
                 connection.socket.close();
             } catch (IOException ignored) {
-                // Closing best-effort; the pool is dropped either way.
+                // NOTE: best-effort; the pool is dropped either way.
             }
         }
         connections.clear();
@@ -87,7 +87,7 @@ final class Transport {
             return connection;
         }
 
-        // URI keeps the brackets around IPv6 literals; the socket API
+        // NOTE: URI keeps brackets around IPv6 literals; the socket API
         // wants the bare address.
         if (host.startsWith("[") && host.endsWith("]")) {
             host = host.substring(1, host.length() - 1);
@@ -100,9 +100,8 @@ final class Transport {
         Socket socket;
         switch (scheme) {
             case "https":
-                // The host-aware layering keeps the peer host, so TLS
-                // gets SNI and the platform validates the certificate
-                // chain.
+                // NOTE: the host-aware overload keeps the peer host, so
+                // TLS gets SNI and the platform validates the chain.
                 socket =
                         ((SSLSocketFactory) SSLSocketFactory.getDefault())
                                 .createSocket(plain, host, port, true);
@@ -115,7 +114,7 @@ final class Transport {
                 break;
             default:
                 plain.close();
-                throw new CardamumException("Unsupported transport scheme `" + scheme + "`");
+                throw new CardamumException("Unsupported transport scheme '" + scheme + "'");
         }
 
         connection = new Connection(socket);
@@ -130,7 +129,7 @@ final class Transport {
             case "http":
                 return 80;
             default:
-                throw new CardamumException("Transport URL `" + scheme + "` has no port");
+                throw new CardamumException("Transport URL '" + scheme + "' has no port");
         }
     }
 }

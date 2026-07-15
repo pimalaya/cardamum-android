@@ -20,6 +20,7 @@ use jni::{
     objects::{JClass, JObject, JString},
     sys::{jboolean, jint},
 };
+use serde_json::{Value, from_str, json, to_string};
 use url::Url;
 
 use crate::{
@@ -54,7 +55,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_discover<'local>
         let resolver = (!resolver.is_empty()).then_some(resolver.as_str());
 
         let json = match Client::new(env, &transport).discover(&email, resolver) {
-            Ok(url) => serde_json::json!({ "url": url.as_str() }).to_string(),
+            Ok(url) => json!({ "url": url.as_str() }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -173,12 +174,10 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_searchProbe<'loc
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let raw = read_string(env, &config);
 
-        let json = match serde_json::from_str(&raw) {
+        let json = match from_str(&raw) {
             Err(err) => error_json(format!("Invalid service config: {err}")),
             Ok(config) => match Client::new(env, &transport).search_probe(config) {
-                Ok(config) => {
-                    serde_json::to_string(&config).unwrap_or_else(|err| error_json(err.to_string()))
-                }
+                Ok(config) => to_string(&config).unwrap_or_else(|err| error_json(err.to_string())),
                 Err(err) => error_json(err),
             },
         };
@@ -222,7 +221,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthAuthorizeUr
             &pkce_verifier,
             &extras,
         ) {
-            Ok(url) => serde_json::json!({ "url": url }).to_string(),
+            Ok(url) => json!({ "url": url }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -247,7 +246,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthValidateRed
         let state = read_string(env, &state);
 
         let json = match validate_redirect(&redirect_url, &state) {
-            Ok(code) => serde_json::json!({ "code": code }).to_string(),
+            Ok(code) => json!({ "code": code }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -266,7 +265,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthSessionPara
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let (state, verifier) = session_params();
-        let json = serde_json::json!({ "state": state, "verifier": verifier }).to_string();
+        let json = json!({ "state": state, "verifier": verifier }).to_string();
 
         Ok(env.new_string(json)?.into())
     })
@@ -286,7 +285,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthContactsSco
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let scopes_supported = read_string(env, &scopes_supported);
         let scope = contacts_scope(&scopes_supported);
-        let json = serde_json::json!({ "scope": scope }).to_string();
+        let json = json!({ "scope": scope }).to_string();
 
         Ok(env.new_string(json)?.into())
     })
@@ -330,9 +329,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRequestAcce
                 &redirect_uri,
                 &pkce_verifier,
             ) {
-                Ok(tokens) => {
-                    serde_json::to_string(&tokens).unwrap_or_else(|err| error_json(err.to_string()))
-                }
+                Ok(tokens) => to_string(&tokens).unwrap_or_else(|err| error_json(err.to_string())),
                 Err(err) => error_json(err),
             },
         };
@@ -360,8 +357,9 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthServerMetad
         let json = match parse_url(&issuer) {
             Err(err) => error_json(err),
             Ok(url) => match Client::new(env, &transport).oauth_server_metadata(&url) {
-                Ok(metadata) => serde_json::to_string(&metadata)
-                    .unwrap_or_else(|err| error_json(err.to_string())),
+                Ok(metadata) => {
+                    to_string(&metadata).unwrap_or_else(|err| error_json(err.to_string()))
+                }
                 Err(err) => error_json(err),
             },
         };
@@ -439,9 +437,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_oauthRefreshAcce
                 &refresh_token,
                 &scope,
             ) {
-                Ok(tokens) => {
-                    serde_json::to_string(&tokens).unwrap_or_else(|err| error_json(err.to_string()))
-                }
+                Ok(tokens) => to_string(&tokens).unwrap_or_else(|err| error_json(err.to_string())),
                 Err(err) => error_json(err),
             },
         };
@@ -465,9 +461,9 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountInfo<'loc
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let base_url = read_string(env, &base_url);
 
-        // The local account has no transport: it is not a Backend, and
-        // reporting it as one keeps its cards non-account-level (one
-        // book, per-collection keys) and out of every backend match.
+        // NOTE: the local account has no transport, so it is not a
+        // Backend; reporting it so keeps its cards non-account-level
+        // (one book, per-collection keys) and out of backend matches.
         let (backend, account_level) = if base_url.starts_with(account::LOCAL_PREFIX) {
             ("local", false)
         } else {
@@ -475,7 +471,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountInfo<'loc
             (backend.name(), backend.account_level())
         };
 
-        let json = serde_json::json!({
+        let json = json!({
             "backend": backend,
             "accountLevel": account_level,
         })
@@ -502,7 +498,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_accountBase<'loc
         let value = read_string(env, &value);
 
         let json = match account::base_url(&kind, &value) {
-            Ok(url) => serde_json::json!({ "url": url }).to_string(),
+            Ok(url) => json!({ "url": url }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -533,9 +529,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAddressbooks
         };
 
         let json = match Client::new(env, &transport).list_addressbooks(&base_url, &credentials) {
-            Ok(books) => {
-                serde_json::to_string(&books).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(books) => to_string(&books).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -567,9 +561,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listAccountCards
         };
 
         let json = match Client::new(env, &transport).list_account_cards(&base_url, &credentials) {
-            Ok(cards) => {
-                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(cards) => to_string(&cards).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -606,9 +598,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_listCards<'local
             &addressbook_url,
             &credentials,
         ) {
-            Ok(cards) => {
-                serde_json::to_string(&cards).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(cards) => to_string(&cards).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -652,9 +642,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCard<'loca
             &id,
             &vcard,
         ) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(card) => to_string(&card).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -694,9 +682,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_readCard<'local>
             &credentials,
             &uri,
         ) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(card) => to_string(&card).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -753,9 +739,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_updateCard<'loca
             base,
             if_match,
         ) {
-            Ok(card) => {
-                serde_json::to_string(&card).unwrap_or_else(|err| error_json(err.to_string()))
-            }
+            Ok(card) => to_string(&card).unwrap_or_else(|err| error_json(err.to_string())),
             Err(err) => error_json(err),
         };
 
@@ -839,8 +823,9 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_createCards<'loc
         let json = match parse_strings(&vcards) {
             Ok(vcards) => {
                 match Client::new(env, &transport).create_cards(&base_url, &credentials, &vcards) {
-                    Ok(cards) => serde_json::to_string(&cards)
-                        .unwrap_or_else(|err| error_json(err.to_string())),
+                    Ok(cards) => {
+                        to_string(&cards).unwrap_or_else(|err| error_json(err.to_string()))
+                    }
                     Err(err) => error_json(err),
                 }
             }
@@ -917,7 +902,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_pushCards<'local
             password: &password,
         };
 
-        let json = match serde_json::from_str::<Vec<PushChange>>(&changes) {
+        let json = match from_str::<Vec<PushChange>>(&changes) {
             Ok(changes) => {
                 match Client::new(env, &transport).push_cards(
                     &base_url,
@@ -925,8 +910,9 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_pushCards<'local
                     &credentials,
                     &changes,
                 ) {
-                    Ok(outcomes) => serde_json::to_string(&outcomes)
-                        .unwrap_or_else(|err| error_json(err.to_string())),
+                    Ok(outcomes) => {
+                        to_string(&outcomes).unwrap_or_else(|err| error_json(err.to_string()))
+                    }
                     Err(err) => error_json(err),
                 }
             }
@@ -1013,8 +999,9 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_multigetCards<'l
             (Ok(url), Ok(uris)) => {
                 let uris: Vec<&str> = uris.iter().map(String::as_str).collect();
                 match Client::new(env, &transport).multiget_cards(&url, &credentials, &uris) {
-                    Ok(cards) => serde_json::to_string(&cards)
-                        .unwrap_or_else(|err| error_json(err.to_string())),
+                    Ok(cards) => {
+                        to_string(&cards).unwrap_or_else(|err| error_json(err.to_string()))
+                    }
                     Err(err) => error_json(err),
                 }
             }
@@ -1168,7 +1155,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_offlineRetryUngu
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let json = match parse_facts(env, &facts) {
             Err(err) => err,
-            Ok(facts) => serde_json::json!({ "retry": store::retry_unguarded(&facts) }).to_string(),
+            Ok(facts) => json!({ "retry": store::retry_unguarded(&facts) }).to_string(),
         };
         Ok(env.new_string(json)?.into())
     })
@@ -1435,7 +1422,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_setCardUid<'loca
         let uid = read_string(env, &uid);
 
         let json = match set_uid(&vcard, &uid) {
-            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Ok(fresh) => json!({ "vcard": fresh }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -1484,7 +1471,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardProps<'local
         let vcard = read_string(env, &vcard);
 
         let json = match card_props(&vcard) {
-            Ok(props) => serde_json::json!({ "props": props }).to_string(),
+            Ok(props) => json!({ "props": props }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -1509,7 +1496,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSetProp<'loc
         let line = read_string(env, &line);
 
         let json = match card_set_prop(&vcard, index as i64, &line) {
-            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Ok(fresh) => json!({ "vcard": fresh }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -1534,10 +1521,10 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSetPropParts
         let vcard = read_string(env, &vcard);
         let prop = read_string(env, &prop);
 
-        let json = match serde_json::from_str(&prop) {
+        let json = match from_str(&prop) {
             Err(err) => error_json(format!("Invalid property: {err}")),
             Ok(prop) => match card_set_prop_parts(&vcard, index as i64, &prop) {
-                Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+                Ok(fresh) => json!({ "vcard": fresh }).to_string(),
                 Err(err) => error_json(err),
             },
         };
@@ -1559,7 +1546,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardPropLabels<'
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let name = read_string(env, &name);
-        let json = serde_json::json!({ "labels": card_prop_labels(&name) }).to_string();
+        let json = json!({ "labels": card_prop_labels(&name) }).to_string();
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
@@ -1578,7 +1565,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardTypeOrder<'l
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let kind = read_string(env, &kind);
-        let json = serde_json::json!({ "order": card_type_order(&kind) }).to_string();
+        let json = json!({ "order": card_type_order(&kind) }).to_string();
         Ok(env.new_string(json)?.into())
     })
     .resolve::<LogErrorAndDefault>()
@@ -1597,7 +1584,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_cardSource<'loca
         let vcard = read_string(env, &vcard);
 
         let json = match card_source(&vcard) {
-            Ok(fresh) => serde_json::json!({ "vcard": fresh }).to_string(),
+            Ok(fresh) => json!({ "vcard": fresh }).to_string(),
             Err(err) => error_json(err),
         };
 
@@ -1642,10 +1629,10 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_applyCard<'local
         let vcard = read_string(env, &vcard);
         let model = read_string(env, &model);
 
-        let json = match serde_json::from_str(&model) {
+        let json = match from_str(&model) {
             Err(err) => error_json(format!("Invalid field model: {err}")),
             Ok(model) => match apply(&vcard, &model) {
-                Ok(patched) => serde_json::json!({ "vcard": patched }).to_string(),
+                Ok(patched) => json!({ "vcard": patched }).to_string(),
                 Err(err) => error_json(err),
             },
         };
@@ -1669,7 +1656,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_formView<'local>
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let model = read_string(env, &model);
 
-        let json = match serde_json::from_str(&model) {
+        let json = match from_str(&model) {
             Err(err) => error_json(format!("Invalid field model: {err}")),
             Ok(model) => form_view(&model).to_string(),
         };
@@ -1720,7 +1707,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_formDate<'local>
 ) -> JObject<'local> {
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let value = form_date(year as i64, month as i64, day as i64);
-        let json = serde_json::json!({ "value": value }).to_string();
+        let json = json!({ "value": value }).to_string();
 
         Ok(env.new_string(json)?.into())
     })
@@ -1741,7 +1728,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_groupContacts<'l
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let input = read_string(env, &input);
 
-        let json = match serde_json::from_str(&input) {
+        let json = match from_str(&input) {
             Err(err) => error_json(format!("Invalid replica pool: {err}")),
             Ok(input) => match group_contacts(&input) {
                 Ok(groups) => groups.to_string(),
@@ -1766,7 +1753,7 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_duplicateGroup<'
     env.with_env(|env| -> Result<JObject<'local>, Error> {
         let members = read_string(env, &members);
 
-        let json = match serde_json::from_str(&members) {
+        let json = match from_str(&members) {
             Err(err) => error_json(format!("Invalid duplicate group: {err}")),
             Ok(members) => match duplicate_group(&members) {
                 Ok(facts) => facts.to_string(),
@@ -1808,9 +1795,7 @@ fn search_mechanism_json<'local>(
     };
 
     match configs {
-        Ok(configs) => {
-            serde_json::to_string(&configs).unwrap_or_else(|err| error_json(err.to_string()))
-        }
+        Ok(configs) => to_string(&configs).unwrap_or_else(|err| error_json(err.to_string())),
         Err(err) => error_json(err),
     }
 }
@@ -1820,7 +1805,7 @@ fn search_mechanism_json<'local>(
 /// app drives (CardDAV, JMAP).
 fn search_merge(lists: &str) -> Result<String, String> {
     let lists: Vec<Vec<ServiceConfig>> =
-        serde_json::from_str(lists).map_err(|err| format!("Invalid config lists: {err}"))?;
+        from_str(lists).map_err(|err| format!("Invalid config lists: {err}"))?;
 
     let services = BTreeSet::from([Service::Carddav, Service::Jmap]);
     let mut collector = ConfigCollector::new(services);
@@ -1829,7 +1814,7 @@ fn search_merge(lists: &str) -> Result<String, String> {
         collector.collect(configs);
     }
 
-    serde_json::to_string(&collector.finish()).map_err(|err| err.to_string())
+    to_string(&collector.finish()).map_err(|err| err.to_string())
 }
 
 /// Reads a Java string, defaulting to empty on any conversion error.
@@ -1839,13 +1824,13 @@ fn read_string(env: &Env, value: &JString) -> String {
 
 /// Reads and parses a store verb's JSON facts; the error side is the
 /// ready-to-return error reply.
-fn parse_facts(env: &Env, facts: &JString) -> Result<serde_json::Value, String> {
+fn parse_facts(env: &Env, facts: &JString) -> Result<Value, String> {
     let raw = read_string(env, facts);
-    serde_json::from_str(&raw).map_err(|err| error_json(format!("Invalid store facts: {err}")))
+    from_str(&raw).map_err(|err| error_json(format!("Invalid store facts: {err}")))
 }
 
 /// Serializes a store decision, or its error.
-fn decision_json(decision: Result<serde_json::Value, String>) -> String {
+fn decision_json(decision: Result<Value, String>) -> String {
     match decision {
         Ok(value) => value.to_string(),
         Err(err) => error_json(err),
@@ -1854,12 +1839,9 @@ fn decision_json(decision: Result<serde_json::Value, String>) -> String {
 
 /// Serializes a placement decision (`{"placement": {..} | null}`), or
 /// its error.
-fn placement_json(decision: Result<Option<serde_json::Value>, String>) -> String {
+fn placement_json(decision: Result<Option<Value>, String>) -> String {
     match decision {
-        Ok(placement) => {
-            serde_json::json!({ "placement": placement.unwrap_or(serde_json::Value::Null) })
-                .to_string()
-        }
+        Ok(placement) => json!({ "placement": placement.unwrap_or(Value::Null) }).to_string(),
         Err(err) => error_json(err),
     }
 }
@@ -1873,18 +1855,17 @@ fn parse_books(raw: &str) -> Result<Vec<String>, String> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(raw).map_err(|err| format!("Invalid book id list `{raw}`: {err}"))
+    from_str(raw).map_err(|err| format!("Invalid book id list `{raw}`: {err}"))
 }
 
 /// Parses a JSON string array of vCards.
 fn parse_strings(raw: &str) -> Result<Vec<String>, String> {
-    serde_json::from_str(raw).map_err(|err| format!("Invalid vCard list: {err}"))
+    from_str(raw).map_err(|err| format!("Invalid vCard list: {err}"))
 }
 
 /// Parses a JSON array of `{"ref", "vcard"}` pairs.
 fn parse_ref_cards(raw: &str) -> Result<Vec<(String, String)>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(raw).map_err(|err| format!("Invalid card list: {err}"))?;
+    let value: Value = from_str(raw).map_err(|err| format!("Invalid card list: {err}"))?;
     let Some(entries) = value.as_array() else {
         return Err("Invalid card list: not an array".into());
     };
@@ -1893,12 +1874,12 @@ fn parse_ref_cards(raw: &str) -> Result<Vec<(String, String)>, String> {
     for entry in entries {
         let reference = entry
             .get("ref")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
         let vcard = entry
             .get("vcard")
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
         cards.push((reference, vcard));
@@ -1908,7 +1889,7 @@ fn parse_ref_cards(raw: &str) -> Result<Vec<(String, String)>, String> {
 
 /// Serializes any backend's delta.
 fn delta_json(delta: CardDelta) -> String {
-    serde_json::to_string(&delta).unwrap_or_else(|err| error_json(err.to_string()))
+    to_string(&delta).unwrap_or_else(|err| error_json(err.to_string()))
 }
 
 /// Public-client registration params: a loopback redirect, no secret,
@@ -1934,8 +1915,8 @@ fn oauth_register_params(
 
 /// Serializes the issued client information, exposing the secret only
 /// when the server returned one.
-// SAFETY: exposes the client secret, which a public-client
-// registration should not carry.
+// NOTE: exposes the client secret, which a public-client registration
+// should not carry.
 fn client_information_json(client: &Oauth20ClientInformation) -> String {
     use secrecy::ExposeSecret;
 
@@ -1943,7 +1924,7 @@ fn client_information_json(client: &Oauth20ClientInformation) -> String {
         .client_secret
         .as_ref()
         .map(|secret| secret.expose_secret());
-    serde_json::json!({
+    json!({
         "client_id": client.client_id,
         "client_secret": secret,
     })
@@ -1954,6 +1935,6 @@ fn client_information_json(client: &Oauth20ClientInformation) -> String {
 /// a `status` field when the failure was an HTTP round (the type is
 /// the wire shape; plain strings convert to status-less errors).
 fn error_json(error: impl Into<BridgeError>) -> String {
-    serde_json::to_string(&error.into())
+    to_string(&error.into())
         .unwrap_or_else(|_| r#"{"error": "Unserializable bridge failure"}"#.to_string())
 }

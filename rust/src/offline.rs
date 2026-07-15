@@ -296,8 +296,6 @@ fn checkpoint_str(checkpoint: &Checkpoint) -> String {
     String::from_utf8_lossy(&checkpoint.0).into_owned()
 }
 
-// ---- Wire types -----------------------------------------------------------
-
 /// Probe for the `error` field any driver reply may carry, plus the
 /// HTTP status the driver attaches when the failure was an HTTP round.
 #[derive(Deserialize)]

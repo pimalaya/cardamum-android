@@ -15,16 +15,15 @@ import org.pimalaya.cardamum.client.CardamumClient;
 /**
  * Contacts sync adapter running the phone spoke's engine pass through
  * Android's sync scheduler: the book's raw contacts reconcile two-way
- * with the store, so a contacts-app edit converges into the hub
- * without opening Cardamum (the next remote sync pushes it upstream).
+ * with the store, so a contacts-app edit converges into the hub without
+ * opening Cardamum (the next remote sync pushes it upstream).
  * Registering it also associates Cardamum's account type with the
- * contacts authority, and its CONTACTS_STRUCTURE meta-data is what
- * makes contacts apps list the accounts and allow editing their raw
- * contacts. Serves only the syncs the OS schedules on its own: the
- * per-account "sync now" of the system settings and the upload syncs
- * Android requests after edits on our raw contacts; the in-app actions
- * run the same engine pass directly, behind their own spinner, and the
- * scheduled background syncs go through SyncWorker, not through here.
+ * contacts authority, and its CONTACTS_STRUCTURE meta-data is what makes
+ * contacts apps list the accounts and allow editing their raw contacts.
+ * Serves only the syncs the OS schedules itself (the per-account "sync
+ * now" and the upload syncs after edits on our raw contacts); in-app
+ * actions run the same pass directly and background syncs go through
+ * SyncWorker.
  */
 public class SyncService extends Service {
     private static final Object LOCK = new Object();

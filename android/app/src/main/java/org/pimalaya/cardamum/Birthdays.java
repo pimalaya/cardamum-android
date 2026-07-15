@@ -34,8 +34,8 @@ final class Birthdays {
                     Calendar date = null;
                     List<String> names = new ArrayList<>();
                     for (Group group : groups) {
-                        // The group's birthday: the first replica
-                        // projecting one wins, like the merged form.
+                        // NOTE: first replica projecting a birthday wins,
+                        // like the merged form.
                         String birthday = null;
                         for (Entry entry : group.replicas) {
                             try {
@@ -53,9 +53,9 @@ final class Birthdays {
                             continue;
                         }
 
-                        // The next occurrence, at local midnight; a lenient
-                        // calendar rolls Feb 29 to Mar 1 off leap years. The
-                        // rounding absorbs the DST hour between midnights.
+                        // NOTE: a lenient calendar rolls Feb 29 to Mar 1
+                        // off leap years; the rounding below absorbs the
+                        // DST hour between midnights.
                         Calendar next = (Calendar) today.clone();
                         next.set(Calendar.MONTH, Integer.parseInt(birthday.substring(5, 7)) - 1);
                         next.set(
@@ -79,8 +79,6 @@ final class Birthdays {
                         }
                     }
 
-                    // One readable sentence: "Alice and Bob celebrate
-                    // their birthdays on 12 April, in 3 days."
                     String message;
                     if (names.isEmpty()) {
                         message = host.getString(R.string.birthdays_none);

@@ -148,8 +148,8 @@ final class DuplicateReview {
             content.addView(row);
         }
 
-        // Link rides as a content action: the three dialog buttons are
-        // taken by Merge, Ignore and Cancel.
+        // NOTE: Link rides as a content action; the three dialog buttons
+        // are taken by Merge, Ignore and Cancel.
         if (dup.optBoolean("linkable")) {
             TextView link = new TextView(host);
             link.setText(R.string.dup_link);

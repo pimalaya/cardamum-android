@@ -122,8 +122,8 @@ final class OfflineEngine implements OfflineDriver {
             switch (kind) {
                 case "created":
                     in.add(key);
-                    // A new card's follow-up writes (hydration, base
-                    // captures) stay part of its appearance.
+                    // NOTE: a new card's follow-up writes (hydration, base
+                    // captures) stay part of its appearance, not a change.
                     changed.remove(key);
                     break;
                 case "removed":
@@ -259,13 +259,10 @@ final class OfflineEngine implements OfflineDriver {
         ReentrantLock lock = syncLock(url);
         lock.lock();
         try {
-            // The quiet path: nothing to ingest phone-side (no dirty,
-            // new or deleted raw contact), nothing staged hub-side and
-            // both sides count the same members, so the engine pass
-            // (placement load, enumerate, per-row bridge calls) would
-            // reconcile nothing. Three cheap counts stand in for it;
-            // ContactsContract has no per-account changes token to
-            // compare instead.
+            // NOTE: quiet path; nothing dirty/staged on either side and
+            // matching member counts means the engine pass would reconcile
+            // nothing. ContactsContract has no per-account changes token,
+            // so three cheap counts stand in for one.
             if (!phone.changed(url)
                     && !offline.phonePending(url)
                     && phone.count(url) == offline.phoneMemberCount(url)) {
@@ -328,25 +325,17 @@ final class OfflineEngine implements OfflineDriver {
         String handle = conflict.getString("handle");
         Card remote = client.readCard(account, url, handle);
 
-        // Persist only the remote body, for the resolution form. The
-        // revision the resolving push guards on stays the one the engine
-        // recorded from the enumerate (its own axis): overriding it with
-        // this read's etag breaks backends whose read etag differs from the
-        // list etag (Google People API), so the push guards on a foreign
-        // revision and the server rejects it.
+        // NOTE: persist only the body, not the etag; the push must keep
+        // guarding on the enumerate's revision, since a read etag can
+        // differ from the list etag (Google People API) and get rejected.
         offline.setConflictRemote(url, handle, remote.vcard);
 
-        // The base falls back to the local body when it was never
-        // captured (a create collision): the local side then reads as
-        // unchanged and the remote changes flow in cleanly, like the
-        // resolution form would.
+        // NOTE: on a create collision (no captured base) the local body is
+        // the base, so it reads unchanged and remote changes flow in clean.
         String local = conflict.getString("vcard");
         String baseVcard =
                 conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
         JSONObject resolution = Cards.mergeConflictForm(baseVcard, local, remote.vcard);
-
-        // The bridge decides whether the merge needs the user; a genuine
-        // collision leaves the row conflicted for the resolution form.
         if (!resolution.optBoolean("resolved")) {
             return false;
         }
@@ -364,7 +353,7 @@ final class OfflineEngine implements OfflineDriver {
         String handle = conflict.getString("handle");
         JSONObject remote = phone.read(collection, handle);
         if (remote == null) {
-            // The raw contact vanished mid-conflict; the next sync
+            // NOTE: raw contact vanished mid-conflict; next sync
             // reconciles the removal.
             return;
         }
@@ -395,8 +384,6 @@ final class OfflineEngine implements OfflineDriver {
         mutation.put("meta", Cards.indexCard(vcard).toString());
         client.offlineMutate(this, url, mutation);
     }
-
-    // ---- Driver seam --------------------------------------------------------
 
     @Override
     public String serve(String yieldJson) {
@@ -456,10 +443,9 @@ final class OfflineEngine implements OfflineDriver {
             }
         }
 
-        // Graph delta rows carry no body: a complete round primes the
-        // pass's body cache with one full listing instead of one read
-        // per card. The delta link predates the listing, so anything
-        // changed in between simply re-lists on the next round.
+        // NOTE: Graph delta rows carry no body, so a complete round primes
+        // the body cache with one full listing. The delta link predates the
+        // listing; anything changed between re-lists on the next round.
         if (isGraph() && delta.complete && !delta.changed.isEmpty()) {
             Map<String, Card> byHandle = new HashMap<>();
             for (Card card : client.listCards(account, url)) {
@@ -574,7 +560,8 @@ final class OfflineEngine implements OfflineDriver {
                 items.put(fetchedItem(url, handle, card));
             }
         } else {
-            // CardDAV: multiget in chunks, matched back by resource name.
+            // NOTE: CardDAV multiget in chunks, matched back by resource
+            // name.
             List<String> uris = new ArrayList<>(handles.length());
             for (int index = 0; index < handles.length(); index++) {
                 uris.add(handles.getString(index));
@@ -647,10 +634,9 @@ final class OfflineEngine implements OfflineDriver {
         }
         step(Progress.STAGE_UPLOAD, changes.length());
 
-        // CardDAV has no batch verb, so its round parallelizes instead:
-        // every change stays one guarded HTTP round trip on its own
-        // connection (the client opens one transport per call), and on
-        // a latency-bound link the wall clock divides by the pool.
+        // NOTE: CardDAV has no batch verb, so the round parallelizes; each
+        // change is one guarded round trip on its own transport, dividing
+        // the wall clock by the pool on a latency-bound link.
         boolean concurrent =
                 changes.length() > 1
                         && !CardamumClient.isAccountLevel(account)
@@ -666,9 +652,8 @@ final class OfflineEngine implements OfflineDriver {
                 results = concurrent ? pushAll(url, changes) : pushEach(url, changes);
             }
         } finally {
-            // One pass-cache drop per round instead of per change: no
-            // fetch interleaves a push yield, so deferring is
-            // equivalent, and the workers must not race the caches.
+            // NOTE: drop the pass caches once per round, not per change; no
+            // fetch interleaves a push, and the workers must not race them.
             invalidate(url);
         }
         tallyPushes(url, changes, results);
@@ -694,7 +679,7 @@ final class OfflineEngine implements OfflineDriver {
      * requests with it (the next sync reconciles whatever landed).
      */
     private JSONArray pushAll(String url, JSONArray changes) throws JSONException {
-        // The book map primes single-threaded; the workers only read it.
+        // NOTE: prime the book map single-threaded; the workers only read.
         bookId(url);
 
         ExecutorService pool =
@@ -893,7 +878,7 @@ final class OfflineEngine implements OfflineDriver {
                 indexByRef.put(handle, index);
                 batch.put(item);
             } else {
-                // No flag pushes on any contacts backend.
+                // NOTE: no flag pushes on any contacts backend.
                 results[index] = result(handle, true, null, null);
             }
         }
@@ -913,9 +898,8 @@ final class OfflineEngine implements OfflineDriver {
                     Log.w("cardamum", "push rejected for " + ref + ": " + reply.optString("error"));
                 }
 
-                // Only an add renames its handle: the created id when
-                // the backend assigned one, the handle itself on a
-                // membership add (mirrors the per-card path).
+                // NOTE: only an add renames its handle, to the created id
+                // or (on a membership add) the handle itself.
                 String assigned = null;
                 if ("add".equals(changes.getJSONObject(index).getString("op")) && accepted) {
                     assigned = reply.isNull("id") ? ref : reply.getString("id");
@@ -924,8 +908,8 @@ final class OfflineEngine implements OfflineDriver {
                 results[index] = result(ref, accepted, assigned, revision);
             }
 
-            // A ref the bridge failed to answer counts rejected, so the
-            // next sync reconciles it rather than trusting silence.
+            // NOTE: an unanswered ref counts rejected, so the next sync
+            // reconciles it rather than trusting silence.
             for (Map.Entry<String, Integer> entry : indexByRef.entrySet()) {
                 if (results[entry.getValue()] == null) {
                     results[entry.getValue()] = result(entry.getKey(), false, null, null);
@@ -950,7 +934,7 @@ final class OfflineEngine implements OfflineDriver {
             case "remove":
                 return pushRemove(url, change);
             default:
-                // No flag pushes on any contacts backend.
+                // NOTE: no flag pushes on any contacts backend.
                 return result(change.getString("handle"), true, null, null);
         }
     }
@@ -1045,12 +1029,12 @@ final class OfflineEngine implements OfflineDriver {
                 return result(handle, false, null, null);
             }
 
-            // The If-Match quirk: the enumerate moments ago proves the
-            // remote unchanged, so the unguarded write carries the same
-            // guarantee, enforced by us instead.
+            // NOTE: the enumerate moments ago proves the remote unchanged,
+            // so the unguarded write carries the same guarantee.
             Log.w(
                     "cardamum",
-                    "If-Match rejected but listing unchanged, retrying without it: " + handle);
+                    "retrying push unguarded, If-Match rejected but listing "
+                            + "unchanged: " + handle);
             Card updated =
                     client.updateCard(
                             account,
@@ -1084,7 +1068,7 @@ final class OfflineEngine implements OfflineDriver {
             client.deleteCard(account, url, new Card(row.getString("id"), handle, ifMatch, ""));
         } catch (RuntimeException failure) {
             if (isGone(failure)) {
-                // Already deleted upstream; the removal converged.
+                // NOTE: already deleted upstream; the removal converged.
             } else if (!isPreconditionFailure(failure)) {
                 throw failure;
             } else if (!listingUnchanged(url, handle, ifMatch)) {
@@ -1092,7 +1076,8 @@ final class OfflineEngine implements OfflineDriver {
             } else {
                 Log.w(
                         "cardamum",
-                        "If-Match rejected but listing unchanged, retrying without it: " + handle);
+                        "retrying delete unguarded, If-Match rejected but listing "
+                                + "unchanged: " + handle);
                 client.deleteCard(account, url, new Card(row.getString("id"), handle, null, ""));
             }
         }
@@ -1114,8 +1099,6 @@ final class OfflineEngine implements OfflineDriver {
         }
         return result;
     }
-
-    // ---- Backend plumbing ---------------------------------------------------
 
     /** How many resource names one addressbook-multiget carries. */
     private static final int MULTIGET_CHUNK = 50;

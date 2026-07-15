@@ -86,18 +86,16 @@ final class OauthFlow {
         pendingClientId = Oauth.GOOGLE_CLIENT_ID;
         pendingClientSecret = null;
 
-        // access_type=offline + prompt=consent make Google issue a
+        // NOTE: access_type=offline + prompt=consent make Google issue a
         // refresh token; login_hint preselects the entered account.
         JSONObject extras = new JSONObject();
         try {
             extras.put("access_type", "offline");
             extras.put("prompt", "consent");
             if (email.contains("@")) {
-                // A bare-domain input would preselect garbage.
                 extras.put("login_hint", email);
             }
         } catch (JSONException ignored) {
-            // A malformed extras object just omits the hints.
         }
 
         try {
@@ -130,17 +128,14 @@ final class OauthFlow {
         pendingClientId = Oauth.MICROSOFT_CLIENT_ID;
         pendingClientSecret = null;
 
-        // login_hint preselects the entered account in the Microsoft
-        // sign-in page; the refresh token comes from the offline_access
-        // scope, no extra parameter needed.
+        // NOTE: the refresh token comes from the offline_access scope,
+        // no extra parameter needed; login_hint preselects the account.
         JSONObject extras = new JSONObject();
         try {
             if (email.contains("@")) {
-                // A bare-domain input would preselect garbage.
                 extras.put("login_hint", email);
             }
         } catch (JSONException ignored) {
-            // A malformed extras object just omits the hint.
         }
 
         try {
@@ -253,18 +248,14 @@ final class OauthFlow {
             fields.addView(field);
         }
 
-        // A shipped client (Google, Microsoft) needs no configuration:
-        // fold its endpoint fields behind an advanced-only checkbox, so
-        // the dialog is a one-tap confirm. A custom or discovered grant
-        // (no default flow) shows the fields straight away.
         boolean shipped = defaultFlow != null;
 
         LinearLayout content = new LinearLayout(host);
         content.setOrientation(LinearLayout.VERTICAL);
         if (shipped) {
-            // The paragraph rides in the content view (not setMessage), so
-            // it, the checkbox box and the fields all sit at the same 24dp
-            // inset rather than the dialog's own message padding.
+            // NOTE: the paragraph rides in the content view (not
+            // setMessage), so it, the checkbox and the fields share the
+            // same 24dp inset instead of the dialog's message padding.
             TextView hint = new TextView(host);
             hint.setText(R.string.oauth_shipped_hint);
             hint.setTextColor(host.ui.resolveColor(android.R.attr.textColorSecondary));
@@ -273,10 +264,8 @@ final class OauthFlow {
 
             CheckBox advanced = new CheckBox(host);
             advanced.setText(R.string.oauth_advanced);
-            // A CheckBox's box is not offset by its own left padding the
-            // way a TextView's text is, so the indent comes from a start
-            // margin instead: the box then lines up with the title and
-            // paragraph at 24dp.
+            // NOTE: a CheckBox's box ignores its own left padding, so the
+            // 24dp indent must come from a start margin instead.
             advanced.setPadding(0, host.ui.dp(8), host.ui.dp(24), host.ui.dp(8));
             LinearLayout.LayoutParams advancedParams =
                     new LinearLayout.LayoutParams(
@@ -364,9 +353,9 @@ final class OauthFlow {
                         }
 
                         if (!metadata.supportsDynamicRegistration()) {
-                            // No dynamic registration: let the user
-                            // bring a self-registered client id, the
-                            // discovered endpoints prefilled.
+                            // No dynamic registration: let the user bring
+                            // a self-registered client id, endpoints
+                            // prefilled.
                             host.main.post(
                                     () -> {
                                         onAborted.run();
@@ -383,11 +372,10 @@ final class OauthFlow {
                             return;
                         }
 
-                        // A contacts app requests only the contacts
-                        // scope (plus offline_access for refresh), not
-                        // the server's whole supported set: asking for
-                        // mail/calendars/provider extras is what an
-                        // "invalid scope" authorization error is.
+                        // NOTE: request only the contacts scope (plus
+                        // offline_access), not the server's whole set:
+                        // asking for mail/calendar extras earns an
+                        // invalid_scope authorization error.
                         String scope = metadata.contactsScope();
                         String clientId =
                                 host.client.oauthRegisterClient(
@@ -436,7 +424,6 @@ final class OauthFlow {
             try {
                 server.close();
             } catch (java.io.IOException ignored) {
-                // Already closed or never bound.
             }
         }
     }
@@ -466,14 +453,11 @@ final class OauthFlow {
         pendingClientId = clientId;
         pendingClientSecret = clientSecret;
 
-        // The RFC 6749 §4.1.1 shape plus PKCE plus the RFC 8707
-        // resource (the endpoint the token is for; fastmail bounces a
-        // request without one back as invalid_target) plus the
-        // login_hint browser prefill when an actual email was entered.
-        // Google's access_type/prompt hints stay off this flow: the
-        // refresh token already comes from the offline_access scope,
-        // and unknown parameters risk an invalid_request bounce from
-        // strict servers.
+        // NOTE: the RFC 8707 resource is required: fastmail bounces a
+        // request without one as invalid_target. Google's
+        // access_type/prompt hints stay off this flow: refresh comes
+        // from offline_access, and unknown parameters risk an
+        // invalid_request bounce from strict servers.
         JSONObject extras = new JSONObject();
         try {
             if (resource != null && !resource.isEmpty()) {
@@ -483,7 +467,6 @@ final class OauthFlow {
                 extras.put("login_hint", email);
             }
         } catch (JSONException ignored) {
-            // A malformed extras object just omits the hints.
         }
 
         try {
@@ -525,8 +508,8 @@ final class OauthFlow {
         }
         int port = redirect.getPort() == -1 ? 80 : redirect.getPort();
 
-        // The origin the browser's request target is appended to when
-        // the redirect URL is rebuilt; the typed URI may carry a path.
+        // NOTE: origin the browser's request target is appended to when
+        // rebuilding the redirect URL; the typed URI may carry a path.
         String origin = "http://" + redirectHost + (redirect.getPort() == -1 ? "" : ":" + port);
 
         java.net.ServerSocket server;
@@ -541,19 +524,17 @@ final class OauthFlow {
 
         OauthSession session = new OauthSession(clientId, secret, redirectUri, scope);
 
-        // login_hint preselects the account; access_type=offline +
-        // prompt=consent make Google-style servers issue a refresh
-        // token (ignored by servers that do not use them).
+        // NOTE: access_type=offline + prompt=consent make Google-style
+        // servers issue a refresh token (ignored by servers that do not
+        // use them); login_hint preselects the account.
         JSONObject extras = new JSONObject();
         try {
             extras.put("access_type", "offline");
             extras.put("prompt", "consent");
             if (email.contains("@")) {
-                // A bare-domain input would preselect garbage.
                 extras.put("login_hint", email);
             }
         } catch (JSONException ignored) {
-            // A malformed extras object just omits the hints.
         }
 
         host.io.execute(
@@ -623,8 +604,8 @@ final class OauthFlow {
             socket.getOutputStream()
                     .write(response.getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
-            // "GET /?code=..&state=.. HTTP/1.1" -> the request target is
-            // the path and query the browser hit.
+            // NOTE: "GET /?code=..&state=.. HTTP/1.1" -> parts[1] is the
+            // request target (the path and query the browser hit).
             String target = "/";
             if (requestLine != null) {
                 String[] parts = requestLine.split(" ");
@@ -702,8 +683,8 @@ final class OauthFlow {
                 new java.net.ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
             return probe.getLocalPort();
         } catch (Exception error) {
-            // A sensible default in the ephemeral range; the bind at
-            // grant time surfaces a clash as an error.
+            // NOTE: fallback in the ephemeral range; the bind at grant
+            // time surfaces a clash as an error.
             return 8117;
         }
     }

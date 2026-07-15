@@ -123,14 +123,10 @@ final class OnboardingFlow {
 
     /** The email step's continue: discovery for an address, manual for a URI. */
     private void submitEmail() {
-        // The panel stays visible while the search runs; drop the
-        // field's focus so the keyboard leaves.
         host.hideKeyboard();
 
-        // One field covers every case, the CLI way: an email or a bare
-        // domain goes through discovery (every mechanism is
-        // domain-driven, and the provider rules ride inside it as one
-        // mechanism among the others), a connection URI is a server to
+        // NOTE: one field covers every case: an email or bare domain
+        // goes through discovery, a connection URI (://) is a server to
         // configure by hand.
         String address =
                 ((EditText) host.findViewById(R.id.email_input)).getText().toString().trim();
@@ -203,10 +199,9 @@ final class OnboardingFlow {
 
         host.io.execute(
                 () -> {
-                    // A null resolver falls back to the bridge's
+                    // NOTE: a null resolver falls back to the bridge's
                     // DNS-over-HTTPS default, which works on mobile
-                    // networks that block outbound DNS over TCP. A
-                    // failing probe just goes on to the sweep.
+                    // networks that block outbound DNS over TCP.
                     if (!emailLogin().isEmpty()) {
                         String provider = null;
                         try {
@@ -233,8 +228,9 @@ final class OnboardingFlow {
                     try {
                         configs = host.client.searchAll(pendingEmail, null);
                     } catch (Exception error) {
-                        // Failing mechanisms are already skipped inside
-                        // the search; this is the whole search dying.
+                        // NOTE: individual failing mechanisms are skipped
+                        // inside the search; this is the whole search
+                        // dying.
                         Log.w("cardamum", "config search failed", error);
                         failure = error;
                     }
@@ -253,9 +249,6 @@ final class OnboardingFlow {
                                     return;
                                 }
                                 if (found.isEmpty() && !pendingEmail.contains("@")) {
-                                    // A domain nothing was discovered
-                                    // for still names a server to try
-                                    // by hand.
                                     deliverConfigs(() -> showManualConfigs(pendingEmail));
                                     return;
                                 }
@@ -288,8 +281,7 @@ final class OnboardingFlow {
         LinearLayout container = host.findViewById(R.id.config_container);
         container.removeAllViews();
 
-        // Present the configs in preference order (JMAP, CardDAV, then
-        // the rest); the sort is stable, so discovery order breaks ties.
+        // NOTE: stable sort, so discovery order breaks preference ties.
         java.util.Collections.sort(
                 searchedConfigs,
                 (left, right) ->
@@ -299,12 +291,10 @@ final class OnboardingFlow {
         }
         boolean discovered = container.getChildCount() > 0;
 
-        // Nothing discovered, or nothing the app can drive: say so,
-        // and offer the big-provider sign-ins as a fallback chooser
-        // when an email was entered. No protocol signal can tell
-        // where someone's contacts live (Google publishes no CardDAV
-        // SRV, no well-known, nothing); only the user knows, and the
-        // sign-in itself is the real test.
+        // NOTE: nothing discovered (or drivable): offer the big-provider
+        // sign-ins as a fallback chooser when an email was entered. No
+        // protocol signal reveals where contacts live (Google publishes
+        // no CardDAV SRV, no well-known), so the sign-in is the real test.
         if (!discovered) {
             container.addView(
                     configItem(host.getString(R.string.discover_failed), null, null, null));
@@ -315,10 +305,9 @@ final class OnboardingFlow {
         }
 
         selectFirstConfig();
-        // The standard setup skips the config screen and runs the armed
-        // first proposal as if Continue was tapped; a discovery that
-        // found nothing still shows the fallback chooser, since
-        // auto-signing into a guessed provider would be wrong.
+        // NOTE: the standard setup runs the armed first proposal without
+        // showing the config screen, but only when discovery found
+        // something: auto-signing into a guessed provider would be wrong.
         if (simpleSetup() && discovered && selectedConfig != null) {
             selectedConfig.run();
             return;
@@ -467,7 +456,7 @@ final class OnboardingFlow {
 
         LinearLayout container = host.findViewById(R.id.config_container);
         container.removeAllViews();
-        // JMAP before CardDAV, per the protocol preference order.
+        // NOTE: JMAP before CardDAV, per the protocol preference order.
         container.addView(
                 configItem(
                         host.getString(R.string.config_jmap),
@@ -560,8 +549,8 @@ final class OnboardingFlow {
                         ? CardamumClient.jmapBase(config.url)
                         : config.url;
 
-        // Offer the auth variants in preference order (OAuth 2.0, then
-        // API token, then password).
+        // NOTE: offer the auth variants in preference order (OAuth 2.0,
+        // then API token, then password).
         List<AuthMethod> methods = new ArrayList<>(config.auth);
         java.util.Collections.sort(
                 methods,
@@ -569,11 +558,9 @@ final class OnboardingFlow {
         for (AuthMethod method : methods) {
             switch (method.type) {
                 case PASSWORD:
-                    // The discovered username (or the entered email)
-                    // is only a default: a provider's login is not
-                    // always the address, and a bare-domain search
-                    // carries none at all, so the prompt asks the
-                    // user to confirm it.
+                    // NOTE: the login is only a default: a provider's
+                    // login is not always the address, so the prompt asks
+                    // the user to confirm it.
                     String login = config.username != null ? config.username : emailLogin();
                     container.addView(
                             configItem(
@@ -583,9 +570,8 @@ final class OnboardingFlow {
                                     () -> promptCredentials(baseUrl, serverHost, login)));
                     break;
                 case BEARER:
-                    // No login asked: an API token carries its own
-                    // identity, and the empty login makes the
-                    // backends send it as Bearer instead of Basic.
+                    // NOTE: no login asked: the empty login makes the
+                    // backends send the token as Bearer instead of Basic.
                     container.addView(
                             configItem(
                                     protocol,
@@ -609,12 +595,11 @@ final class OnboardingFlow {
                                             null)));
                     break;
                 case OAUTH_ISSUER:
-                    // The server advertised only an issuer: discover
-                    // its metadata and, when it allows dynamic client
-                    // registration (RFC 7591), run the grant with no
-                    // pre-registered client at all. The config's plain
-                    // endpoint URL rides along as the RFC 8707
-                    // resource of the grant.
+                    // NOTE: only an issuer advertised: discover metadata
+                    // and, when it allows dynamic registration (RFC
+                    // 7591), run the grant with no pre-registered client.
+                    // The endpoint URL rides along as the RFC 8707
+                    // resource.
                     container.addView(
                             configItem(
                                     protocol,
@@ -628,7 +613,7 @@ final class OnboardingFlow {
                                                     config.url)));
                     break;
                 default:
-                    // Nothing the app can drive; not offered.
+                    // NOTE: nothing the app can drive; not offered.
                     break;
             }
         }
@@ -747,7 +732,7 @@ final class OnboardingFlow {
                         | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         input.setHint(R.string.config_token);
 
-        // Inset the field from the dialog edges (setView is flush).
+        // NOTE: inset the field from the dialog edges (setView is flush).
         LinearLayout wrapper = new LinearLayout(host);
         wrapper.setPadding(host.ui.dp(24), host.ui.dp(8), host.ui.dp(24), 0);
         wrapper.addView(
@@ -877,9 +862,6 @@ final class OnboardingFlow {
             bookChoices.add(new BookChoice(book.url, subscribe));
         }
 
-        // The background sync cadence of the selected books, one choice
-        // for the whole step; the drawer's per-book settings tune it
-        // later, book by book.
         if (!books.isEmpty()) {
             TextView cadence = new TextView(host);
             cadence.setText(R.string.book_background_sync);
@@ -971,12 +953,10 @@ final class OnboardingFlow {
         }
         BackgroundSync.reconcile(host, host.base.loadAllAddressbooks());
 
-        // The permissions the chosen setup needs, asked up front in one
-        // grouped request (two requestPermissions calls would cancel
-        // each other): contacts because the subscribed books mirror
-        // into the phone's Contacts app by default, sparing the ask at
-        // the first phone-touching sync; notifications (Android 13+)
-        // when a background cadence is on, for its sync report.
+        // NOTE: ask up front in one grouped request; two
+        // requestPermissions calls would cancel each other. Contacts
+        // because subscribed books mirror into the Contacts app;
+        // notifications (Android 13+) for the background sync report.
         List<String> permissions = new ArrayList<>();
         if (!host.hasContactsPermission()) {
             permissions.add(Manifest.permission.READ_CONTACTS);

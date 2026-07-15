@@ -20,6 +20,7 @@ use std::{
 };
 
 use io_jmap::rfc9610::contact_card::JmapContactCard;
+use serde_json::{Map, Value, to_string};
 use vcard::{tree::cst::VcardCst, vcard::Vcard};
 
 use crate::types::Card;
@@ -51,8 +52,8 @@ pub fn to_card(card: JmapContactCard) -> Result<Card, String> {
 }
 
 /// Projects the JSContact Card properties onto a vCard document.
-pub fn to_vcard(card: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
-    let json = serde_json::Value::Object(card.clone());
+pub fn to_vcard(card: &Map<String, Value>) -> Result<String, String> {
+    let json = Value::Object(card.clone());
     let vcard =
         Vcard::from_jscontact(&json).map_err(|err| format!("Invalid JSContact card: {err}"))?;
 
@@ -61,11 +62,11 @@ pub fn to_vcard(card: &serde_json::Map<String, serde_json::Value>) -> Result<Str
 
 /// Projects a vCard document onto JSContact Card properties, the
 /// create payload of `ContactCard/set`.
-pub fn to_jscontact(vcard: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+pub fn to_jscontact(vcard: &str) -> Result<Map<String, Value>, String> {
     let cst = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
 
     match cst.decode().to_jscontact() {
-        serde_json::Value::Object(map) => Ok(map),
+        Value::Object(map) => Ok(map),
         _ => Err("JSContact conversion did not produce a card object".to_string()),
     }
 }
@@ -75,10 +76,7 @@ pub fn to_jscontact(vcard: &str) -> Result<serde_json::Map<String, serde_json::V
 /// state last synced with the server), plus a null for every property
 /// the edit removed. Without a base the patch carries every property,
 /// which cannot clear server-side ones the vCard lost track of.
-pub fn to_patch(
-    vcard: &str,
-    base_vcard: Option<&str>,
-) -> Result<BTreeMap<String, serde_json::Value>, String> {
+pub fn to_patch(vcard: &str, base_vcard: Option<&str>) -> Result<BTreeMap<String, Value>, String> {
     let new = to_jscontact(vcard)?;
     let mut patch = BTreeMap::new();
 
@@ -96,7 +94,7 @@ pub fn to_patch(
                 // NOTE: the uid is immutable in spirit (RFC 9610 §3
                 // keys groups on it); never null it out.
                 if !new.contains_key(key) && key != "uid" {
-                    patch.insert(key.clone(), serde_json::Value::Null);
+                    patch.insert(key.clone(), Value::Null);
                 }
             }
         }
@@ -115,7 +113,7 @@ pub fn to_patch(
 /// maps are key-sorted, so the hash is independent of the property
 /// order the server picked.
 fn etag(card: &JmapContactCard) -> Option<String> {
-    let json = serde_json::to_string(card).ok()?;
+    let json = to_string(card).ok()?;
     let mut hasher = DefaultHasher::new();
     json.hash(&mut hasher);
 
@@ -124,6 +122,8 @@ fn etag(card: &JmapContactCard) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     const VCARD: &str = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Jane Doe\r\nEMAIL:jane@example.com\r\nTEL:+33612345678\r\nEND:VCARD\r\n";
@@ -178,14 +178,14 @@ mod tests {
         let edited = VCARD.replace("TEL:+33612345678\r\n", "");
         let patch = to_patch(&edited, Some(VCARD)).unwrap();
 
-        assert_eq!(patch.get("phones"), Some(&serde_json::Value::Null));
+        assert_eq!(patch.get("phones"), Some(&Value::Null));
         assert!(!patch.contains_key("uid"), "{patch:?}");
     }
 
     #[test]
     fn middle_name_rides_given2_and_round_trips() {
-        // RFC 9553 carries the middle name as the given2 component
-        // kind; a codec folding it into given (or dropping it) would
+        // NOTE: RFC 9553 carries the middle name as the given2
+        // component kind; folding it into given (or dropping it) would
         // destroy N's third component through every JMAP round-trip.
         let vcard = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nN:BB;Aa;g;;\r\nEND:VCARD\r\n";
         let card = to_jscontact(vcard).unwrap();
@@ -207,11 +207,10 @@ mod tests {
 
     #[test]
     fn name_components_without_full_mint_no_display_name() {
-        // A server card with name components but no name.full (a
-        // contact whose display name was never set) must convert
-        // without an FN: the app never mints a display name into the
-        // document of record, the lists compose one on the fly.
-        let card = serde_json::json!({
+        // NOTE: a card with name components but no name.full (display
+        // name never set) must convert without an FN: the app never
+        // mints one into the record, the lists compose on the fly.
+        let card = json!({
             "@type": "Card",
             "version": "1.0",
             "uid": "abc",

@@ -131,6 +131,7 @@ use jni::{
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use url::Url;
 use vcard::tree::cst::VcardCst;
 
@@ -176,9 +177,12 @@ impl<'a, 'local> Client<'a, 'local> {
     pub fn new(env: &'a mut Env<'local>, transport: &'a JObject<'local>) -> Self {
         Self { env, transport }
     }
+}
 
-    // ---- Operations -------------------------------------------------------
-
+/// Discovery and OAuth operations: RFC 6764 CardDAV discovery, provider
+/// and protocol search, and the OAuth 2.0 token exchanges the onboarding
+/// flow runs.
+impl<'a, 'local> Client<'a, 'local> {
     /// Resolves the email's domain to a CardDAV context root via
     /// RFC 6764: SRV and TXT over the given resolver (`tcp://host:port`,
     /// or an RFC 8484 `https://…/dns-query` one; DoH by default), then
@@ -208,8 +212,8 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let coroutine = WellKnown::new(origin.clone(), DavService::Carddav);
         match self.run_discovery(coroutine) {
-            // RFC 6764 §5: no redirect means nothing authoritative on
-            // the origin; keep the origin itself as context root.
+            // NOTE: RFC 6764 §5: no redirect means the origin itself is
+            // the context root.
             Ok(redirect) => Ok(redirect.unwrap_or(origin)),
             Err(err) => Err(format!("{err} (SRV/TXT lookup failed first: {srv_err})").into()),
         }
@@ -237,8 +241,8 @@ impl<'a, 'local> Client<'a, 'local> {
             if let Some(provider) = Provider::from_mx(&exchange) {
                 let mut configs = provider.configs(&email);
 
-                // A bare-domain search carries no email; the username
-                // hint is dropped rather than minted from the domain.
+                // NOTE: a bare-domain search has no email, so the
+                // username hint is dropped rather than minted.
                 if email.is_empty() {
                     for config in &mut configs {
                         config.username = None;
@@ -322,7 +326,7 @@ impl<'a, 'local> Client<'a, 'local> {
                     break;
                 }
                 // NOTE: a probe that fails or learns nothing is
-                // best-effort; the config's next URL gets its turn.
+                // best-effort; the next URL gets its turn.
                 Ok(_) | Err(_) => {}
             }
         }
@@ -475,9 +479,12 @@ impl<'a, 'local> Client<'a, 'local> {
             }
         }
     }
+}
 
-    // ---- Backend dispatch ---------------------------------------------------
-
+/// Backend dispatch: the protocol-agnostic card and addressbook API the
+/// bridge exposes, each method routing to the CardDAV, Graph, JMAP or
+/// Google implementation behind the account's base URL.
+impl<'a, 'local> Client<'a, 'local> {
     /// Lists the account's addressbooks, each carrying the absolute
     /// collection URL every card operation targets: the CardDAV
     /// discovery walk, the Graph contact folders, the JMAP
@@ -588,9 +595,8 @@ impl<'a, 'local> Client<'a, 'local> {
         let delta = match round {
             Ok(delta) => delta,
             Err(_) if cursor.is_none() && Backend::of(base_url) == Backend::Carddav => {
-                // No sync-collection support on an initial CardDAV
-                // sync: fall back to the plain enumeration (a genuine
-                // outage fails there too, the same offline fallback).
+                // NOTE: no sync-collection support: fall back to the
+                // plain enumeration (a genuine outage fails there too).
                 let url = parse_url(addressbook_url)?;
                 let refs = self.enum_cards(&url, credentials)?;
 
@@ -619,9 +625,9 @@ impl<'a, 'local> Client<'a, 'local> {
             return Ok(delta);
         }
 
-        // The server no longer accepts the cursor: re-run an initial
-        // round. A still-rejected initial round must never read as an
-        // empty collection (that would look remote-deleted).
+        // NOTE: the cursor was rejected, so re-run an initial round; a
+        // still-rejected round must error, never read as an empty
+        // collection (that would look remote-deleted).
         match self.sync_cards_round(base_url, addressbook_url, credentials, None)? {
             Some(mut delta) => {
                 delta.complete = true;
@@ -874,9 +880,11 @@ impl<'a, 'local> Client<'a, 'local> {
             .into()),
         }
     }
+}
 
-    // ---- CardDAV operations -------------------------------------------------
-
+/// CardDAV operations: the RFC 6352 addressbook and card verbs, plus the
+/// RFC 6578 sync-collection round, run over the WebDAV coroutines.
+impl<'a, 'local> Client<'a, 'local> {
     /// Walks current-user-principal -> addressbook-home-set -> list,
     /// returning the account's addressbooks. Doubles as the connection
     /// check during onboarding: any failure (TLS, auth, discovery walk)
@@ -888,12 +896,9 @@ impl<'a, 'local> Client<'a, 'local> {
     ) -> Result<Vec<Addressbook>, BridgeError> {
         let auth = auth(credentials);
 
-        // RFC 6764 §5: a bare origin (e.g. the carddav.example.com a
-        // PACC document advertises) is not necessarily the context
-        // root; probe .well-known/carddav for the real one first
-        // (fastmail 404s every request outside /dav/*). No redirect or
-        // a failed probe keeps the origin, which plenty of servers
-        // serve directly.
+        // NOTE: RFC 6764 §5: a bare origin is not necessarily the
+        // context root, so probe .well-known/carddav for the real one
+        // (fastmail 404s outside /dav/*); no redirect keeps the origin.
         let base_url = match base_url.path() {
             "" | "/" => {
                 let probe = WellKnown::new(base_url.clone(), DavService::Carddav);
@@ -906,8 +911,8 @@ impl<'a, 'local> Client<'a, 'local> {
         };
         let base_url = &base_url;
 
-        // Some servers expose the home-set straight off the context
-        // root, so a missing principal is not fatal.
+        // NOTE: some servers expose the home-set off the context root,
+        // so a missing principal is not fatal.
         let principal = self
             .principal(base_url, &auth)?
             .unwrap_or_else(|| base_url.clone());
@@ -1121,9 +1126,11 @@ impl<'a, 'local> Client<'a, 'local> {
             }
         }
     }
+}
 
-    // ---- Microsoft Graph operations -----------------------------------------
-
+/// Microsoft Graph operations: contact folders and contacts as
+/// addressbooks and cards, plus the $batch push and the delta sync round.
+impl<'a, 'local> Client<'a, 'local> {
     /// Lists the Microsoft Graph contact folders as addressbooks,
     /// prepending the default Contacts folder (Graph serves it outside
     /// the folder list, addressed by an empty folder id). Collection
@@ -1231,9 +1238,8 @@ impl<'a, 'local> Client<'a, 'local> {
             .map_err(|err| err.to_string())?;
         let mut created = self.run_msgraph(coroutine)?;
 
-        // NOTE: create and update responses cannot $expand, so the
-        // stash just sent is re-attached before projecting the
-        // returned card.
+        // NOTE: create responses cannot $expand, so the stash just sent
+        // is re-attached before projecting the card.
         created.single_value_extended_properties =
             msgraph::to_contact(vcard)?.single_value_extended_properties;
         Ok(graph_card(created))
@@ -1271,9 +1277,8 @@ impl<'a, 'local> Client<'a, 'local> {
             MsgraphContactUpdate::new(&auth, "me", id, &contact).map_err(|err| err.to_string())?;
         let mut updated = self.run_msgraph(coroutine)?;
 
-        // NOTE: create and update responses cannot $expand, so the
-        // card's full stash (unchanged deltas skip it in the body) is
-        // re-attached before projecting the returned card.
+        // NOTE: update responses cannot $expand, so the full stash
+        // (a delta may skip it in the body) is re-attached first.
         updated.single_value_extended_properties =
             msgraph::to_contact(vcard)?.single_value_extended_properties;
         Ok(graph_card(updated))
@@ -1475,9 +1480,11 @@ impl<'a, 'local> Client<'a, 'local> {
 
         Ok(Some(delta))
     }
+}
 
-    // ---- JMAP operations ----------------------------------------------------
-
+/// JMAP operations: the RFC 9610 AddressBook and ContactCard verbs, the
+/// ContactCard/set push and the ContactCard/changes sync round.
+impl<'a, 'local> Client<'a, 'local> {
     /// Lists the account's JMAP AddressBooks (RFC 9610 §2.1).
     /// Collection URLs are left empty: the caller composes them, since
     /// only it knows the account they belong to. Doubles as the
@@ -1662,8 +1669,8 @@ impl<'a, 'local> Client<'a, 'local> {
             }
         }
 
-        // A card created and destroyed within the window rides in
-        // both lists; the destroy wins and the get skips it.
+        // NOTE: a card created and destroyed within the window is in
+        // both lists; the destroy wins.
         changed_ids.retain(|id| !vanished.contains(id));
 
         let mut changed = Vec::new();
@@ -1773,13 +1780,10 @@ impl<'a, 'local> Client<'a, 'local> {
 
         let mut patch = BTreeMap::new();
         for book in add {
-            patch.insert(
-                format!("addressBookIds/{book}"),
-                serde_json::Value::Bool(true),
-            );
+            patch.insert(format!("addressBookIds/{book}"), Value::Bool(true));
         }
         for book in remove {
-            patch.insert(format!("addressBookIds/{book}"), serde_json::Value::Null);
+            patch.insert(format!("addressBookIds/{book}"), Value::Null);
         }
 
         let update = BTreeMap::from([(id.to_string(), JmapContactCardPatch(patch))]);
@@ -1850,13 +1854,10 @@ impl<'a, 'local> Client<'a, 'local> {
                         let id = required(&change.id, "books", "id")?;
                         let mut patch = BTreeMap::new();
                         for book in &change.add {
-                            patch.insert(
-                                format!("addressBookIds/{book}"),
-                                serde_json::Value::Bool(true),
-                            );
+                            patch.insert(format!("addressBookIds/{book}"), Value::Bool(true));
                         }
                         for book in &change.remove {
-                            patch.insert(format!("addressBookIds/{book}"), serde_json::Value::Null);
+                            patch.insert(format!("addressBookIds/{book}"), Value::Null);
                         }
                         update.insert(id.to_string(), JmapContactCardPatch(patch));
                         update_refs.insert(id.to_string(), change.reference.clone());
@@ -1906,7 +1907,7 @@ impl<'a, 'local> Client<'a, 'local> {
             }
             for (id, reference) in destroy_refs {
                 match out.not_destroyed.get(&id) {
-                    // NOTE: NotFound means already gone upstream, the
+                    // NOTE: NotFound means already gone upstream, so the
                     // destroy converged.
                     Some(JmapContactCardSetItemError::NotFound { .. }) | None => {
                         outcomes.push(PushOutcome {
@@ -1922,9 +1923,12 @@ impl<'a, 'local> Client<'a, 'local> {
 
         Ok(outcomes)
     }
+}
 
-    // ---- Google People operations -------------------------------------------
-
+/// Google People operations: contact groups and connections as
+/// addressbooks and cards, the batch create and delete verbs, group
+/// membership edits and the sync-token round.
+impl<'a, 'local> Client<'a, 'local> {
     /// Lists the Google account's contact groups as addressbooks: the
     /// myContacts system group first (as Contacts, the group every
     /// contact belongs to), then the user's own groups. Memberships
@@ -1963,8 +1967,7 @@ impl<'a, 'local> Client<'a, 'local> {
                 }
 
                 // NOTE: of the system groups, only myContacts is a
-                // container (starred, blocked and friends-style
-                // legacy groups are not addressbooks).
+                // container; the others are not addressbooks.
                 if id == "myContacts" {
                     books.insert(
                         0,
@@ -2048,9 +2051,8 @@ impl<'a, 'local> Client<'a, 'local> {
     ) -> Result<Option<CardDelta>, BridgeError> {
         let auth = HttpAuthBearer::new(token);
 
-        // The person metadata carries the deleted marker of sync
-        // responses; a sync token binds to its field mask, so every
-        // round asks the same one.
+        // NOTE: metadata carries the deleted marker; a sync token binds
+        // to its field mask, so every round asks the same one.
         let fields: Vec<PeoplePersonField> = google::READ_FIELDS
             .iter()
             .copied()
@@ -2156,7 +2158,6 @@ impl<'a, 'local> Client<'a, 'local> {
             None => google::MANAGED_FIELDS.to_vec(),
         };
         if fields.is_empty() {
-            // NOTE: nothing differs from the base, no request to send.
             return Ok(Card {
                 id: id.to_string(),
                 uri: id.to_string(),
@@ -2166,11 +2167,9 @@ impl<'a, 'local> Client<'a, 'local> {
             });
         }
 
-        // NOTE: a masked update replaces the whole clientData list and
-        // other clients may own entries there, so a stash write merges
-        // the server's foreign entries first (the etag guard turns a
-        // lost-update race into a clean rejection). The same fetch
-        // serves as etag source when the caller does not know it.
+        // NOTE: a masked clientData update replaces the whole list, so
+        // the server's foreign entries are merged in first (the etag
+        // guards the race); the same fetch sources a missing etag.
         let needs_merge = fields.contains(&PeoplePersonField::ClientData);
         if needs_merge || etag.is_none() {
             let coroutine =
@@ -2199,13 +2198,10 @@ impl<'a, 'local> Client<'a, 'local> {
             .map_err(|err| err.to_string())?;
         match self.run_google(coroutine) {
             Ok(updated) => Ok(google_card(updated)),
-            // People's connections.list etag (which the engine carries as
-            // the row revision) is rejected by updateContact; only a
-            // people.get or prior-update etag is accepted. Re-read the
-            // current etag and retry once. Concurrency stays the engine's
-            // enumerate to guard: a real remote change since the base
-            // re-conflicts the row before this push runs, so the retry only
-            // bridges the etag representation gap.
+            // NOTE: the connections.list etag the engine carries is
+            // rejected by updateContact (only a people.get etag is
+            // accepted), so re-read the etag and retry once; the engine
+            // still guards concurrency by re-conflicting the row.
             Err(err)
                 if err.status == Some(400) && err.message.to_ascii_lowercase().contains("etag") =>
             {
@@ -2261,7 +2257,7 @@ impl<'a, 'local> Client<'a, 'local> {
             let response = self.run_google(coroutine)?;
 
             // NOTE: a count mismatch would misattribute server ids to
-            // vCards, so it aborts the batch instead of guessing.
+            // vCards, so abort rather than guess.
             if response.created_people.len() != chunk.len() {
                 return Err(format!(
                     "Google batch create answered {} contacts for {}",
@@ -2356,9 +2352,11 @@ impl<'a, 'local> Client<'a, 'local> {
 
         Ok(())
     }
+}
 
-    // ---- Discovery walk steps ---------------------------------------------
-
+/// CardDAV discovery walk steps: the PROPFIND probes that resolve the
+/// principal and its addressbook home set.
+impl<'a, 'local> Client<'a, 'local> {
     /// PROPFIND the context root for `DAV:current-user-principal`.
     fn principal(&mut self, base_url: &Url, auth: &WebdavAuth) -> Result<Option<Url>, BridgeError> {
         self.run_redirect(base_url, |url| {
@@ -2376,9 +2374,12 @@ impl<'a, 'local> Client<'a, 'local> {
             AddressbookHomeSet::new(url, auth, USER_AGENT, url.path())
         })
     }
+}
 
-    // ---- Coroutine runners ------------------------------------------------
-
+/// Coroutine runners: the resume loops that pump each protocol's
+/// sans-io coroutine, routing every read and write yield to the Java
+/// transport stream opened for the yielded URL.
+impl<'a, 'local> Client<'a, 'local> {
     /// Drives a discovery coroutine to completion, routing each yield
     /// to the stream the Java transport opens for the yielded URL.
     fn run_discovery<C, T, E>(&mut self, mut coroutine: C) -> Result<T, BridgeError>
@@ -2665,8 +2666,6 @@ impl<'a, 'local> Client<'a, 'local> {
                         url,
                         ..
                     }) => {
-                        // Rebuild the coroutine against the new target;
-                        // the auth is carried over by `make`.
                         target = url;
                         break;
                     }
@@ -2674,9 +2673,11 @@ impl<'a, 'local> Client<'a, 'local> {
             }
         }
     }
+}
 
-    // ---- Transport upcalls ------------------------------------------------
-
+/// Transport upcalls: the JNI bridge to the Java `Transport`, reading
+/// and writing bytes on the stream open for a given URL.
+impl<'a, 'local> Client<'a, 'local> {
     /// Upcalls the Java transport to read the next chunk from the
     /// stream open on `url`.
     fn read(&mut self, url: &str) -> Result<Vec<u8>, BridgeError> {
@@ -2956,7 +2957,6 @@ fn google_card(person: PeoplePerson) -> Card {
     }
 }
 
-/// Parses an OData paging link served by Graph.
 /// A required field of a push change, named in the error when absent.
 fn required<'a>(field: &'a Option<String>, op: &str, name: &str) -> Result<&'a str, BridgeError> {
     field
@@ -3015,7 +3015,7 @@ struct GraphBatchReply {
     id: String,
     status: u16,
     #[serde(default)]
-    body: Option<serde_json::Value>,
+    body: Option<Value>,
 }
 
 fn parse_graph_url(raw: &str) -> Result<Url, BridgeError> {
@@ -3066,7 +3066,15 @@ fn into_card(entry: CardEntry) -> Card {
 
 /// Catches and clears any pending Java exception, surfacing its class
 /// and message (a bare JNI error only says "Java exception was thrown").
+/// The lowercase op is capitalized so the user-facing message reads as a
+/// sentence.
 pub(crate) fn clear_and_fail(env: &mut Env, op: &str, err: Error) -> String {
+    let mut chars = op.chars();
+    let op = match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    };
+
     match env.exception_catch() {
         Err(Error::CaughtJavaException { name, msg, .. }) => {
             format!("{op} failed: {name}: {msg}")

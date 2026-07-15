@@ -82,7 +82,7 @@ pub fn to_vcard(contact: &MsgraphContact) -> String {
         card.push(text_prop(VcardPropKind::Uid, vec![], id));
     }
 
-    // FN is mandatory: the display name, or composed from the parts.
+    // NOTE: FN is a mandatory vCard property, so it is always pushed.
     card.push(text_prop(VcardPropKind::Fn, vec![], &display_name(contact)));
 
     // NOTE: the Graph title is the honorific (Dr., Mrs.), hence the N

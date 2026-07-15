@@ -80,12 +80,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_EXPORT = 3;
     private static final int REQUEST_NOTIFICATIONS = 4;
 
-    /**
-     * One replica in the contacts pool: a card, the addressbook it
-     * lives in, the account owning it and its write-time index
-     * (docs/merged-view.md), so rendering never parses a vCard: see
-     * {@link Entry}, {@link Group} and {@link ContactPool}.
-     */
+    /** The shared backend client, the single-thread io executor, the
+     *  main-thread handler and the theme helper. */
     final CardamumClient client = new CardamumClient();
     final ExecutorService io = Executors.newSingleThreadExecutor();
     final Handler main = new Handler(Looper.getMainLooper());
@@ -164,12 +160,9 @@ public class MainActivity extends Activity {
         drawer = findViewById(R.id.drawer);
         applyEdgeToEdge();
 
-        // Support prompt (docs/monetization.md): a no-op on the FOSS
-        // build; on the Google build, a dismissable ask shown at most
-        // once per rolling 3 days until any tier was paid. Only on a
-        // genuine user-initiated open: a fresh start (a rotation does
-        // not re-fire) that is neither an OAuth redirect nor a headless
-        // adb sync hook.
+        // NOTE: support prompt (docs/monetization.md) only on a genuine
+        // user-initiated open: a fresh start (not a rotation) that is
+        // neither an OAuth redirect nor a headless adb sync hook.
         boolean headless =
                 getIntent().getBooleanExtra("syncRemote", false)
                         || getIntent().getBooleanExtra("syncLocal", false);
@@ -182,7 +175,7 @@ public class MainActivity extends Activity {
         pool = new ContactPool(base, accounts);
         contactsList = new ContactsList(this);
         runner = new SyncRunner(this, base, store, client, syncObserver());
-        // The two flows reference each other (the grants land back in
+        // NOTE: the two flows reference each other (grants land back in
         // the wizard), so one side binds late.
         oauth = new OauthFlow(this);
         onboarding = new OnboardingFlow(this, oauth);
@@ -191,8 +184,6 @@ public class MainActivity extends Activity {
         flipper = findViewById(R.id.flipper);
         authFlipper = findViewById(R.id.auth_flipper);
         form = new ContactForm(this);
-        // Re-gate the editor's validate FAB whenever the form re-renders
-        // (a merge enables it only once every conflict is resolved).
         form.setOnRender(this::updateSaveEnabled);
 
         setUpScreens();
@@ -205,26 +196,23 @@ public class MainActivity extends Activity {
         findViewById(R.id.fab).setOnClickListener(view -> onFabClick());
         findViewById(R.id.bar_back).setOnClickListener(view -> onBarBack());
 
-        // Every sync entry point (drawer, pull-down, Sync local,
-        // post-onboarding) drives the one syncing flag, so the modal
-        // dialog binds here once and covers them all.
+        // The modal dialog binds once here and covers every sync entry
+        // point through the shared syncing flag.
         observeSync(this::showSyncDialog);
 
-        // The built-in local book is always present and subscribed, so
-        // the app opens usable with no account: onboarding is never
-        // forced; accounts are added from the addressbooks screen.
+        // NOTE: the built-in local book is always present and
+        // subscribed, so the app opens usable with no account:
+        // onboarding is never forced.
         base.ensureLocalAddressbook(
                 LocalBook.URL, LocalBook.ACCOUNT, LocalBook.ID, getString(R.string.local_book));
         accounts.add(LocalBook.account());
         accounts.addAll(store.loadAll());
 
-        // Self-heal the background sync schedules: an app update or a
-        // wiped WorkManager database silently drops periodic work, and
-        // reconciling on launch converges it back onto the stored books.
+        // NOTE: an app update or wiped WorkManager database silently
+        // drops periodic work; reconciling on launch converges it back
+        // onto the stored books.
         BackgroundSync.reconcile(this, base.loadAllAddressbooks());
 
-        // Offline first: the merged contacts root renders instantly from
-        // the store, syncs are manual (the drawer or the pull-down).
         goHome();
 
         // NOTE: adb-only hooks, so syncs can be driven headlessly:
@@ -235,15 +223,13 @@ public class MainActivity extends Activity {
             syncLocal();
         }
 
-        // An OAuth redirect can land here rather than in onNewIntent:
-        // when the process died while the user was in the browser, the
-        // redirect recreates the activity from scratch.
+        // NOTE: an OAuth redirect lands here rather than in onNewIntent
+        // when the process died while the user was in the browser (the
+        // redirect recreates the activity from scratch).
         oauth.handleRedirect(getIntent());
 
         // A fresh start with no real account opens the connection flow
-        // right away: with nothing to show underneath, the flow is the
-        // first screen; back dismisses it onto the empty list. Skipped
-        // while an OAuth redirect is being processed.
+        // right away, skipped while an OAuth redirect is processing.
         if (savedInstanceState == null && getIntent().getData() == null && !hasRealAccount()) {
             startAuth();
         }
@@ -298,7 +284,6 @@ public class MainActivity extends Activity {
         if (inside) {
             applyChrome(PANEL_AUTH);
         } else {
-            // The flow fades in over the current screen.
             openOverlay(PANEL_AUTH);
         }
     }
@@ -325,13 +310,12 @@ public class MainActivity extends Activity {
     private void authBack() {
         int step = authFlipper.getDisplayedChild();
         if (step == STEP_BOOKS) {
-            // Nothing persists before the selection confirms, so the
-            // books step steps back into the flow like any other.
+            // NOTE: nothing persists before the selection confirms, so
+            // the books step steps back like any other.
             showAuthBack(STEP_CONFIG);
         } else if (step == STEP_CONFIG) {
             showAuthBack(STEP_EMAIL);
         } else {
-            // The email step is only reachable when adding an account.
             cancelAuth();
         }
     }
@@ -385,9 +369,8 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // Diverging rows await review: the disc turns the error tone
-        // and wears the same warning glyph the rows carry, full
-        // strength so the state reads as a signal, not a dimmed save.
+        // Diverging rows await review: the disc turns the error tone at
+        // full strength, so the state reads as a signal not a dimmed save.
         fab.setBackgroundTintList(
                 android.content.res.ColorStateList.valueOf(
                         resolveColor(android.R.attr.colorError)));
@@ -403,8 +386,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         io.shutdownNow();
-        // shutdownNow interrupts, but a blocking accept() only wakes
-        // on close: without this the OAuth loopback listener would
+        // NOTE: shutdownNow interrupts, but a blocking accept() only
+        // wakes on close; without this the OAuth loopback listener would
         // outlive the activity by up to its 300s timeout.
         oauth.closeLoopback();
         super.onDestroy();
@@ -419,13 +402,12 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // The sync loader is modal: the sync cannot be interrupted
-        // mid-pass, so back waits with the rest of the screen.
+        // The sync loader is modal: back waits with the rest.
         if (syncing) {
             return;
         }
-        // The account settings overlay sits above the open drawer: back
-        // peels it off first, landing on the drawer it came from.
+        // The account settings overlay sits above the open drawer, so
+        // back peels it off first.
         if (screen == PANEL_ACCOUNT) {
             leaveAccountSettings();
             return;
@@ -455,7 +437,7 @@ public class MainActivity extends Activity {
         reloadContacts();
 
         // Landing on the root is always a return: the auth sheet slides
-        // back out, the drawer closes, the root stays put underneath.
+        // back out onto the root left underneath.
         if (screen == PANEL_AUTH) {
             closeOverlay(PANEL_AUTH);
             screen = PANEL_CONTACTS;
@@ -467,7 +449,6 @@ public class MainActivity extends Activity {
         if (drawer.isDrawerOpen(android.view.Gravity.START)) {
             drawer.closeDrawer(android.view.Gravity.START);
         }
-        // A new or removed account shows next time the drawer opens.
         reloadHome();
     }
 
@@ -480,17 +461,14 @@ public class MainActivity extends Activity {
         drawer.openDrawer(android.view.Gravity.START);
     }
 
-    // ---- Connection screen --------------------------------------------------
-
+    // Connection screen
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
         findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
         findViewById(R.id.auth_cancel).setOnClickListener(view -> cancelAuth());
 
-        // The shared FAB is the step's continue action; it stays
-        // disabled until the field holds something plausible (an email,
-        // a server, or a connection URI), so an empty or malformed
-        // input is simply not submittable.
+        // The continue FAB stays disabled until the field holds
+        // something plausible (an email, a server, or a connection URI).
         email.addTextChangedListener(
                 new android.text.TextWatcher() {
                     @Override
@@ -555,9 +533,8 @@ public class MainActivity extends Activity {
                         this, R.array.background_sync_intervals, R.layout.spinner_form_item);
         intervals.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(intervals);
-        // Only the start goes flush; the background's own end padding
-        // (the caret zone) stays, so a long entry ellipsizes before
-        // running under the caret.
+        // NOTE: only the start goes flush; the caret-zone end padding
+        // stays, so a long entry ellipsizes before running under it.
         spinner.setPadding(0, 0, spinner.getPaddingRight(), 0);
         return spinner;
     }
@@ -565,9 +542,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Coming back from the browser without a redirect (the user
-        // cancelled the grant) must not leave the config Continue stuck
-        // on its loader; a real redirect re-enters loading right after.
+        // Returning from the browser without a redirect (a cancelled
+        // grant) must not leave the config Continue stuck on its loader;
+        // a real redirect re-enters loading right after.
         if (flipper != null
                 && screen == PANEL_AUTH
                 && authFlipper.getDisplayedChild() == STEP_CONFIG) {
@@ -575,14 +552,10 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---- Addressbooks management screen -----------------------------------------
-
+    // Addressbooks management screen
     private void setUpHomePanel() {
-        // The drawer: the title bar's closing cross, then the bottom
-        // band: sync, add an account, or open About (its dialog carries
-        // the app name and version). Sync slides the drawer shut on its
-        // way in, so the modal dialog runs over the contacts list and
-        // the outcome toasts land on the refreshed list.
+        // Sync slides the drawer shut on its way in, so the modal dialog
+        // and its outcome toasts land over the refreshed contacts list.
         findViewById(R.id.drawer_close)
                 .setOnClickListener(view -> drawer.closeDrawer(Gravity.START));
         findViewById(R.id.drawer_sync)
@@ -594,15 +567,12 @@ public class MainActivity extends Activity {
         findViewById(R.id.drawer_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
 
-        // The account settings screen's own bar: back returns to the
-        // contacts root, the trash deletes the account after
-        // confirmation.
         findViewById(R.id.account_back).setOnClickListener(view -> leaveAccountSettings());
         findViewById(R.id.account_delete)
                 .setOnClickListener(view -> confirmDeleteAccount(settingsEmail));
 
-        // The settings overlay's own save FAB (the shared one draws
-        // under the drawer the overlay covers).
+        // NOTE: the settings overlay carries its own save FAB, the
+        // shared one drawing under the drawer the overlay covers.
         android.widget.ImageButton accountFab = findViewById(R.id.account_fab);
         accountFab.setImageTintList(
                 android.content.res.ColorStateList.valueOf(accentContrast()));
@@ -658,7 +628,7 @@ public class MainActivity extends Activity {
      */
     private void reloadHome() {
         // With no real account the drawer shows an empty state, and its
-        // sync row (which would sync nothing) is hidden.
+        // sync row is hidden.
         boolean hasAccount = hasRealAccount();
         findViewById(R.id.drawer_sync).setVisibility(hasAccount ? View.VISIBLE : View.GONE);
         findViewById(R.id.drawer_empty).setVisibility(hasAccount ? View.GONE : View.VISIBLE);
@@ -674,8 +644,6 @@ public class MainActivity extends Activity {
         }
 
         for (String email : emails) {
-            // Styled like the footer rows: a leading account glyph then
-            // the email, same paddings, gap and icon box.
             android.widget.ImageView glyph = new android.widget.ImageView(this);
             glyph.setImageResource(R.drawable.ic_account);
             glyph.setImageTintList(
@@ -766,8 +734,8 @@ public class MainActivity extends Activity {
             anyEnabled |= staged.enabled;
         }
 
-        // The master switch: on puts every addressbook fully on (both
-        // spokes), off shuts everything down, cadence included.
+        // The master switch fans onto every addressbook: on puts both
+        // spokes on, off shuts everything down, cadence included.
         CheckBox activate = new CheckBox(this);
         activate.setChecked(anyEnabled);
         content.addView(optionRow(R.string.account_enable, activate), rowParams);
@@ -784,8 +752,8 @@ public class MainActivity extends Activity {
                     renderAccountSettings();
                 });
 
-        // The account-wide cadence, showing the first enabled book's
-        // pick and fanning a change out onto every book.
+        // The account-wide cadence shows the first enabled book's pick
+        // and fans a change onto every book.
         int shown = 0;
         for (BookSettings staged : bookSettings.values()) {
             if (staged.enabled) {
@@ -802,17 +770,14 @@ public class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT);
-        // The framework caret renders further in from the spinner's end
-        // than the checkbox glyph sits from its own edge, so the spinner
-        // stops 8dp short of the rows' end padding to line the caret up
-        // with the boxes (same tuning as the onboarding cadence).
+        // NOTE: the framework caret renders further in than the checkbox
+        // glyph, so the spinner stops 8dp short of the rows' end padding
+        // to line the caret up with the boxes (as the onboarding cadence).
         intervalParams.setMarginStart(dp(16));
         intervalParams.setMarginEnd(dp(4));
         content.addView(interval, intervalParams);
 
-        // The edit form's section separator between the account pair
-        // and the advanced fold: a 1dp line in the app bar tone,
-        // inset to the rows' own paddings.
+        // A 1dp separator between the account pair and the advanced fold.
         View line = new View(this);
         line.setBackgroundColor(getColor(R.color.surface));
         LinearLayout.LayoutParams lineParams =
@@ -832,9 +797,8 @@ public class MainActivity extends Activity {
                     }
                 });
 
-        // The Advanced fold, a checkbox row like every other: the
-        // per-addressbook sections below only matter on multi-book
-        // accounts or for spoke-level tuning.
+        // The per-addressbook sections below only matter on multi-book
+        // accounts or for spoke-level tuning, so they hide behind a fold.
         CheckBox advanced = new CheckBox(this);
         advanced.setChecked(settingsAdvancedOpen);
         content.addView(optionRow(R.string.account_advanced, advanced), rowParams);
@@ -851,8 +815,6 @@ public class MainActivity extends Activity {
         for (BookEntry entry : settingsBooks) {
             BookSettings staged = bookSettings.get(entry.book.url);
 
-            // The addressbook header, a plain row at the shared type
-            // scale; its rows indent under it.
             TextView header = new TextView(this);
             header.setText(entry.book.name);
             header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
@@ -883,8 +845,8 @@ public class MainActivity extends Activity {
                         renderAccountSettings();
                     });
 
-            // The spoke switches and the cadence need the book on;
-            // their rows dim with it.
+            // The spoke switches and cadence need the book on, so their
+            // rows dim with it.
             CheckBox remote = new CheckBox(this);
             remote.setChecked(staged.remote);
             remote.setEnabled(staged.enabled);
@@ -972,8 +934,8 @@ public class MainActivity extends Activity {
         closeOverlay(PANEL_ACCOUNT);
         screen = PANEL_CONTACTS;
         applyChrome(PANEL_CONTACTS);
-        // The drawer never closed under the overlay; its rows refresh
-        // in place (switches saved, or the account deleted).
+        // NOTE: the drawer never closed under the overlay, so its rows
+        // refresh in place.
         reloadHome();
     }
 
@@ -1031,10 +993,9 @@ public class MainActivity extends Activity {
     }
 
     private void deleteAccount(String email) {
-        // The account's books leave with it: zero their background sync
-        // intervals and reconcile while the books are still listed, so
-        // their periodic work cancels, and remember their URLs so the
-        // phone accounts that mirrored them can be removed below.
+        // NOTE: zero the books' sync intervals and reconcile while they
+        // are still listed, so their periodic work cancels; remember
+        // their URLs to remove the phone accounts that mirrored them.
         List<String> urls = new ArrayList<>();
         for (BookEntry entry : base.loadAllAddressbooks()) {
             if (entry.accountEmail.equals(email)) {
@@ -1049,11 +1010,9 @@ public class MainActivity extends Activity {
         accounts.removeIf(entry -> entry.email.equals(email));
         reloadHome();
 
-        // The deleted books' phone accounts go explicitly (their rows
-        // are already gone, so a reconcile could not name them), each
-        // taking its raw contacts along; reconciling the remaining
-        // phone-synced set (the one the sync path maintains) then
-        // sweeps any straggler.
+        // NOTE: the deleted books' phone accounts go explicitly (their
+        // rows are already gone, so a reconcile could not name them);
+        // reconciling the remaining phone-synced set sweeps any straggler.
         List<BookEntry> phoneBooks = phoneSyncedBooks();
         io.execute(() -> {
             try {
@@ -1067,10 +1026,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    /**
-     * The replica pool from the store: every subscribed addressbook's
-     * cards, tagged with their book and account.
-     */
+    /** Runs the pending contacts-sync retry once the permission lands. */
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         if (request == REQUEST_CONTACTS && hasContactsPermission()) {
@@ -1095,7 +1051,7 @@ public class MainActivity extends Activity {
         return screen == PANEL_CONTACTS;
     }
 
-    // ---- Sync -----------------------------------------------------------------
+    // Sync
 
     /**
      * The runner's hooks into this activity's presentation: the loader
@@ -1251,14 +1207,13 @@ public class MainActivity extends Activity {
      */
     private void reportSync(SyncRunner.Outcome outcome) {
         if (outcome.failure != null) {
-            // Offline fallback: the store of the last sync keeps failing
-            // addressbooks usable.
+            // NOTE: the last sync's store keeps failing addressbooks usable.
             showError(outcome.failure, R.string.sync_failed);
             return;
         }
 
-        // Toasts queue, so the local report shows first and the remote
-        // one takes its place.
+        // NOTE: toasts queue, so the local report shows first and the
+        // remote one takes its place.
         if (outcome.local) {
             toast(
                     getString(
@@ -1289,9 +1244,8 @@ public class MainActivity extends Activity {
      * only when something actually projects to the phone.
      */
     void syncAll() {
-        // The phone passes touch ContactsContract, so they need the
-        // permission; reconciling the Android accounts (which also purges
-        // a book just switched off) does not, so it always runs.
+        // NOTE: only the phone passes need the contacts permission;
+        // reconciling the Android accounts runs regardless.
         if (!phoneSyncedBooks().isEmpty() && !ensureContactsPermission(this::syncAll)) {
             return;
         }
@@ -1362,7 +1316,7 @@ public class MainActivity extends Activity {
                 });
     }
 
-    /** The subscribed addressbooks the user set to mirror into the phone's Contacts app. */
+    /** The subscribed addressbooks set to mirror into the phone. */
     private List<BookEntry> phoneSyncedBooks() {
         return runner.phoneSyncedBooks();
     }
@@ -1401,7 +1355,7 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    // ---- Contacts screen ----------------------------------------------------
+    // Contacts screen
 
     /**
      * Opens a merged row in the editor: one form for the whole contact
@@ -1445,8 +1399,8 @@ public class MainActivity extends Activity {
         try {
             bodies = new OfflineStore(base).loadConflict(replica.book.url, handle);
             if (bodies == null) {
-                // The conflict was flagged but its remote is not captured
-                // yet (the capturing sync has not run); edit it plainly.
+                // NOTE: flagged but its remote is not captured yet (the
+                // capturing sync has not run); edit it plainly.
                 openMerged(group.replicas);
                 return;
             }
@@ -1462,9 +1416,8 @@ public class MainActivity extends Activity {
 
         if (resolution.optBoolean("resolved")) {
             // Nothing needs the user: stage the clean merge and clear the
-            // conflict. The toast is the tap's only visible outcome (no
-            // form opens), so without it the vanishing flag reads as a
-            // bug.
+            // conflict. The toast is the tap's only visible outcome, so
+            // without it the vanishing flag reads as a bug.
             try {
                 new OfflineEngine(base, client, null, null)
                         .mutateEdit(replica.book.url, handle, resolution.optString("vcard"));
@@ -1559,8 +1512,7 @@ public class MainActivity extends Activity {
      * and shows muted until placed).
      */
     private void importFile(Uri uri, BookEntry target) {
-        // The FAB disables and spins while the file is read, exactly as it
-        // does through the auth flow.
+        // The FAB disables and spins while the file reads, as in the auth flow.
         setAuthLoading(R.id.fab, R.id.fab_progress, true);
         io.execute(
                 () -> {
@@ -1697,7 +1649,8 @@ public class MainActivity extends Activity {
             }
         }
 
-        // No real account: born unattached, in the hidden local book.
+        // With no real account the contact is born unattached, in the
+        // hidden local book.
         if (books.isEmpty()) {
             if (local != null) {
                 openNewContact(local.book, local.accountEmail);
@@ -1742,7 +1695,8 @@ public class MainActivity extends Activity {
         CharSequence[] labels = new CharSequence[books.size()];
         for (int index = 0; index < books.size(); index++) {
             BookEntry entry = books.get(index);
-            // The local book has no account email, so it shows on one line.
+            // NOTE: the local book has no account email, so it shows on
+            // one line.
             labels[index] =
                     LocalBook.is(entry.accountEmail)
                             ? getString(R.string.local_book)
@@ -1778,9 +1732,9 @@ public class MainActivity extends Activity {
     private void createCopy(BookEntry target, AccountEntry account, String id, String vcard) {
         String key = ContactPool.cardKey(account.account, target.book.url, id);
 
-        // Google creates land in myContacts; the group membership
-        // pushes right after the create (the key rename of confirmPush
-        // carries it over).
+        // NOTE: Google creates land in myContacts; the group membership
+        // pushes right after the create (confirmPush's key rename carries
+        // it over).
         if (CardamumClient.isGoogle(account.account) && !"myContacts".equals(target.book.id)) {
             base.stageMembership(target.accountEmail, key, target.book.url, true);
         }
@@ -1793,8 +1747,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // The first replica of each addressbook is its candidate
-        // survivor; one book means there is nothing to choose.
+        // The first replica of each addressbook is its candidate survivor.
         Map<String, Entry> byBook = new java.util.LinkedHashMap<>();
         for (Entry entry : replicas) {
             byBook.putIfAbsent(entry.book.url, entry);
@@ -1872,7 +1825,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---- Contact screen -----------------------------------------------------
+    // Contact screen
 
     /** Opens the edit form on a fresh card in the target addressbook. */
     private void openNewContact(Addressbook book, String accountEmail) {
@@ -1901,9 +1854,8 @@ public class MainActivity extends Activity {
         edit.card = primary.card;
         edit.replicas = new ArrayList<>(replicas);
 
-        // The distinct documents behind the group: one per normalized
-        // content hash. One document means a plain edit; several go
-        // through the bridge's union merge.
+        // The distinct documents behind the group, one per normalized
+        // hash: one means a plain edit, several go through the union merge.
         List<String> docs = new ArrayList<>();
         java.util.Set<String> hashes = new java.util.HashSet<>();
         for (Entry entry : replicas) {
@@ -1924,8 +1876,8 @@ public class MainActivity extends Activity {
                 edit.vcard = merged.optString("vcard");
                 model = merged.optJSONObject("model");
                 alternatives = merged.optJSONObject("alternatives");
-                // A non-null changed set turns on the form's conflict
-                // mode: only the disagreeing fields show.
+                // NOTE: a non-null changed set turns on the form's
+                // conflict mode: only the disagreeing fields show.
                 changed = merged.optJSONArray("changed");
                 if (changed == null) {
                     changed = new org.json.JSONArray();
@@ -1937,13 +1889,10 @@ public class MainActivity extends Activity {
         }
 
         edit.title = primary.displayName();
-        // Raw lines cannot fan out to several physical documents, so
-        // the advanced editor only opens on single-card contacts.
+        // NOTE: raw lines cannot fan out to several documents, so the
+        // advanced editor only opens on single-card contacts.
         edit.advancedAvailable = pool.distinctRefs(replicas).size() == 1;
 
-        // A non-null changed set means the union merge diverged: the
-        // form opens in conflict mode, the same full editor with the
-        // diverged glyph on the disagreeing rows.
         form.load(model, alternatives, changed);
         show(PANEL_CONTACT);
         return true;
@@ -1965,7 +1914,7 @@ public class MainActivity extends Activity {
         showBack(PANEL_CONTACTS);
     }
 
-    // ---- Advanced editor ----------------------------------------------------
+    // Advanced editor
 
     /**
      * Opens the raw-property editor on the working document, the form's
@@ -2011,7 +1960,6 @@ public class MainActivity extends Activity {
                             () -> advancedDialog(at, prop)));
         }
 
-        // Same style as the edit form's closing "Add <field>" rows.
         android.widget.ImageView addIcon = new android.widget.ImageView(this);
         addIcon.setImageResource(R.drawable.ic_add);
         addIcon.setImageTintList(
@@ -2045,7 +1993,6 @@ public class MainActivity extends Activity {
         header.setPadding(dp(16), dp(24), dp(16), dp(4));
         container.addView(header);
 
-        // Tapping the source block opens the free-hand source editor.
         TextView source = new TextView(this);
         source.setText(edit.advancedVcard);
         source.setTextColor(resolveColor(android.R.attr.textColorSecondary));
@@ -2122,8 +2069,7 @@ public class MainActivity extends Activity {
         content.addView(addParam);
 
         // The value area shapes itself from the property name: one
-        // labeled field per component of a structured value, or one
-        // raw field.
+        // labeled field per component of a structured value, or one raw field.
         LinearLayout valueArea = new LinearLayout(this);
         valueArea.setOrientation(LinearLayout.VERTICAL);
         buildValueArea(valueArea, prop.optString("name"), prop);
@@ -2166,7 +2112,6 @@ public class MainActivity extends Activity {
         builder.show();
     }
 
-    /** One parameter row: its name next to its comma-joined values. */
     /** RFC 6350 property names, proposed by the advanced editor. */
     private static final String[] KNOWN_PROPS = {
         "ADR", "ANNIVERSARY", "BDAY", "CALADRURI", "CALURI", "CATEGORIES",
@@ -2223,8 +2168,8 @@ public class MainActivity extends Activity {
         field.setAdapter(
                 new android.widget.ArrayAdapter<>(
                         this, android.R.layout.simple_dropdown_item_1line, registry));
-        // The dropdown opens on the very first tap: focus gain covers
-        // it (a first tap only focuses, the click fires on the second).
+        // NOTE: a first tap only focuses (the click fires on the second),
+        // so focus gain opens the dropdown too.
         field.setOnClickListener(view -> field.showDropDown());
         field.setOnFocusChangeListener(
                 (view, focused) -> {
@@ -2243,7 +2188,7 @@ public class MainActivity extends Activity {
                         | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
 
         // The values complete per comma-separated token, against the
-        // named parameter's own registry (TYPE, VALUE, CALSCALE).
+        // named parameter's registry (TYPE, VALUE, CALSCALE).
         android.widget.MultiAutoCompleteTextView valuesField =
                 new android.widget.MultiAutoCompleteTextView(this);
         valuesField.setHint(R.string.advanced_param_values);
@@ -2307,7 +2252,7 @@ public class MainActivity extends Activity {
                 labels.add(found.optString(index));
             }
         } catch (Exception ignored) {
-            // An unreadable registry just leaves the raw field.
+            // NOTE: an unreadable registry just leaves the raw field.
         }
 
         String shape = String.join("\u001F", labels);
@@ -2456,8 +2401,8 @@ public class MainActivity extends Activity {
             replicaByBook.put(entry.book.url, entry);
         }
 
-        // The hidden local book is not listed; it is the fallback home
-        // when nothing is checked.
+        // NOTE: the hidden local book is not listed; it is the fallback
+        // home when nothing is checked.
         List<BookEntry> books = new ArrayList<>();
         for (BookEntry entry : base.loadSubscribedAddressbooks()) {
             if (!LocalBook.is(entry.accountEmail)) {
@@ -2486,8 +2431,8 @@ public class MainActivity extends Activity {
                                 edit.pendingBookState.put(books.get(index).book.url, checked[index]);
                                 anyChecked |= checked[index];
                             }
-                            // No addressbook checked: the contact is
-                            // unattached, kept only in the hidden local book.
+                            // Nothing checked leaves the contact unattached,
+                            // kept only in the hidden local book.
                             edit.pendingBookState.put(LocalBook.URL, !anyChecked);
                         })
                 .setNegativeButton(android.R.string.cancel, null)
@@ -2570,10 +2515,9 @@ public class MainActivity extends Activity {
 
         if (CardamumClient.isAccountLevel(owner.account)
                 && base.loadMemberships(replica.accountEmail, replicaKey).size() > 1) {
-            // The card stays, only this membership goes.
             base.stageMembership(replica.accountEmail, replicaKey, target.book.url, false);
         } else {
-            // Last place of this card: the card goes.
+            // Last place of this card, so the card itself goes.
             base.markDeleted(replica.accountEmail, replicaKey, replica.card);
         }
     }
@@ -2625,8 +2569,7 @@ public class MainActivity extends Activity {
                 saveFanOut(model);
             }
 
-            // The addressbooks dialog's choices apply here too, the
-            // copies carrying the just-saved content.
+            // The copies carry the just-saved content.
             if (edit.card != null && edit.pendingBookState != null) {
                 applyBookState(Cards.applyCard(edit.card.vcard, model));
             }
@@ -2649,14 +2592,13 @@ public class MainActivity extends Activity {
         java.util.Set<String> staged = new java.util.HashSet<>();
 
         for (Entry entry : edit.replicas) {
-            // An m:n replica appears once per book; stage it once.
+            // NOTE: an m:n replica appears once per book; stage it once.
             if (!staged.add(pool.replicaRef(entry))) {
                 continue;
             }
 
-            // The advanced editor only opens on single-card contacts,
-            // so its document stands in for the card's; a raw edit must
-            // stage even when the managed-content hash is unchanged.
+            // NOTE: a raw edit must stage even when the managed-content
+            // hash is unchanged, so the advanced document stands in.
             String source = edit.advancedVcard != null ? edit.advancedVcard : entry.card.vcard;
             String vcard = Cards.applyCard(source, model);
             if (!edit.advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
@@ -2729,7 +2671,7 @@ public class MainActivity extends Activity {
         contactsList.reload();
     }
 
-    // ---- vCard helpers ------------------------------------------------------
+    // vCard helpers
 
     private static String newVcard() {
         return "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:" + UUID.randomUUID() + "\r\nEND:VCARD\r\n";
@@ -2749,7 +2691,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ---- Utils --------------------------------------------------------------
+    // Utils
 
     /** Navigates forward: the panels slide in from the right. */
     private void show(int panel) {
@@ -2808,10 +2750,9 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void onAnimationEnd(android.view.animation.Animation animation) {
-                        // Invisible, not gone, so the view stays
-                        // measured (see the layout); the finished
-                        // animation clears with it, since an animated
-                        // invisible view still catches touches.
+                        // NOTE: invisible not gone, so the view stays
+                        // measured; the animation is cleared because an
+                        // animated invisible view still catches touches.
                         overlay.clearAnimation();
                         overlay.setVisibility(View.INVISIBLE);
                     }
@@ -2869,7 +2810,6 @@ public class MainActivity extends Activity {
                     if (contactsList.isSearchOpen()) {
                         contactsList.closeSearch();
                     } else {
-                        // The merged list is the app's root itself.
                         MainActivity.super.onBackPressed();
                     }
                 };
@@ -2880,9 +2820,8 @@ public class MainActivity extends Activity {
                 () -> {
                     ((TextView) findViewById(R.id.bar_title)).setText(edit.title);
                     findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                    // Placing the contact in addressbooks needs a real
-                    // account to target; with only the local book, or while
-                    // resolving a conflict, the button hides.
+                    // Placing needs a real account to target, so with only
+                    // the local book or while resolving a conflict it hides.
                     findViewById(R.id.contact_books)
                             .setVisibility(
                                     edit.card != null
@@ -2890,12 +2829,9 @@ public class MainActivity extends Activity {
                                                     && !edit.resolvingConflict
                                             ? View.VISIBLE
                                             : View.GONE);
-                    // Add-field lives in the bar, in conflict mode like in a
-                    // plain edit: the conflict form is the full editor.
                     findViewById(R.id.contact_add_field).setVisibility(View.VISIBLE);
-                    // The FAB validates (check); while diverging rows await
-                    // review it turns into the error disc instead
-                    // (updateSaveEnabled).
+                    // The FAB validates (check); updateSaveEnabled turns it
+                    // into the error disc while diverging rows await review.
                     android.widget.ImageButton fab = findViewById(R.id.fab);
                     fab.setImageResource(R.drawable.ic_check);
                     fab.setContentDescription(getString(R.string.contact_save));
@@ -2937,7 +2873,6 @@ public class MainActivity extends Activity {
         auth.ownBar = true;
         auth.chrome =
                 () -> {
-                    // The shared FAB is the continue action through the flow.
                     android.widget.ImageButton fab = findViewById(R.id.fab);
                     fab.setImageResource(R.drawable.ic_arrow_forward);
                     fab.setContentDescription(getString(R.string.email_submit));
@@ -2953,9 +2888,8 @@ public class MainActivity extends Activity {
 
         Screen account = new Screen();
         account.ownBar = true;
-        // The settings overlay draws above the drawer, where the shared
-        // FAB cannot follow; it carries its own save FAB. Its system
-        // back peels the overlay before anything else (onBackPressed).
+        // NOTE: the settings overlay draws above the drawer where the
+        // shared FAB cannot follow, so it carries its own save FAB.
         account.chrome = () -> findViewById(R.id.fab).setVisibility(View.GONE);
         account.fab = this::saveAccountSettings;
         screens.put(PANEL_ACCOUNT, account);
@@ -2969,12 +2903,9 @@ public class MainActivity extends Activity {
     private void applyChrome(int panel) {
         android.widget.ImageButton fab = findViewById(R.id.fab);
 
-        // Every screen change clears any lingering FAB loader (an auth
-        // step that navigated on while its loader was up) and re-enables
-        // the disc: the icon comes back, the spinner goes, the dim from
-        // a disabled auth step lifts, and the error tones of a left-open
-        // conflict form reset. The auth entry re-disables per step,
-        // updateSaveEnabled re-applies the error state.
+        // Every screen change resets the shared FAB to its plain enabled
+        // disc, clearing any lingering loader, dim or conflict error tone;
+        // the screen's own chrome re-applies its state after.
         fab.setImageAlpha(255);
         fab.setBackgroundTintList(null);
         fab.setImageTintList(android.content.res.ColorStateList.valueOf(accentContrast()));
@@ -2986,7 +2917,7 @@ public class MainActivity extends Activity {
             return;
         }
 
-        // The overlays carry their own bars; only the FAB is shared.
+        // The overlays carry their own bars, so only the FAB is shared.
         if (!entry.ownBar) {
             for (int id :
                     new int[] {
@@ -3043,8 +2974,8 @@ public class MainActivity extends Activity {
 
     /** Dismisses the soft keyboard, e.g. when leaving the edit form. */
     void hideKeyboard() {
-        // Fall back to the flipper's window token when nothing holds
-        // the focus (it is the same window either way).
+        // NOTE: fall back to the flipper's window token when nothing
+        // holds the focus (the same window either way).
         View focus = getCurrentFocus();
         View anchor = focus != null ? focus : flipper;
         android.view.inputmethod.InputMethodManager imm =
@@ -3140,10 +3071,9 @@ public class MainActivity extends Activity {
                             insets.getInsets(
                                     WindowInsets.Type.systemBars()
                                             | WindowInsets.Type.displayCutout());
-                    // Edge-to-edge stops adjustResize from resizing for the
-                    // keyboard, so the keyboard inset is folded into the
-                    // bottom by hand; it overlaps the navigation bar, hence
-                    // the max rather than a sum.
+                    // NOTE: edge-to-edge stops adjustResize, so the
+                    // keyboard inset is folded into the bottom by hand;
+                    // it overlaps the navigation bar, hence max not sum.
                     Insets ime = insets.getInsets(WindowInsets.Type.ime());
                     int bottom = Math.max(bars.bottom, ime.bottom);
                     applyBarInsets(root, bars, bottom);
@@ -3152,25 +3082,25 @@ public class MainActivity extends Activity {
         root.requestApplyInsets();
     }
 
-    /** Places the system-bar and keyboard insets on the chrome; see applyEdgeToEdge. */
+    /** Places the system-bar and keyboard insets on the chrome. */
     private void applyBarInsets(View root, Insets bars, int bottom) {
         root.setPadding(bars.left, root.getPaddingTop(), bars.right, root.getPaddingBottom());
 
-        // Only one bar shows at a time, but all carry the top inset (the
-        // drawer header too, since the drawer runs under the status bar).
+        // NOTE: all bars carry the top inset (the drawer header too,
+        // since the drawer runs under the status bar).
         padTop(R.id.app_bar, bars.top);
         padTop(R.id.drawer_header, bars.top);
         padTop(R.id.auth_bar, bars.top);
         padTop(R.id.account_bar, bars.top);
 
-        // The base is each view's designed FAB clearance, so re-applying
-        // stays idempotent as the listener fires again. The bottom folds
-        // in the keyboard, so the FAB and the email field ride above it.
+        // NOTE: the base is each view's designed FAB clearance, so
+        // re-applying stays idempotent as the listener fires again; the
+        // bottom folds in the keyboard so the FAB rides above it.
         padBottom(R.id.fab_frame, 0, bottom);
         padBottom(R.id.account_fab_frame, 0, bottom);
         padBottom(R.id.contacts_list, 88, bottom);
-        // The drawer's fixed bottom band takes the inset; the scrollable
-        // list above it needs none.
+        // The drawer's fixed bottom band takes the inset; the list above
+        // it needs none.
         padBottom(R.id.drawer_actions, 0, bottom);
         padBottom(R.id.config_container, 88, bottom);
         padBottom(R.id.books_container, 88, bottom);

@@ -162,9 +162,9 @@ pub fn placement(facts: &Value) -> Result<Option<Value>, String> {
     let member_state = int_field(row, "memberState");
     let uid = str_field(row, "uid");
 
-    // A pending create is a row that never reached the server: no
-    // revision and no captured base. The revision alone is not the
-    // marker, since a server may confirm a push without an ETag.
+    // NOTE: a pending create never reached the server, so it has no
+    // captured base; the ETag alone is not the marker, since a server
+    // may confirm a push without one.
     let never_synced = etag.is_none() && base_vcard.is_none() && dirty;
 
     if never_synced
@@ -183,9 +183,9 @@ pub fn placement(facts: &Value) -> Result<Option<Value>, String> {
     let (status, origin) = if deleted || member_state == MEMBER_REMOVED {
         ("tombstone", None)
     } else if member_state == MEMBER_ADDED || never_synced {
-        // A staged membership addition (not a never-synced create):
-        // the body already lives under another book, so the push
-        // patches memberships instead of re-uploading.
+        // NOTE: a staged membership addition (not a never-synced create)
+        // already lives under another book, so the push patches
+        // memberships from that origin instead of re-uploading.
         let origin = (!never_synced)
             .then(|| facts.get("originUrl").and_then(Value::as_str))
             .flatten()
@@ -277,12 +277,9 @@ pub fn phone_placement(facts: &Value) -> Result<Option<Value>, String> {
     } else if !on_phone {
         "created"
     } else if !vcard.is_empty() && phone_base.is_none_or(|base| base != vcard) {
-        // On the phone, but the base body differs from the current card,
-        // or is unknown (a lost base). Either way the phone has not yet
-        // seen this content, so it is dirty and pushes: a lost base is
-        // re-established from the push instead of being assumed clean,
-        // which would let a stale phone value pull back and silently win
-        // over a hub edit the phone never received.
+        // NOTE: a differing or lost phone base means the phone has not
+        // seen this content, so it pushes; assuming clean on a lost base
+        // would let a stale phone value silently win over a hub edit.
         "dirty"
     } else {
         "clean"
@@ -355,9 +352,9 @@ pub fn upsert_plan(facts: &Value) -> Result<Value, String> {
     let body = facts.get("body").and_then(Value::as_str);
     let existing = facts.get("existingVcard").and_then(Value::as_str);
 
-    // No current body (a probed spine row, or a remote content change
-    // whose refetch is pending): any body already held stays as a
-    // stale display copy until the next upgrade.
+    // NOTE: with no current body (a probed spine row or a pending
+    // refetch), any body already held stays as a stale display copy
+    // until the next upgrade.
     let (vcard, stale) = match body {
         Some(body) => (body, false),
         None => {
@@ -394,7 +391,6 @@ pub fn upsert_plan(facts: &Value) -> Result<Value, String> {
                 row.insert("conflictRevision".into(), revision.into());
             }
         }
-        // dirty and created rows both await a push.
         _ => {
             row.insert("dirty".into(), true.into());
         }
@@ -441,9 +437,8 @@ pub fn phone_upsert_plan(facts: &Value) -> Result<Value, String> {
         let mut row = Map::new();
         row.insert("vcard".into(), body.unwrap_or("").into());
         if !bool_field(facts, "existingDirty") {
-            // First divergence from the server state: the held vCard
-            // becomes the server push base (same capture as an in-app
-            // edit).
+            // NOTE: on the first divergence from the server state the
+            // held vCard becomes the push base, as an in-app edit does.
             row.insert("captureBase".into(), true.into());
         }
         plan.insert("action".into(), "update".into());

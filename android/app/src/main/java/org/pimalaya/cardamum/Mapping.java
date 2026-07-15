@@ -57,15 +57,11 @@ final class Mapping {
     static List<Map<String, Object>> rows(JSONObject model) {
         List<Map<String, Object>> rows = new ArrayList<>();
 
-        // The display name (FN) is hub-only and never reaches the
-        // phone: only the structured parts project, each in its own
-        // column, and the provider composes the visible name from
-        // them. ContactsProvider owns DISPLAY_NAME too tightly for
-        // anything else (it derives the visible name from the parts
-        // whenever present and rewrites DISPLAY_NAME as their join,
-        // proven on-device), so a written FN either vanished or, when
-        // projected alone, was re-split into the wrong parts by
-        // guesswork.
+        // NOTE: the display name (FN) is hub-only and never reaches the
+        // phone: ContactsProvider owns DISPLAY_NAME, rewriting it as the
+        // join of the structured parts whenever present (proven
+        // on-device), so a written FN either vanishes or gets re-split
+        // into the wrong parts. Only the structured parts project.
         Map<String, Object> name = row(StructuredName.CONTENT_ITEM_TYPE);
         JSONObject n = model.optJSONObject("name");
         if (n != null) {
@@ -209,13 +205,11 @@ final class Mapping {
                     name.put("middle", middle);
                     name.put("family", family);
                     name.put("suffix", suffix);
-                    // The hub's FN never projects (rows() above), and the
-                    // provider auto-composes DISPLAY_NAME from the parts,
-                    // so a structured contact carries no genuine display
-                    // name: reading the composed one back would mint it
-                    // into FN. Only a parts-free row's DISPLAY_NAME is
-                    // real phone-authored content (the shape apps write
-                    // when only a full name is typed) and ingests.
+                    // NOTE: the provider auto-composes DISPLAY_NAME from
+                    // the parts, so reading it back off a structured row
+                    // would mint it into FN. Only a parts-free row's
+                    // DISPLAY_NAME is real phone-authored content and
+                    // ingests.
                     boolean hasParts =
                             !prefix.isEmpty()
                                     || !given.isEmpty()
@@ -302,7 +296,7 @@ final class Mapping {
                     break;
 
                 default:
-                    // Kinds outside the mapping (photo, groups,
+                    // NOTE: kinds outside the mapping (photo, groups,
                     // third-party rows) stay phone-side.
                     break;
             }
@@ -333,8 +327,8 @@ final class Mapping {
 
         boolean edited = false;
         for (String field : FIELDS) {
-            // Both sides come out of model(), so equal content prints
-            // equal (same construction order on either side).
+            // NOTE: both sides come out of model(), so equal content
+            // prints equal (same construction order on either side).
             String phoneValue = String.valueOf(phone.opt(field));
             if (!phoneValue.equals(String.valueOf(baseView.opt(field)))) {
                 merged.put(field, phone.get(field));
@@ -434,8 +428,8 @@ final class Mapping {
             empty &= adr.getString(keys.next()).isEmpty();
         }
         if (empty) {
-            // A free-form-only address (phone apps allow it) rides in
-            // the street component, per docs/contacts-mapping.md.
+            // NOTE: a free-form-only address (phone apps allow it) rides
+            // in the street component, per docs/contacts-mapping.md.
             String formatted = string(row, StructuredPostal.FORMATTED_ADDRESS);
             if (formatted.isEmpty()) {
                 return null;

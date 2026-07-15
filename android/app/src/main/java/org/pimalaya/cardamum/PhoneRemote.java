@@ -151,11 +151,8 @@ final class PhoneRemote {
                 boolean deleted = cursor.getInt(3) == 1;
 
                 if (deleted) {
-                    // A genuine contacts-app delete: report it explicitly
-                    // (only a DELETED row propagates), then finalize it. A
-                    // row merely absent from the round is never a delete,
-                    // so a torn-down or empty account cannot flush the
-                    // cards (see the delta round below).
+                    // NOTE: only a DELETED row propagates as a delete, then
+                    // is finalized; mere absence never does (see below).
                     if (sourceId != null && !sourceId.isEmpty()) {
                         vanished.put(sourceId);
                     }
@@ -170,16 +167,15 @@ final class PhoneRemote {
                     values.put(RawContacts.SOURCE_ID, handle);
                     resolver.update(rawContactUri(account, rawId), values, null, null);
                 } else if (offline.loadRow(url, sourceId) == null) {
-                    // A projection of a card the store no longer holds
-                    // (interrupted delete, or a pre-phone-spoke store
-                    // rebuild): purge instead of resurrecting it.
+                    // NOTE: stale projection of a card the store dropped
+                    // (interrupted delete, store rebuild); purge it.
                     resolver.delete(rawContactUri(account, rawId), null, null);
                     continue;
                 } else {
                     handle = sourceId;
                 }
-                // The revision rides the same cursor (one provider
-                // query per round, not one per contact).
+                // NOTE: the revision rides the same cursor, one provider
+                // query per round rather than one per contact.
                 String token = cursor.isNull(4) ? null : cursor.getString(4);
                 String revision = revisionOf(token, cursor.getInt(5) != 0, cursor.getInt(2));
 
@@ -191,12 +187,9 @@ final class PhoneRemote {
             }
         }
 
-        // A delta round, never a complete one: absence from the listing
-        // must not read as a deletion (a removed Android account, a book
-        // whose mirroring was toggled off, or any empty account would
-        // otherwise flush every card). Only the explicit DELETED rows
-        // above vanish; everything else is left to the hub, which
-        // re-projects a card the phone is missing.
+        // NOTE: complete=false; absence must not read as deletion, or a
+        // removed account or toggled-off book would flush every card. Only
+        // the DELETED rows above vanish; the hub re-projects the rest.
         JSONObject reply = new JSONObject();
         reply.put("items", items);
         reply.put("vanished", vanished);
@@ -239,10 +232,9 @@ final class PhoneRemote {
             return null;
         }
 
-        // The sync signals are captured before the data rows: the
-        // convergence stamp below is guarded on this VERSION, so a
-        // contacts-app edit racing the read loses the stamp, stays
-        // dirty and is ingested by the next round instead of vanishing.
+        // NOTE: capture the sync signals before the data rows; the stamp
+        // below guards on this VERSION, so an edit racing the read stays
+        // dirty for the next round instead of vanishing.
         String heldToken = null;
         boolean dirty = false;
         int version = 0;
@@ -268,16 +260,13 @@ final class PhoneRemote {
         JSONObject phoneModel = Mapping.model(dataRows(resolver, account, rawId));
         JSONObject merged = Mapping.merge(baseModel, phoneModel);
 
-        // No field taken from the phone means no edit: the base card
-        // rides back byte for byte. Re-encoding a no-op through
-        // applyCard would change the bytes (managed properties are
-        // rewritten in canonical form), and the engine diffs content by
-        // hash, so the no-op would read as a phone edit and cascade to
-        // the server.
+        // NOTE: no field taken means no edit, so ride the base back byte
+        // for byte; re-encoding a no-op canonicalizes bytes and the
+        // hash-diffing engine would read it as a phone edit and cascade.
         String body = merged == null ? baseVcard : Cards.applyCard(baseVcard, merged);
         if (merged != null) {
-            // Which fields the phone won: the one trace that explains a
-            // phone-won hub change when hunting phantom edits.
+            // NOTE: log which fields the phone won, to explain a phone-won
+            // hub change when hunting phantom edits.
             StringBuilder taken = new StringBuilder();
             for (String field : Mapping.FIELDS) {
                 if (!String.valueOf(merged.opt(field))
@@ -289,12 +278,10 @@ final class PhoneRemote {
                     "cardamum", "phone edit on " + handle + " (fields: " + taken + ")");
         }
 
-        // The row is converged as of this read: stamp it clean so it
-        // stops enumerating as a pending edit. This heals contacts-app
-        // edits once pulled (nothing else clears DIRTY on the pull
-        // path) and rows projected before the SYNC1 scheme existed,
-        // both of which otherwise refetch on every provider VERSION
-        // bump. Already-stamped rows skip the write.
+        // NOTE: stamp the row clean so it stops enumerating as pending;
+        // this clears DIRTY on the pull path and heals pre-SYNC1 rows,
+        // which otherwise refetch on every VERSION bump. Already-stamped
+        // rows skip the write.
         String token = CardStore.byteHash(body);
         String revision;
         if (!dirty && token.equals(heldToken)) {
@@ -343,7 +330,7 @@ final class PhoneRemote {
                         results.put(pushRemove(collection, change));
                         break;
                     default:
-                        // No flag pushes on the phone spoke.
+                        // NOTE: no flag pushes on the phone spoke.
                         results.put(result(handle, true, null, null));
                         break;
                 }
@@ -404,8 +391,8 @@ final class PhoneRemote {
             return result(handle, false, null, null);
         }
         if (ifMatch != null && !ifMatch.equals(phoneRevision(resolver, account, rawId))) {
-            // A contacts-app edit landed since the base: keep it for the
-            // next round rather than clobbering it.
+            // NOTE: a contacts-app edit landed since the base; keep it for
+            // the next round rather than clobbering it.
             return result(handle, false, null, null);
         }
 
@@ -424,7 +411,7 @@ final class PhoneRemote {
 
         Long rawId = rawId(resolver, account, handle);
         if (rawId == null) {
-            // Already gone phone-side; the removal converged.
+            // NOTE: already gone phone-side; the removal converged.
             return result(handle, true, null, null);
         }
         if (ifMatch != null && !ifMatch.equals(phoneRevision(resolver, account, rawId))) {
@@ -435,8 +422,6 @@ final class PhoneRemote {
         rawIds.remove(handle);
         return result(handle, true, null, null);
     }
-
-    // ---- ContactsContract plumbing --------------------------------------------
 
     /** Inserts a raw contact with its data rows, returning its row id. */
     private long insert(ContentResolver resolver, Account account, String handle,
@@ -506,9 +491,9 @@ final class PhoneRemote {
         };
 
         List<Map<String, Object>> rows = new ArrayList<>();
-        // Insertion order, pinned: the field-space diff against the
-        // base's own projection compares multi-valued fields as lists,
-        // so an unordered listing could read as a permutation edit.
+        // NOTE: pin insertion order; the field-space diff compares
+        // multi-valued fields as lists, so an unordered listing could read
+        // as a permutation edit.
         try (Cursor cursor =
                 resolver.query(
                         dataUri(account),
@@ -557,9 +542,9 @@ final class PhoneRemote {
         if (row != null) {
             held = offline.loadPhoneBase(url, handle);
             if (held == null) {
-                // Never converged but the hub holds it: its own vCard
-                // is the closest base (heals a lost axis without
-                // dropping the card's unmapped properties).
+                // NOTE: never converged but the hub holds it; its own vCard
+                // is the closest base, healing a lost axis without dropping
+                // unmapped properties.
                 String vcard = row.getString("vcard");
                 held = vcard.isEmpty() ? null : vcard;
             }
@@ -680,9 +665,10 @@ final class PhoneRemote {
         return account;
     }
 
-    // ---- Account-level provider settings ---------------------------------------
-
-    /** Contacts in accounts without groups are hidden by default; unhide ours. */
+    /**
+     * Contacts in accounts without groups are hidden by default; unhide
+     * ours.
+     */
     private static void ensureUngroupedVisible(ContentResolver resolver, Account account) {
         ContentValues values = new ContentValues();
         values.put(ContactsContract.Settings.ACCOUNT_NAME, account.name);

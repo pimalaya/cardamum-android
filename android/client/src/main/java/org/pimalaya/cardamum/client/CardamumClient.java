@@ -119,8 +119,8 @@ public class CardamumClient {
                                 try {
                                     object(probed[at]);
                                 } catch (RuntimeException error) {
-                                    // A failed probe keeps the config
-                                    // as discovered.
+                                    // NOTE: a failed probe keeps the
+                                    // config as discovered.
                                     probed[at] = config;
                                 }
                             });
@@ -244,7 +244,7 @@ public class CardamumClient {
         }
     }
 
-    // ---- Account base URLs and backend info ---------------------------------
+    // Account base URLs and backend info.
 
     /**
      * Google's CardDAV principal root for the email; the standard
@@ -320,7 +320,7 @@ public class CardamumClient {
                 url == null ? "" : url, key -> object(Native.accountInfo(key)));
     }
 
-    // ---- Addressbook and card operations ------------------------------------
+    // Addressbook and card operations.
 
     /**
      * Lists the account's addressbooks: the CardDAV discovery walk,
@@ -646,7 +646,7 @@ public class CardamumClient {
         }
     }
 
-    // ---- Bridge reply parsing ----------------------------------------------
+    // Bridge reply parsing.
 
     /** Serializes a book id list for the bridge. */
     private static String books(List<String> ids) {
@@ -716,7 +716,7 @@ public class CardamumClient {
         String trimmed = json.trim();
 
         if (trimmed.startsWith("{")) {
-            // An object where an array is expected is always an error.
+            // NOTE: an object where an array is expected is always an error.
             object(trimmed);
             throw new CardamumException("Unreadable bridge reply: expected an array");
         }

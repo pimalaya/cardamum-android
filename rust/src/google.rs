@@ -21,6 +21,7 @@ use io_google_people::v1::rest::people::{
     PeopleOrganization, PeoplePerson, PeoplePersonField, PeoplePhoneNumber, PeopleRelation,
     PeopleUrl,
 };
+use serde_json::to_value;
 use vcard::{
     param::VcardParam,
     prop::{VcardProp, VcardPropKind, VcardPropName},
@@ -128,7 +129,7 @@ pub fn to_vcard(person: &PeoplePerson) -> String {
         card.push(text_prop(VcardPropKind::Uid, vec![], id));
     }
 
-    // FN is mandatory: the display name, or composed from the parts.
+    // NOTE: FN is a mandatory vCard property, so it is always pushed.
     card.push(text_prop(VcardPropKind::Fn, vec![], &display_name(person)));
 
     if let Some(name) = person.names.first() {
@@ -632,13 +633,9 @@ fn display_name(person: &PeoplePerson) -> String {
         return String::new();
     };
 
-    // The FN is the free-form unstructured name, the settable field
-    // `to_person` fills from it: it round-trips and stays independent of
-    // the structured parts. People's own `display_name` is OUTPUT_ONLY,
-    // recomputed from the parts on every write, so preferring it would
-    // rebuild the FN whenever a name part changed and read back as a
-    // phantom edit; it is only a last resort when no unstructured name
-    // and no parts exist.
+    // NOTE: prefer the round-tripping unstructured name over People's
+    // OUTPUT_ONLY display_name, which is recomputed on every write and
+    // would read back as a phantom edit; display_name is a last resort.
     if let Some(unstructured) = opt(&name.unstructured_name) {
         return unstructured.to_string();
     }
@@ -809,7 +806,7 @@ fn minted_props(person: &PeoplePerson) -> Vec<String> {
             // canonical People spelling (HOME, OUTLOOK_KEYWORD, ...).
             let keyword_type = keyword
                 .keyword_type
-                .and_then(|t| serde_json::to_value(t).ok())
+                .and_then(|t| to_value(t).ok())
                 .and_then(|v| v.as_str().map(str::to_string));
             lines.push(typed_line("X-GOOGLE-MISC-KEYWORD", &keyword_type, value));
         }

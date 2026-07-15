@@ -34,13 +34,9 @@ import org.pimalaya.cardamum.client.CardamumClient;
  */
 public class CardStore extends SQLiteOpenHelper {
     private static final String DATABASE = "cards.db";
-    // NOTE: the version log restarted at 1 for the first shipped
-    // build; every pre-release bump (index columns, engine columns,
-    // phone axis) is folded into onCreate. 2 = the remote_synced
-    // switch on addressbook. A schema or index change rebuilds the
-    // card tables (bump this and the rebuild carries over what no
-    // remote can re-hydrate, see rebuildCardTables); addressbook's
-    // own additions land as ALTERs in onUpgrade instead.
+    // NOTE: a schema or index change rebuilds the card tables
+    // (rebuildCardTables carries over what no remote can re-hydrate);
+    // addressbook's own additions land as ALTERs in onUpgrade instead.
     private static final int VERSION = 2;
 
     /** Membership state: mirrored from the server. */
@@ -149,10 +145,9 @@ public class CardStore extends SQLiteOpenHelper {
                         + "remote_synced INTEGER NOT NULL DEFAULT 1, "
                         + "phone_synced INTEGER NOT NULL DEFAULT 0, "
                         + "checkpoint TEXT)");
-        // name/email/phone/uid/hash are the write-time index computed
-        // by the bridge (Native.indexCard), so the contacts list never
-        // parses vCards at render time and linked replicas compare by
-        // normalized content hash.
+        // NOTE: name/email/phone/uid/hash are a write-time index, so the
+        // contacts list never parses vCards at render time and linked
+        // replicas compare by normalized content hash.
         db.execSQL(
                 "CREATE TABLE IF NOT EXISTS card ("
                         + "account_email TEXT NOT NULL, "
@@ -170,27 +165,21 @@ public class CardStore extends SQLiteOpenHelper {
                         + "hash TEXT NOT NULL DEFAULT '', "
                         + "dirty INTEGER NOT NULL DEFAULT 0, "
                         + "deleted INTEGER NOT NULL DEFAULT 0, "
-                        // The remote revision observed when the sync
-                        // marked the row conflicted (both sides edited);
-                        // resolving pushes against it. Null outside
-                        // conflicts.
+                        // NOTE: remote revision observed at conflict time
+                        // (both sides edited); resolving pushes against
+                        // it. Null outside conflicts.
                         + "conflict_revision TEXT, "
-                        // The remote body captured at that moment, so the
-                        // user resolves the divergence by hand offline in
-                        // the conflict form. Null outside conflicts.
+                        // NOTE: remote body captured at conflict time for
+                        // manual offline resolution. Null outside
+                        // conflicts.
                         + "conflict_remote_vcard TEXT, "
-                        // 1 when the remote content changed and the kept
-                        // body is a stale display copy awaiting refetch.
+                        // NOTE: 1 when the kept body is a stale display
+                        // copy awaiting refetch.
                         + "stale INTEGER NOT NULL DEFAULT 0, "
                         + "PRIMARY KEY (account_email, key))");
-        // The phone axis lives here, per (book, card): each book is its
-        // own Android account with its own raw contact of the card, so
-        // per-card columns would ping-pong on the account-level
-        // backends. phone_revision = the raw contact VERSION at last
-        // convergence, phone_base = the vCard last converged with the
-        // phone, phone_stale = a phone content change awaiting its
-        // refetch, phone_conflict_revision = the VERSION observed when
-        // both sides diverged.
+        // NOTE: the phone axis lives per (book, card), not per card:
+        // each book is its own Android account with its own raw contact,
+        // so per-card columns would ping-pong on account-level backends.
         db.execSQL(
                 "CREATE TABLE IF NOT EXISTS membership ("
                         + "account_email TEXT NOT NULL, "
@@ -202,10 +191,10 @@ public class CardStore extends SQLiteOpenHelper {
                         + "phone_stale INTEGER NOT NULL DEFAULT 0, "
                         + "phone_conflict_revision TEXT, "
                         + "PRIMARY KEY (account_email, card_key, addressbook_url))");
-        // The view-layer link exceptions of the merged list
-        // (docs/merged-view.md): a detached replica never groups
-        // automatically, and link rows join group keys into a shared
-        // cluster. Nothing on any server or in sync depends on them.
+        // NOTE: view-layer link exceptions of the merged list
+        // (docs/merged-view.md); nothing on any server or in sync
+        // depends on them. detached = a replica excluded from automatic
+        // grouping, link = group keys joined into a shared cluster.
         db.execSQL(
                 "CREATE TABLE IF NOT EXISTS detached ("
                         + "account_email TEXT NOT NULL, "
@@ -215,8 +204,6 @@ public class CardStore extends SQLiteOpenHelper {
                 "CREATE TABLE IF NOT EXISTS link ("
                         + "member TEXT PRIMARY KEY, "
                         + "cluster TEXT NOT NULL)");
-        // Duplicate groups the user chose to leave alone: never
-        // proposed again by the duplicate remover.
         db.execSQL(
                 "CREATE TABLE IF NOT EXISTS dismissed_duplicate ("
                         + "group_key TEXT PRIMARY KEY)");
@@ -224,11 +211,9 @@ public class CardStore extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // NOTE: schema changes rebuild the card tables; it only costs
-        // the next sync. The addressbook table SURVIVES: syncs walk
-        // the stored addressbooks, so dropping them would leave the
-        // accounts with nothing to sync from (the sync's self-heal
-        // re-fetches them as a fallback). Its own additions land as
+        // NOTE: the addressbook table must survive the rebuild: syncs
+        // walk the stored addressbooks, so dropping them would leave the
+        // accounts with nothing to sync from. Its own additions land as
         // ALTERs instead.
         if (oldVersion < 2) {
             db.execSQL(
@@ -240,9 +225,8 @@ public class CardStore extends SQLiteOpenHelper {
 
     @Override
     public void onDowngrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // An older build over a newer store (a rollback, a sideload):
-        // the default helper throws and strands the app; rebuild on
-        // this build's schema like an upgrade instead.
+        // NOTE: the default helper throws on downgrade and strands the
+        // app; rebuild on this build's schema like an upgrade instead.
         rebuildCardTables(db);
     }
 
@@ -397,7 +381,6 @@ public class CardStore extends SQLiteOpenHelper {
         try {
             String cluster = groupKeys.get(0);
             for (String key : groupKeys) {
-                // Absorb the key's existing cluster, then bind the key.
                 ContentValues rebind = new ContentValues();
                 rebind.put("cluster", cluster);
                 db.update("link", rebind, "cluster = ?", new String[] {key});
@@ -514,11 +497,10 @@ public class CardStore extends SQLiteOpenHelper {
         db.update("addressbook", values, "url = ?", new String[] {url});
 
         if (!phone) {
-            // Mirroring off: the reconcile tears down the Android account
-            // and its raw contacts, so the phone axis is now stale. Clear
-            // it, or turning mirroring back on reads the empty phone as
-            // "every contact was deleted" and flushes them. Cleared, the
-            // cards re-project as fresh creations on the next sync instead.
+            // NOTE: mirroring off tears down the raw contacts, so the
+            // phone axis must clear too: otherwise turning it back on
+            // reads the empty phone as "every contact was deleted" and
+            // flushes them, instead of re-projecting as fresh creations.
             String accountEmail = accountEmailOf(db, url);
             if (accountEmail != null) {
                 ContentValues axis = new ContentValues();
@@ -547,9 +529,8 @@ public class CardStore extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            // Carry the live cards over to the local account, stripped of
-            // etag/base/conflict/dirty state. OR IGNORE steps over a key
-            // that already exists locally.
+            // NOTE: OR IGNORE steps over a card key that already exists
+            // locally.
             db.execSQL(
                     "UPDATE OR IGNORE card SET account_email = ?, etag = NULL,"
                             + " base_vcard = NULL, dirty = 0, conflict_revision = NULL,"
@@ -557,9 +538,8 @@ public class CardStore extends SQLiteOpenHelper {
                             + " WHERE account_email = ? AND deleted = 0",
                     new String[] {LocalBook.ACCOUNT, accountEmail});
 
-            // Move their live memberships into the local book, dropping the
-            // phone-axis state. A card in several books collapses to one
-            // row (OR IGNORE); tombstones are left behind and swept below.
+            // NOTE: a card in several books collapses to one local row
+            // (OR IGNORE); tombstones are left behind and swept below.
             db.execSQL(
                     "UPDATE OR IGNORE membership SET account_email = ?,"
                             + " addressbook_url = ?, state = 0, phone_revision = NULL,"
@@ -571,9 +551,6 @@ public class CardStore extends SQLiteOpenHelper {
                         String.valueOf(MEMBER_REMOVED)
                     });
 
-            // Whatever still names the removed account (a tombstone, a
-            // collided or deleted card, its addressbooks, its links) does
-            // not outlive it.
             db.delete("membership", "account_email = ?", new String[] {accountEmail});
             db.delete("card", "account_email = ?", new String[] {accountEmail});
             db.delete("addressbook", "account_email = ?", new String[] {accountEmail});
@@ -600,7 +577,7 @@ public class CardStore extends SQLiteOpenHelper {
         values.put("subscribed", 1);
         db.insertWithOnConflict("addressbook", null, values, SQLiteDatabase.CONFLICT_IGNORE);
 
-        // Refresh only the name, so a rename across versions lands
+        // NOTE: refresh only the name, so a rename across versions lands
         // without resetting the subscription or the phone switch.
         ContentValues rename = new ContentValues();
         rename.put("name", name);
@@ -704,10 +681,9 @@ public class CardStore extends SQLiteOpenHelper {
             values.put("key", key);
             values.put("id", card.id);
             values.put("uri", card.uri);
-            // Editing a conflicted row resolves it: the remote revision
-            // observed at conflict time becomes the push base, so the
-            // resolving push is conditioned on the state the user (or
-            // the merge) resolved against.
+            // NOTE: editing a conflicted row resolves it: the remote
+            // revision observed at conflict time becomes the push base,
+            // so the resolving push is conditioned on the resolved state.
             values.put("etag", conflictRevision != null ? conflictRevision : card.etag);
             values.put("vcard", card.vcard);
             values.put("base_vcard", baseVcard);

@@ -53,22 +53,18 @@ final class Accounts {
                 data.putString(DATA_URL, book.book.url);
                 manager.addAccountExplicitly(account, null, data);
 
-                // Content-triggered upload syncs default to the book's
-                // background sync choice: a background-synced book
-                // pushes contacts-app edits into the hub as they happen
-                // (through SyncService), and the next periodic pass
-                // sends them upstream. Only the default: the user's
-                // later choice in the system settings is theirs and is
-                // never reset by a reconcile.
+                // NOTE: only the default content-trigger state, seeded
+                // from the book's background sync choice; a later user
+                // choice in system settings is never reset by reconcile.
                 ContentResolver.setSyncAutomatically(
                         account,
                         ContactsContract.AUTHORITY,
                         BackgroundSync.enabled(context, book.book.url));
             }
 
-            // Contacts apps only list accounts that are syncable for
-            // the contacts authority. Self-heals accounts created by
-            // earlier builds, without touching anything already set.
+            // NOTE: contacts apps only list accounts syncable for the
+            // contacts authority; self-heals accounts from earlier
+            // builds without touching anything already set.
             if (ContentResolver.getIsSyncable(account, ContactsContract.AUTHORITY) <= 0) {
                 ContentResolver.setIsSyncable(account, ContactsContract.AUTHORITY, 1);
             }
@@ -108,8 +104,8 @@ final class Accounts {
     }
 
     private static String name(String login, Addressbook book) {
-        // The local book has no login to qualify it; its own name stands
-        // alone in the phone's Contacts app.
+        // NOTE: the local book has no login to qualify it; its own name
+        // stands alone in the phone's Contacts app.
         if (LocalBook.is(login)) {
             return book.name;
         }

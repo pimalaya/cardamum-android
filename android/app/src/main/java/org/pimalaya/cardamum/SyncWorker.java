@@ -55,9 +55,8 @@ public class SyncWorker extends Worker {
 
         CardStore base = new CardStore(context);
 
-        // Self-heal: when the store no longer wants this book synced
-        // (deleted with its account, unsubscribed, or set back to
-        // never), the orphaned periodic work cancels itself.
+        // NOTE: when the store no longer wants this book synced, the
+        // orphaned periodic work cancels itself.
         BookEntry book = null;
         for (BookEntry entry : base.loadAllAddressbooks()) {
             if (entry.book.url.equals(url)) {
@@ -83,10 +82,9 @@ public class SyncWorker extends Worker {
                             + report.localOut.size() + " out, " + report.localChanged.size()
                             + " changed");
 
-            // Anything to report gets the notification; pending
-            // conflicts count as reportable on every pass (the engine
-            // re-counts them each time), so the warning re-raises
-            // until the user resolves them in the app.
+            // NOTE: pending conflicts count as reportable on every pass
+            // (re-counted each time), so the warning re-raises until the
+            // user resolves them in the app.
             boolean activity =
                     !report.remoteIn.isEmpty()
                             || !report.remoteOut.isEmpty()
@@ -101,7 +99,7 @@ public class SyncWorker extends Worker {
             return Result.success();
         } catch (Exception error) {
             Log.w("cardamum", "background sync failed for " + url + ": " + error);
-            // Transient failures (no route, server down) retry with
+            // NOTE: transient failures (no route, server down) retry with
             // backoff a few times, then wait for the next period.
             return getRunAttemptCount() < MAX_RUN_ATTEMPTS ? Result.retry() : Result.success();
         }

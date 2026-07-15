@@ -165,9 +165,8 @@ final class ContactForm {
                 loadedCounts.put(section, array(section).length());
             }
         } else if (this.model.length() == 0) {
-            // A brand-new contact starts on the common fields rather than a
-            // blank page under the add button: first and last name, plus an
-            // empty phone and email row ready to fill.
+            // NOTE: a new contact opens on the common fields, not a blank
+            // page: given/family name plus an empty phone and email row.
             revealed.add("name.given");
             revealed.add("name.family");
             revealed.add("phones");
@@ -205,8 +204,6 @@ final class ContactForm {
     String anniversary() {
         return model.optString("anniversary").trim();
     }
-
-    // ---- Page rendering ---------------------------------------------------
 
     private boolean conflict() {
         return changedLists != null;
@@ -386,16 +383,15 @@ final class ContactForm {
             return;
         }
 
-        // Alphabetical by localized label (locale-aware), so a field is
-        // found by its name rather than by the catalog's layout order.
+        // NOTE: locale-aware sort by localized label, so a field is found
+        // by name rather than by the catalog's layout order.
         java.text.Collator collator = java.text.Collator.getInstance();
         fields.sort((left, right) -> collator.compare(getS(left.label), getS(right.label)));
 
         LinearLayout list = new LinearLayout(activity);
         list.setOrientation(LinearLayout.VERTICAL);
-        // Match the framework title's top padding at the bottom so the
-        // dialog is vertically symmetric and the last row clears the
-        // rounded corner; the title supplies the gap above the first row.
+        // NOTE: bottom padding mirrors the framework title's top padding
+        // so the dialog is symmetric and the last row clears the corner.
         list.setPadding(0, dp(8), 0, dp(18));
         ScrollView scroller = new ScrollView(activity);
         scroller.addView(list);
@@ -448,9 +444,8 @@ final class ContactForm {
         container.removeAllViews();
         pending.clear();
 
-        // Identity holds the solo fields: the display name (its own
-        // line), the name parts, the dates and the gender. Every
-        // multi-valued list is its own section below.
+        // NOTE: identity holds the solo fields (display name, name parts,
+        // dates, gender); every multi-valued list is its own section below.
         List<View> identity = new ArrayList<>();
         if (shown("displayName", filled("displayName")) || unreviewed("displayName")) {
             identity.add(
@@ -507,9 +502,8 @@ final class ContactForm {
             section(R.string.section_nicknames, R.drawable.ic_section_label, items);
         }
 
-        // Work holds solo fields too, each its own row so a single one
-        // can be edited and (in conflict mode) resolved on its own, like
-        // the identity section.
+        // NOTE: work fields are solo rows too, so each edits and (in
+        // conflict mode) resolves on its own, like the identity section.
         List<View> work = new ArrayList<>();
         if (shown("organization.company", filled("organization.company"))
                 || unreviewed("organization.company")) {
@@ -576,8 +570,8 @@ final class ContactForm {
                                 divergedItem("phones", at),
                                 () -> phoneDialog(at)));
             }
-            // A fresh contact reveals the section as an empty header (with
-            // its add control), no blank placeholder row.
+            // NOTE: keepEmpty renders the section as a bare header (with its
+            // add control) for a fresh contact, no blank placeholder row.
             section(R.string.section_phones, R.drawable.ic_section_call, items, true);
         }
 
@@ -752,9 +746,8 @@ final class ContactForm {
             return;
         }
 
-        // The line sits flush: the previous section's last item already
-        // ends with its own 12dp row padding (an item-less revealed
-        // section pads its header instead, below), so a margin here
+        // NOTE: the line sits flush; the previous section's last item (or
+        // an item-less header, below) already pads 12dp, so a margin here
         // would double the gap.
         if (container.getChildCount() > 0) {
             View line = new View(activity);
@@ -855,10 +848,8 @@ final class ContactForm {
             pending.add(key);
             ImageView warn = new ImageView(activity);
             warn.setImageResource(R.drawable.ic_diverged);
-            // The glyph the list shows, error-tinted, but at the form
-            // icons' own 24dp (the list uses 32dp): its centre then
-            // sits on the same column as the section headers' add
-            // icons instead of reading bigger and off-axis.
+            // NOTE: 24dp (not the list's 32dp) so the glyph centres on the
+            // section headers' add-icon column instead of reading off-axis.
             warn.setImageTintList(
                     android.content.res.ColorStateList.valueOf(
                             resolveColor(android.R.attr.colorError)));
@@ -870,8 +861,6 @@ final class ContactForm {
 
         return row;
     }
-
-    // ---- Item summaries -----------------------------------------------------
 
     /** A field's display value, or empty for an unset field: an empty
      *  subtitle leaves the row present but blank, no "not set" filler. */
@@ -901,8 +890,6 @@ final class ContactForm {
         return labels[Math.min(index, labels.length - 1)];
     }
 
-    // ---- View support -------------------------------------------------------
-
     /** The type spinner position of a list entry, bridge-computed. */
     private int typeAt(String list, int index) {
         JSONArray positions = view.optJSONArray(list);
@@ -915,8 +902,6 @@ final class ContactForm {
         JSONObject entry = entries == null ? null : entries.optJSONObject(index);
         return entry == null ? new JSONObject() : entry;
     }
-
-    // ---- Dialogs ------------------------------------------------------------
 
     /** The display name has its own row: one field, view-composed
      * otherwise (the bridge never mints an FN). */
@@ -1135,8 +1120,8 @@ final class ContactForm {
                                         .put("region", text(region))
                                         .put("postcode", text(postcode))
                                         .put("country", text(country))
-                                        // Fields the dialog does not show
-                                        // ride along untouched.
+                                        // NOTE: fields the dialog omits ride
+                                        // along untouched.
                                         .put("pobox", safe.optString("pobox"))
                                         .put("ext", safe.optString("ext"))
                                         .put("pref", safe.optBoolean("pref"))
@@ -1256,7 +1241,7 @@ final class ContactForm {
      */
     private void genderDialog() {
         String[] labels = activity.getResources().getStringArray(R.array.gender_types);
-        // The suggestions drop the leading "Not set" placeholder.
+        // NOTE: suggestions drop the leading "Not set" placeholder.
         String[] choices = Arrays.copyOfRange(labels, 1, labels.length);
         boolean adding = !filled("gender");
 
@@ -1321,7 +1306,7 @@ final class ContactForm {
         Calendar calendar = Calendar.getInstance();
         JSONObject stored = view.optJSONObject(field);
         if (stored != null) {
-            // Today stands in when the stored value is not a date.
+            // NOTE: today stands in when the stored value is not a date.
             calendar.set(
                     stored.optInt("year"),
                     stored.optInt("month") - 1,
@@ -1353,8 +1338,6 @@ final class ContactForm {
                 });
         dialog.show();
     }
-
-    // ---- Dialog building ----------------------------------------------------
 
     /** The vertical field container of an edit dialog. */
     private LinearLayout dialogContent() {
@@ -1395,10 +1378,8 @@ final class ContactForm {
 
         AlertDialog dialog = builder.create();
 
-        // Focus the first field so it is ready. A plain field opens the
-        // keyboard with the dialog; an autocomplete does not, so its
-        // choices drop into the space the keyboard would cover instead of
-        // landing behind it.
+        // NOTE: force the keyboard only for a plain field; an autocomplete
+        // keeps it closed so its dropdown lands in that space, not behind it.
         EditText first = firstInput(content);
         if (first != null) {
             first.requestFocus();
@@ -1457,8 +1438,8 @@ final class ContactForm {
             for (int index = 0; index < values.length(); index++) {
                 String candidate = values.optString(index);
                 Button chip = new Button(activity, null, android.R.attr.buttonStyleSmall);
-                // The empty alternative (one card lacks the field) is a
-                // pickable choice too: it reads "Not set" and clears.
+                // NOTE: the empty alternative is pickable too; it reads
+                // "Not set" and clears the field.
                 chip.setText(candidate.isEmpty() ? getS(R.string.value_not_set) : candidate);
                 chip.setAllCaps(false);
                 chip.setOnClickListener(view -> input.setText(candidate));
@@ -1509,8 +1490,8 @@ final class ContactForm {
                 ArrayAdapter.createFromResource(activity, entries, R.layout.spinner_form_item);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(adapter);
-        // Flush with the fields: the stock spinner carries its own
-        // padding that breaks the shared text start.
+        // NOTE: zero out the stock spinner's own padding, which otherwise
+        // breaks the shared text start.
         spinner.setPadding(0, 0, 0, 0);
         return spinner;
     }
@@ -1551,8 +1532,6 @@ final class ContactForm {
             RadioButton option = new RadioButton(activity);
             option.setText(labels[index]);
             option.setId(index + 1);
-            // Flush start, and the same gap between options as between
-            // the fields below.
             option.setPadding(0, 0, dp(16), 0);
             group.addView(option);
         }
@@ -1561,8 +1540,6 @@ final class ContactForm {
         content.addView(group);
         return group;
     }
-
-    // ---- Model helpers ------------------------------------------------------
 
     /** The model's list under the key, created empty when absent. */
     private JSONArray array(String key) {
@@ -1612,8 +1589,6 @@ final class ContactForm {
         }
         return false;
     }
-
-    // ---- Utils --------------------------------------------------------------
 
     private static String text(EditText input) {
         return input.getText().toString().trim();

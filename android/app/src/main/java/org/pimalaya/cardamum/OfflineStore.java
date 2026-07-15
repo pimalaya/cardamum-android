@@ -280,10 +280,10 @@ final class OfflineStore {
     /**
      * Resolves which link ids already map to a stored body, as the
      * reply to a lookup yield. Always empty here: the engine's
-     * cross-collection dedup assumes a link id names immutable bytes
-     * (an email behind its Message-ID), but contact replicas sharing a
-     * vCard UID diverge legitimately, so a body must never stand in
-     * for another replica's and every upgrade fetches.
+     * cross-collection dedup assumes a link id names immutable bytes,
+     * but contact replicas sharing a vCard UID diverge legitimately, so
+     * no body may stand in for another replica's and every upgrade
+     * fetches.
      */
     public JSONObject lookupObjects(JSONArray links) throws JSONException {
         JSONObject reply = new JSONObject();
@@ -438,7 +438,6 @@ final class OfflineStore {
         JSONObject plan = Cards.offlineUpsertPlan(facts);
         switch (plan.getString("action")) {
             case "removeMembership":
-                // Only this book's membership goes; the card stays.
                 setMembership(db, accountEmail, key, url, CardStore.MEMBER_REMOVED);
                 return null;
             case "deleteCard":
@@ -451,7 +450,6 @@ final class OfflineStore {
                         new String[] {accountEmail, key});
                 return "removed";
             case "addMembership":
-                // A staged membership addition: the row itself is untouched.
                 setMembership(db, accountEmail, key, url, CardStore.MEMBER_ADDED);
                 return null;
             default:
@@ -474,9 +472,6 @@ final class OfflineStore {
             values.putAll(this.base.indexValues(vcard));
         }
 
-        // The plan hands the push base back as a hash: the body it
-        // names differs from the held content, so it is resolved and
-        // persisted alongside.
         String baseVcardHash = jsonString(row, "baseVcardHash");
         values.put("etag", jsonString(row, "etag"));
         values.put(
@@ -603,9 +598,8 @@ final class OfflineStore {
             values.put("dirty", 1);
             values.put("stale", 0);
             if (row.optBoolean("captureBase")) {
-                // First divergence from the server state: the held
-                // vCard becomes the server push base (same capture as
-                // an in-app edit).
+                // NOTE: first divergence from the server state captures
+                // the held vCard as the push base, like an in-app edit.
                 values.put("base_vcard", existingVcard);
             }
             db.update(
@@ -615,8 +609,6 @@ final class OfflineStore {
                     new String[] {accountEmail, key});
         }
 
-        // The phone axis on the membership row (created when missing,
-        // its staged state left alone otherwise).
         ContentValues member = new ContentValues();
         member.put("account_email", accountEmail);
         member.put("card_key", key);
@@ -907,7 +899,8 @@ final class OfflineStore {
             String local = cursor.getString(0);
             JSONObject bodies = new JSONObject();
             bodies.put("local", local);
-            // base_vcard is null when the base equals the current body.
+            // NOTE: base_vcard is null when the base equals the current
+            // body.
             bodies.put("base", cursor.isNull(1) ? local : cursor.getString(1));
             bodies.put("remote", cursor.getString(2));
             return bodies;
@@ -1153,12 +1146,10 @@ final class OfflineStore {
     /** Inserts or updates one membership row with the given state. */
     private static void setMembership(
             SQLiteDatabase db, String accountEmail, String key, String url, int state) {
-        // Update-then-insert, never INSERT OR REPLACE: the membership
-        // row also carries the phone axis, and REPLACE deletes and
-        // reinserts the row, silently wiping phone_revision and
-        // phone_base on every server-axis upsert. A wiped axis reads
-        // as never-projected, so the next phone pass re-created (and
-        // conflicted) every card the server pass had merely touched.
+        // NOTE: update-then-insert, never INSERT OR REPLACE: REPLACE
+        // deletes and reinserts the row, wiping the phone axis it also
+        // carries. A wiped axis reads as never-projected, so the next
+        // phone pass re-creates (and conflicts) every touched card.
         ContentValues values = new ContentValues();
         values.put("state", state);
         int updated =

@@ -58,7 +58,7 @@
 
     <string name="books_title">Choose addressbooks</string>
     <string name="books_description">Pick the addressbooks to sync on this device. You can change this later from the home screen.</string>
-    <string name="books_none">This account has no addressbook.</string>
+    <string name="books_none">This account has no addressbook</string>
     <string name="subscriptions_title">Accounts</string>
     <string name="subscriptions_save">Save</string>
     <string name="accounts_failed">Could not create the accounts</string>
@@ -94,7 +94,7 @@
     <string name="sync_addressbooks">Fetching addressbooks</string>
     <string name="sync_push">Pushing changes of %1$s</string>
     <string name="sync_cards">Fetching contacts of %1$s</string>
-    <string name="sync_no_addressbook">No addressbook found.</string>
+    <string name="sync_no_addressbook">No addressbook found</string>
     <string name="sync_failed">Could not synchronize</string>
     <string name="sync_conflicts">%1$d change(s) conflict with the server and stay local</string>
     <string name="sync_conflicts_pending">%1$d contact(s) diverged; resolve them to sync</string>
@@ -115,7 +115,7 @@
     <string name="contacts_sync">Sync</string>
     <string name="contacts_more">More</string>
     <string name="birthdays_title">Next birthday</string>
-    <string name="birthdays_none">No birthday recorded on your contacts.</string>
+    <string name="birthdays_none">No birthday recorded on your contacts</string>
     <string name="birthdays_and">" and "</string>
     <plurals name="birthdays_message">
         <item quantity="one">%1$s celebrates a birthday on %2$s, %3$s.</item>

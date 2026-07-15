@@ -11,8 +11,7 @@
 //! Android TYPE constants live on the Java side.
 
 use core::str::FromStr;
-use std::borrow::Cow;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use serde_json::{Map, Value, json};
 use vcard::{
@@ -220,8 +219,8 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
     let mut card = VcardCst::parse(vcard).map_err(|err| format!("Invalid vCard: {err}"))?;
     let version = card.version();
 
-    // FN only persists when the card actually carries a display name;
-    // the views compose one on the fly otherwise, nothing is minted.
+    // NOTE: FN persists only for a real display name; the views
+    // compose one on the fly otherwise, never minting into the record.
     card.remove::<FN>();
     let display = field(model, "displayName");
     if !display.is_empty() {
@@ -432,8 +431,8 @@ pub fn apply(vcard: &str, model: &Value) -> Result<String, String> {
         });
     }
 
-    // RELATED defaults to a URI value; a free-text relation (no URI
-    // scheme) must say VALUE=text (RFC 6350 6.6.6).
+    // NOTE: RELATED defaults to a URI value; a free-text relation (no
+    // URI scheme) must say VALUE=text (RFC 6350 6.6.6).
     card.remove::<RELATED>();
     for relation in array(model.get("relations")) {
         let value = field(relation, "value");
@@ -683,8 +682,6 @@ fn fallback_info(model: &Value) -> String {
 
     String::new()
 }
-
-// ---- Edit-form support ----------------------------------------------------
 
 /// Spinner position to vCard TYPE set of the phone rows, aligned with
 /// the Android phone_types string array.
@@ -947,8 +944,6 @@ fn date_parts(value: &str) -> Option<Value> {
     Some(json!({ "year": year, "month": month, "day": day }))
 }
 
-// ---- Merged view -----------------------------------------------------------
-
 /// Groups the replica pool into merged contacts (docs/merged-view.md).
 /// Each replica's natural key is its vCard UID (`uid\0<uid>`), or the
 /// replica itself (`ref\0<ref>`) when it has none or the user detached
@@ -1104,8 +1099,8 @@ pub fn merge_conflict_form(base: &str, local: &str, remote: &str) -> Result<Valu
         (local, remote)
     };
 
-    // With no ancestor, merging against the loser lets the winner
-    // dominate; a real base gives a true three-way.
+    // NOTE: with no ancestor, merging against the loser lets the
+    // winner dominate; a real base gives a true three-way.
     let base_for_merge = if base.is_empty() { loser } else { base };
     let merged = {
         let base_cst =
@@ -1136,12 +1131,9 @@ pub fn merge_conflict_form(base: &str, local: &str, remote: &str) -> Result<Valu
         }
     }
 
-    // The auto-resolve verdict: with no field both sides edited
-    // differently, the three-way merge needs no user choice and the
-    // caller stages `merged` straight away; a genuine collision leaves
-    // the alternatives for the resolution form. Owned here so the sync
-    // pass and the tap-time form read one decision instead of each
-    // re-checking the alternatives.
+    // NOTE: the auto-resolve verdict, owned here so the sync pass and
+    // the tap-time form share one decision; no collision means the
+    // caller may stage `merged` straight away.
     let resolved = alternatives.is_empty();
 
     Ok(json!({
@@ -1196,7 +1188,7 @@ pub fn find_duplicates(cards: &[(String, String)]) -> Result<Value, String> {
         keys.push(match_keys(&model));
     }
 
-    // Union-find over the cards, joined by shared match keys.
+    // NOTE: union-find over the cards, joined by shared match keys.
     let mut parent: Vec<usize> = (0..cards.len()).collect();
     let mut reasons: Vec<(usize, &'static str)> = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
@@ -1234,7 +1226,7 @@ pub fn find_duplicates(cards: &[(String, String)]) -> Result<Value, String> {
             continue;
         }
 
-        // Members sharing a UID are one logical contact already: a
+        // NOTE: members sharing a UID are one logical contact, so a
         // group must span at least two distinct contacts to matter.
         let mut contacts: Vec<&str> = Vec::new();
         for &member in members {
@@ -1284,8 +1276,8 @@ fn match_keys(model: &Value) -> Vec<(&'static str, String)> {
             .chars()
             .filter(char::is_ascii_digit)
             .collect();
-        // The trailing digits absorb a present-vs-absent country code
-        // (the AOSP aggregator's rule); short numbers match whole.
+        // NOTE: the trailing digits absorb a present-vs-absent country
+        // code (the AOSP aggregator's rule); short numbers match whole.
         if digits.len() >= 6 {
             let tail = &digits[digits.len().saturating_sub(8)..];
             keys.push(("phone", format!("p\u{1f}{tail}")));
@@ -1386,10 +1378,9 @@ pub fn card_set_prop_parts(vcard: &str, index: i64, prop: &Value) -> Result<Stri
             line.push_str(&values.join(","));
         }
     }
-    // A structured value comes as named components (its shape from
-    // card_prop_labels): every component is a comma list, its items
-    // escaped, the components joined by semicolons. A plain value
-    // rides as-is.
+    // NOTE: a structured value comes as named components (shape from
+    // card_prop_labels), each a comma list of escaped items, joined by
+    // semicolons; a plain value rides as-is.
     line.push(':');
     if let Some(components) = prop.get("components").and_then(Value::as_array) {
         let composed = components
@@ -1561,7 +1552,7 @@ fn raw_line(line: &VcardLine) -> String {
             if next == '\r' && chars.peek() == Some(&'\n') {
                 chars.next();
             }
-            // A fold break eats the continuation's leading blank.
+            // NOTE: a fold break eats the continuation's leading blank.
             if matches!(chars.peek(), Some(' ') | Some('\t')) {
                 chars.next();
             }
@@ -1660,9 +1651,9 @@ pub fn merge_cards(cards: &[String]) -> Result<Value, String> {
                 values.push(value);
             }
         }
-        // Present-vs-absent is a conflict too: the empty state rides
-        // along as a pickable alternative, so the conflict view never
-        // comes up blank on a field one card carries and another lacks.
+        // NOTE: present-vs-absent is a conflict too, so the empty state
+        // rides along as a pickable alternative for a field one card
+        // carries and another lacks.
         if values.len() > 1 && values.iter().any(|value| !value.is_empty()) {
             alternatives.insert((*field).into(), json!(values));
         }
@@ -1904,9 +1895,9 @@ mod tests {
 
     #[test]
     fn index_hash_ignores_identity_and_unmanaged_props() {
-        // Per-replica identity (UID) and unmanaged data (X-*, PHOTO)
-        // stay per replica under fan-out editing, so they must not
-        // read as divergence.
+        // NOTE: per-replica identity (UID) and unmanaged data (X-*,
+        // PHOTO) stay per replica under fan-out editing, so they must
+        // not read as divergence.
         let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:abc\r\nFN:Jane\r\n\
             X-FOO:bar\r\nPHOTO;ENCODING=b:AAAA\r\nEND:VCARD\r\n";
         let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:def\r\nFN:Jane\r\nEND:VCARD\r\n";
@@ -1923,9 +1914,6 @@ mod tests {
 
         let merged = merge_cards(&[a.to_string(), b.to_string()]).unwrap();
 
-        // Single-valued conflicts keep the first card's value and
-        // surface every distinct choice as an alternative (the winner
-        // included); multi-valued properties union.
         assert_eq!(merged["model"]["displayName"], "John Doe");
         assert_eq!(merged["model"]["phones"].as_array().unwrap().len(), 2);
         assert_eq!(merged["model"]["emails"][0]["address"], "j@doe.org");
@@ -1934,14 +1922,13 @@ mod tests {
             json!(["John Doe", "Jon Doe"]),
         );
         assert!(merged["alternatives"].get("title").is_none());
-        // The cards disagree on phones and emails, and on nothing else.
         assert_eq!(merged["changed"], json!(["phones", "emails"]));
     }
 
     #[test]
     fn merge_cards_dedups_similar_list_items() {
-        // The same number under different types, and the same address
-        // in a different case, prefill as one entry each.
+        // NOTE: the same number under different types, and the same
+        // address in a different case, prefill as one entry each.
         let a = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
             TEL;TYPE=home:+331111\r\nEMAIL:jane@doe.org\r\nEND:VCARD\r\n";
         let b = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:b\r\nFN:Jane\r\n\
@@ -1967,7 +1954,6 @@ mod tests {
         let report = merge_conflict(base, local, remote).unwrap();
         let merged = report["vcard"].as_str().unwrap();
 
-        // The remote rename and the local phone edit both survive.
         assert!(merged.contains("FN:Janet\r\n"), "got: {merged}");
         assert!(merged.contains("TEL:+332222\r\n"), "got: {merged}");
         assert_eq!(report["conflicts"], 0);
@@ -1975,8 +1961,8 @@ mod tests {
 
     #[test]
     fn merge_conflict_empty_base_lets_the_local_edit_win() {
-        // No captured base (the phone axis lost it): the local hub edit
-        // must win, not be silently reverted to the remote's value.
+        // NOTE: no captured base (the phone axis lost it), so the local
+        // hub edit must win, not silently revert to the remote value.
         let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
             ORG:ZZZ123\r\nEND:VCARD\r\n";
         let remote = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
@@ -1991,8 +1977,8 @@ mod tests {
 
     #[test]
     fn merge_conflict_form_surfaces_same_field_collisions_only() {
-        // ORG collides (both moved from Company20); TITLE changed on the
-        // remote only, so it is auto-taken, not offered for review.
+        // NOTE: ORG collides (both moved from Company20); TITLE moved on
+        // the remote only, so it is auto-taken, not offered for review.
         let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
             ORG:Company20\r\nTITLE:Dev\r\nREV:2026-07-11T17:00:00Z\r\nEND:VCARD\r\n";
         let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
@@ -2002,8 +1988,6 @@ mod tests {
 
         let form = merge_conflict_form(base, local, remote).unwrap();
 
-        // The remote-only TITLE change flows in; the ORG collision
-        // defaults to the newer side (remote), and only ORG is offered.
         assert_eq!(form["model"]["title"], "Lead");
         assert_eq!(form["model"]["organization"]["company"], "Company31");
 
@@ -2013,18 +1997,14 @@ mod tests {
         assert_eq!(org[0], "Company31");
         assert_eq!(org[1], "Company30");
 
-        // A genuine collision needs the user: not auto-resolvable.
         assert_eq!(form["resolved"], false);
-
-        // Lists never conflict, so `changed` is empty but present.
         assert_eq!(form["changed"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn merge_conflict_form_resolves_one_sided_changes() {
-        // Each side moved a different field from the base (local the
-        // TITLE, remote the ORG): no field collides, so the merge takes
-        // both and needs no user choice.
+        // NOTE: each side moved a different field (local TITLE, remote
+        // ORG), so no field collides and the merge takes both.
         let base = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
             ORG:Company20\r\nTITLE:Dev\r\nREV:2026-07-11T17:00:00Z\r\nEND:VCARD\r\n";
         let local = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:a\r\nFN:Jane\r\n\
@@ -2036,7 +2016,6 @@ mod tests {
 
         assert!(form["alternatives"].as_object().unwrap().is_empty());
         assert_eq!(form["resolved"], true);
-        // Both one-sided changes flow into the auto-taken merge.
         assert_eq!(form["model"]["title"], "Lead");
         assert_eq!(form["model"]["organization"]["company"], "Company30");
     }
@@ -2134,8 +2113,8 @@ mod tests {
         assert!(card_source(&fresh).unwrap().contains("FN:Jane\r\n"));
         assert!(card_set_prop_parts(vcard, -1, &json!({ "value": "x" })).is_err());
 
-        // Structured values recompose from labeled components, items
-        // escaped; card_props decodes them back.
+        // NOTE: structured values recompose from labeled components,
+        // items escaped, and card_props decodes them back.
         let structured = json!({
             "name": "N",
             "params": [],
@@ -2174,7 +2153,7 @@ mod tests {
                     TEL:06 12 34 56 78\r\nEND:VCARD\r\n"
                     .to_string(),
             ),
-            // Same email, but one contact already (shared UID).
+            // NOTE: same email, but one contact already (shared UID).
             (
                 "c".to_string(),
                 "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:x\r\nFN:Bob\r\n\
@@ -2355,7 +2334,7 @@ mod tests {
             "notes": [],
         });
 
-        // An emptied display name drops FN instead of persisting a
+        // NOTE: an emptied display name drops FN instead of persisting a
         // composed one; the views compose on the fly (index name).
         let patched = apply(vcard, &model).unwrap();
         assert!(!patched.contains("FN:"), "got: {patched}");
@@ -2458,7 +2437,8 @@ mod tests {
         let reply = group_contacts(&input).unwrap();
         let groups = reply["groups"].as_array().unwrap();
 
-        // Ann (detached), then the linked Bob+Solo cluster, then Zoe.
+        // NOTE: Ann (detached), then the linked Bob+Solo cluster, then
+        // Zoe.
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0]["key"], "ref\u{0}c\nk3");
         assert_eq!(groups[0]["replicas"], json!([2]));

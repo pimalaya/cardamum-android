@@ -68,7 +68,9 @@ mod tests {
 /// empty login means the password field carries an OAuth 2.0 access
 /// token, authenticated as Bearer instead of Basic.
 pub struct Credentials<'a> {
+    /// Account login, empty when the password carries a Bearer token.
     pub login: &'a str,
+    /// Account password, or an OAuth 2.0 access token when login is empty.
     pub password: &'a str,
 }
 

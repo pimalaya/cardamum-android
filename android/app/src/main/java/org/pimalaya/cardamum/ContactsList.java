@@ -62,10 +62,8 @@ final class ContactsList {
         host.findViewById(R.id.contacts_duplicates)
                 .setOnClickListener(
                         view -> new DuplicateReview(host).find(new ArrayList<>(contacts)));
-        // Pull down on the list to run the very same sync as the drawer
-        // (syncAll, with its outcome toast). The gesture only triggers:
-        // its spinner retracts right away, the modal dialog carries the
-        // wait (the FAB keeps its plain icon too).
+        // Pull-to-refresh runs the same syncAll as the drawer; its own
+        // spinner retracts right away, the modal dialog carries the wait.
         androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh =
                 host.findViewById(R.id.contacts_refresh);
         refresh.setColorSchemeColors(host.ui.resolveColor(android.R.attr.colorAccent));
@@ -131,8 +129,8 @@ final class ContactsList {
                 });
 
         TextView sticky = host.findViewById(R.id.contacts_sticky_letter);
-        // Clickable only in selection mode (else it passes touches through
-        // to the list): tapping it selects or clears that whole letter.
+        // NOTE: clickable only in selection mode, else it passes touches
+        // through to the list; tapping it selects or clears that letter.
         sticky.setClickable(false);
         sticky.setOnClickListener(view -> toggleLetter(sticky.getText().toString()));
         list.setOnScrollListener(
@@ -211,23 +209,21 @@ final class ContactsList {
             }
         }
 
-        // Conflicts float to the top so they cannot be missed; the sort
-        // is stable, so the bridge's display-name order survives within
-        // the conflicted and the settled buckets alike.
+        // NOTE: conflicts float to the top; the stable sort keeps the
+        // bridge's display-name order within each bucket.
         java.util.Collections.sort(
                 sortedContacts,
                 (left, right) -> Boolean.compare(right.conflicted(), left.conflicted()));
         adapter.notifyDataSetChanged();
 
         // One empty state for every cause: a search miss, an empty
-        // addressbook, or no account at all.
+        // addressbook, or no account.
         boolean empty = sortedContacts.isEmpty();
         host.findViewById(R.id.contacts_empty).setVisibility(empty ? View.VISIBLE : View.GONE);
         sticky.setText(empty ? "" : letter(sortedContacts.get(0).primary().displayName()));
 
-        // Rows are uniform (empty sub-lines keep their space): size the
-        // sticky letter box to the row height once, so both letters'
-        // centres align.
+        // NOTE: rows are uniform, so sizing the sticky letter box to one
+        // row height aligns both letters' centres.
         ListView list = host.findViewById(R.id.contacts_list);
         list.post(
                 () -> {
@@ -273,8 +269,8 @@ final class ContactsList {
 
             ((TextView) row.findViewById(R.id.contact_name)).setText(name);
 
-            // One supporting line: the first phone, else the first
-            // email, else the card's fallback info.
+            // One supporting line: the phone, else the email, else the
+            // card's fallback info.
             String subtitle = entry.phone;
             if (subtitle == null || subtitle.isEmpty()) {
                 subtitle = entry.email;
@@ -284,8 +280,8 @@ final class ContactsList {
             }
             bindLine(row.findViewById(R.id.contact_subtitle), subtitle);
 
-            // The link glyph and card count, for a contact backed by
-            // several physical cards.
+            // The link glyph and card count, only for a contact backed
+            // by several physical cards.
             int cards = host.pool.distinctRefs(group.replicas).size();
             row.findViewById(R.id.contact_link_icon)
                     .setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
@@ -293,9 +289,8 @@ final class ContactsList {
             links.setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
             links.setText(String.valueOf(cards));
 
-            // The trailing slot: the selection checkbox, or (outside
-            // selection) the warning flag for a both-sides-edited conflict
-            // awaiting resolution or a merged-view replica divergence.
+            // The trailing slot: the selection checkbox, or outside
+            // selection the warning flag for a conflict or divergence.
             boolean isFlagged = group.conflicted() || diverged(group);
             CheckBox check = row.findViewById(R.id.contact_check);
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
@@ -309,7 +304,7 @@ final class ContactsList {
                     .setVisibility(selectionMode || isFlagged ? View.VISIBLE : View.GONE);
 
             // A contact living only in the hidden local book (attached to
-            // no addressbook) is shown muted.
+            // no addressbook) shows muted.
             row.setAlpha(attachedToNoBook(group) ? 0.5f : 1f);
 
             return row;
@@ -438,9 +433,8 @@ final class ContactsList {
     /** Clears the query and gives the title its place back. */
     void closeSearch() {
         ((EditText) host.findViewById(R.id.contacts_search_input)).setText("");
-        // The field's watcher clears the query after its debounce; reset
-        // it now too, so an immediate reload filters against the cleared
-        // query rather than the stale one.
+        // NOTE: the watcher clears the query only after its debounce, so
+        // reset it now too, or an immediate reload filters the stale one.
         searchQuery = "";
         if (!searchOpen) {
             return;
@@ -448,8 +442,7 @@ final class ContactsList {
         searchOpen = false;
 
         host.hideKeyboard();
-        // The chrome only moves when the contacts screen shows it (a
-        // sync landing while another screen is open also ends here).
+        // The chrome only moves while the contacts screen shows it.
         if (!host.onContactsScreen()) {
             return;
         }
@@ -475,7 +468,7 @@ final class ContactsList {
         }
 
         // The selected count takes the title's spot, so an open search
-        // gives way (and its query with it).
+        // gives way.
         if (selectionMode) {
             closeSearch();
         }
@@ -496,8 +489,8 @@ final class ContactsList {
 
         host.findViewById(R.id.contacts_search)
                 .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
-        // The birthday and duplicates icons stay through search (like
-        // the overflow slot), so the pill shrinks to end at them.
+        // The birthday and duplicates icons stay through search, so the
+        // pill shrinks to end at them.
         host.findViewById(R.id.contacts_birthdays)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         host.findViewById(R.id.contacts_duplicates)
@@ -506,8 +499,7 @@ final class ContactsList {
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         host.findViewById(R.id.contacts_close)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // Merging needs at least two physical cards (one merged row
-        // already offers that).
+        // Merging needs at least two physical cards.
         host.findViewById(R.id.contacts_merge)
                 .setVisibility(
                         selectionMode && host.pool.distinctRefs(selectedReplicas()).size() > 1
@@ -515,17 +507,14 @@ final class ContactsList {
                                 : View.GONE);
         host.findViewById(R.id.contacts_delete)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // The select-all box, checked when every contact is selected. The
-        // sticky letter only intercepts taps (to select its letter) while
-        // selecting.
+        // The select-all box, checked when every contact is selected.
         host.findViewById(R.id.contacts_select_all_slot)
                 .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         ((CheckBox) host.findViewById(R.id.contacts_select_all))
                 .setChecked(selectionMode && allSelected());
         host.findViewById(R.id.contacts_sticky_letter).setClickable(selectionMode);
-        // The whole overflow slot goes in selection mode, not just the
-        // inner button: an empty 48dp frame would push the selection icons
-        // off the edge. It stays through search like the two icons above.
+        // NOTE: the whole overflow slot goes in selection mode, not just
+        // its button, else an empty 48dp frame pushes the icons off edge.
         host.findViewById(R.id.contacts_more_slot)
                 .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
         host.findViewById(R.id.fab).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
@@ -542,7 +531,7 @@ final class ContactsList {
 
     private void deleteSelected() {
         // Deleting a merged row deletes every replica behind it, each
-        // staged against its own account.
+        // against its own account.
         for (Group group : sortedContacts) {
             if (selectedKeys.contains(group.key)) {
                 for (Entry entry : group.replicas) {

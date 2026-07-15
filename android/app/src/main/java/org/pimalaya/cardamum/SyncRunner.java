@@ -137,11 +137,9 @@ final class SyncRunner {
     Outcome syncRemote() {
         Outcome outcome = new Outcome();
 
-        // Self-heal: an account whose addressbooks are missing from
-        // the base (a schema rebuild dropped them) gets them
-        // re-fetched, all-subscribed, so the sync has something to
-        // walk again. The local account never appears here: it is
-        // synthesized in memory, its book seeded on launch.
+        // NOTE: self-heal an account whose addressbooks a schema rebuild
+        // dropped by re-fetching them all-subscribed. The local account
+        // never appears here (synthesized in memory, seeded on launch).
         Set<String> known = new HashSet<>();
         for (BookEntry entry : base.loadAllAddressbooks()) {
             known.add(entry.accountEmail);
@@ -165,7 +163,6 @@ final class SyncRunner {
         }
 
         for (Map.Entry<String, List<BookEntry>> group : byAccount.entrySet()) {
-            // The local book has no server to reconcile against.
             if (LocalBook.is(group.getKey())) {
                 continue;
             }
@@ -177,8 +174,6 @@ final class SyncRunner {
             try {
                 syncAccount(entry.account, group.getValue(), outcome);
             } catch (Exception error) {
-                // An expired OAuth access token: refresh it and retry
-                // the account once.
                 if (expiredToken(error) && entry.refreshToken != null) {
                     try {
                         syncAccount(refresh(entry), group.getValue(), outcome);
@@ -188,8 +183,8 @@ final class SyncRunner {
                     }
                 }
 
-                // One account failing (revoked token, server down) must
-                // not block the others.
+                // NOTE: one account failing (revoked token, server down)
+                // must not block the others.
                 Log.w("cardamum", "sync failed for " + group.getKey(), error);
                 if (outcome.failure == null) {
                     outcome.failure = error;
@@ -211,8 +206,8 @@ final class SyncRunner {
         List<BookEntry> phoneBooks = phoneSyncedBooks();
 
         try {
-            // The full phone-synced set at once: reconcile purges the
-            // Android accounts of books no longer mirrored.
+            // NOTE: pass the full phone-synced set at once; reconcile
+            // purges the Android accounts of books no longer mirrored.
             Accounts.reconcile(context, phoneBooks);
 
             OfflineEngine engine = engine(null);
