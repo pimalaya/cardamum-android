@@ -2,6 +2,15 @@
 
 Thank you for investing your time in contributing to Cardamum for Android.
 
+Whether you are a human or an AI agent, read these in order before touching the code:
+
+1. the [Pimalaya README](https://github.com/pimalaya) for what the project is and how its repositories stack;
+2. the [Pimalaya CONTRIBUTING](https://github.com/pimalaya/.github/blob/master/CONTRIBUTING.md) guide, which chains to the shared architecture and guidelines;
+3. the Architecture section below and [docs/design.md](./docs/design.md): the settled design of this app;
+4. the [docs/](./docs) folder for the development history and living plans.
+
+Everything below documents only what differs from the Pimalaya standards.
+
 ## Development environment
 
 The development environment is managed by [Nix flakes](https://nixos.wiki/wiki/Flakes). Running `nix develop` spawns a shell with everything pinned: a Rust toolchain carrying the four Android ABI targets (read from `rust-toolchain.toml`), `cargo-ndk`, the Android SDK and NDK, JDK 17, Gradle and `jdt-language-server`.

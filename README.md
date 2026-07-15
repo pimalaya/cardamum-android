@@ -8,43 +8,76 @@
   </p>
 </div>
 
+<table><tr>
+<td><img src="screenshots/onboarding.jpg" width="200" alt="Automatic account setup from an email address" /></td>
+<td><img src="screenshots/contacts.jpg" width="200" alt="Merged contact list across every account" /></td>
+<td><img src="screenshots/contact.jpg" width="200" alt="Contact detail with identity and emails" /></td>
+<td><img src="screenshots/accounts.jpg" width="200" alt="Accounts drawer" /></td>
+<td><img src="screenshots/birthday.jpg" width="200" alt="Next birthday reminder" /></td>
+</tr></table>
+
 > [!WARNING]
 > Cardamum for Android is early-stage software under active development: it is not yet published on any store, and everything is subject to change. See [docs/design.md](./docs/design.md) for the design and the [docs](./docs) folder for the living documentation.
 
 ## Table of contents
 
 - [Features](#features)
-- [Architecture](#architecture)
+- [Coverage](#coverage)
 - [Installation](#installation)
-- [License](#license)
 - [AI disclosure](#ai-disclosure)
+- [License](#license)
 - [Social](#social)
+- [Contributing](#contributing)
 - [Sponsoring](#sponsoring)
 
 ## Features
 
-- Remote backend support: **CardDAV** <sup>[rfc6352](https://datatracker.ietf.org/doc/html/rfc6352)</sup>, **JMAP for Contacts** <sup>[rfc9610](https://datatracker.ietf.org/doc/html/rfc9610)</sup>, **Microsoft Graph**, **Google People API**
-- **Offline first**: a full-fidelity local vCard store, instant rendering, edits pushed on the next sync
-- **Incremental sync** on every backend, powered by the [io-offline](https://github.com/pimalaya/io-offline) replica engine
-- **Two-way phone sync**: one Android account per addressbook (the DAVx5 pattern), edits from any contacts app ride upstream
-- **Background sync** per addressbook (WorkManager), from 15 minutes to daily
-- **Conservative conflicts**: three-way merge, same-field collisions keep both sides for manual resolution
-- **Discovery** from an email address or a bare domain: provider rules with MX detection, PACC <sup>[specs](https://datatracker.ietf.org/doc/html/draft-ietf-mailmaint-pacc)</sup>, CardDAV <sup>[rfc6764](https://datatracker.ietf.org/doc/html/rfc6764)</sup> and JMAP <sup>[rfc8620](https://datatracker.ietf.org/doc/html/rfc8620)</sup> lookups
-- **Auth** support: password, API token, OAuth 2.0 (shipped Google and Microsoft clients, or your own), zero-registration OAuth <sup>[rfc7591](https://datatracker.ietf.org/doc/html/rfc7591)</sup>; credentials encrypted via Android Keystore
-- **Full vCard 4.0 editor**: a form, an advanced per-property editor, a free-hand source editor
-- **Merged contact view** over every account, with search, import/export and a duplicate remover
+- **Multiple accounts and backends**: keep CardDAV, JMAP, Microsoft and Google addressbooks side by side in a single app.
+- **Offline first**: every contact is stored locally and rendered instantly, with edits pushed on the next sync.
+- **Incremental sync**: each pass transfers only what changed, on every backend.
+- **Two-way phone sync**: mirror an addressbook into Android's own contacts, so any contacts app can read and edit it.
+- **Background sync**: keep each addressbook current on a schedule, from every fifteen minutes to once a day.
+- **Conservative conflict handling**: a three-way merge keeps both sides of a genuine clash for you to resolve by hand.
+- **Automatic setup**: type an email address or a bare domain and the server settings are discovered for you.
+- **Flexible authentication**: password, API token or OAuth 2.0, with shipped Google and Microsoft sign-in or your own; credentials are encrypted by the Android Keystore.
+- **Full vCard editor**: a friendly form, an advanced per-property editor and a free-hand source editor.
+- **Merged contact view**: one deduplicated list over every account, with search, import, export and a duplicate remover.
 
-## Architecture
+## Coverage
 
-Three layers, each knowing only the one below (see [CONTRIBUTING.md](./CONTRIBUTING.md)):
+| Standard | What is covered |
+|----------|-----------------|
+| [vCard 4.0][rfc6350] | The contact data model: a full-fidelity local store and a complete property and parameter editor |
+| [CardDAV][rfc6352] | Contact synchronization against any standards-compliant server |
+| [CardDAV service discovery][rfc6764] and [PACC][pacc] | Locating the addressbook home from an email address or a bare domain |
+| [JMAP][rfc8620] and [JMAP for Contacts][rfc9610] | Contact synchronization against JMAP servers such as Fastmail |
+| [OAuth 2.0][rfc6749] and [dynamic client registration][rfc7591] | Signing in without a provider console, next to the shipped Google and Microsoft clients |
+| Microsoft Graph | Contact synchronization against Outlook and Microsoft 365 |
+| Google People API | Contact synchronization against Google accounts |
 
-- `:app` (Java, framework Views): the screens. Talks only to `CardamumClient`; never sees sockets or JNI.
-- `:client` (Android library, Java): the public API, owning the JNI boundary and the TLS sockets.
-- `libcardamum.so` (Rust): the Pimalaya I/O-free building blocks exposed over JNI.
+[rfc6350]: https://www.rfc-editor.org/rfc/rfc6350
+[rfc6352]: https://www.rfc-editor.org/rfc/rfc6352
+[rfc6749]: https://www.rfc-editor.org/rfc/rfc6749
+[rfc6764]: https://www.rfc-editor.org/rfc/rfc6764
+[rfc7591]: https://www.rfc-editor.org/rfc/rfc7591
+[rfc8620]: https://www.rfc-editor.org/rfc/rfc8620
+[rfc9610]: https://www.rfc-editor.org/rfc/rfc9610
+[pacc]: https://datatracker.ietf.org/doc/html/draft-ietf-mailmaint-pacc
 
 ## Installation
 
 Cardamum for Android is not yet published, therefore the only way to install the app is to check out the [releases](https://github.com/pimalaya/cardamum-android/actions/workflows/releases.yml) GitHub workflow, look for the *Artifacts* section, download the APK and manually install it.
+
+## AI disclosure
+
+This project is developed with AI assistance. This section documents how, so users and downstream packagers can make informed decisions.
+
+- **Tools**: Claude Code (Anthropic), invoked locally with a persistent project-scoped memory and a small set of repo-specific rules.
+- **Used for**: Refactors, mechanical multi-file edits, boilerplate (feature gates, error enums, derive macros, trait impls), test scaffolding, doc polish, exploratory design conversations.
+- **Not used for**: Engineering, critical code, git manipulation (commit, merge, rebase…), real-world tests.
+- **Verification**: Every AI-assisted change is read, compiled, tested, and formatted before commit. Behavioural correctness is verified against the relevant RFC or upstream spec, not assumed from the model output. Tests are never adjusted to fit AI-generated code; the code is adjusted to fit correct behaviour.
+- **Limitations**: AI models occasionally produce code that compiles and passes tests but is subtly wrong. The verification workflow catches most of this; it does not catch all of it. Bug reports are welcome and taken seriously.
+- **Last reviewed**: 15/07/2026
 
 ## License
 
@@ -55,22 +88,15 @@ This project is licensed under either of:
 
 at your option.
 
-## AI disclosure
-
-This project is developed with AI assistance. This section documents how, so users and downstream packagers can make informed decisions.
-
-- **Tools**: Claude Code (Anthropic), Opus 4.8, invoked locally with a persistent project-scoped memory and a small set of repo-specific rules.
-- **Used for**: Refactors, mechanical multi-file edits, boilerplate (feature gates, error enums, derive macros, trait impls), test scaffolding, doc polish, exploratory design conversations.
-- **Not used for**: Engineering, critical code, git manipulation (commit, merge, rebase…), real-world tests.
-- **Verification**: Every AI-assisted change is read, compiled, tested, and formatted before commit (`nix develop --command cargo check / cargo test / cargo fmt`). Behavioural correctness is verified against the relevant RFC or upstream spec, not assumed from the model output. Tests are never adjusted to fit AI-generated code; the code is adjusted to fit correct behaviour.
-- **Limitations**: AI models occasionally produce code that compiles and passes tests but is subtly wrong: off-by-one errors, missed edge cases, plausible but nonexistent APIs, stale RFC references. The verification workflow catches most of this; it does not catch all of it. Bug reports are welcome and taken seriously.
-- **Last reviewed**: 19/06/2026
-
 ## Social
 
 - Chat on [Matrix](https://matrix.to/#/#pimalaya:matrix.org)
 - News on [Mastodon](https://fosstodon.org/@pimalaya) or [RSS](https://fosstodon.org/@pimalaya.rss)
 - Mail at [pimalaya.org@posteo.net](mailto:pimalaya.org@posteo.net)
+
+## Contributing
+
+Contributions are welcome: start with [CONTRIBUTING.md](./CONTRIBUTING.md), which opens with the Pimalaya-wide guides to read first.
 
 ## Sponsoring
 
