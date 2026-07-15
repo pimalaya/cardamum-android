@@ -6,22 +6,18 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.ArrayAdapter;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -34,7 +30,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import org.json.JSONException;
 import org.json.JSONObject;
 import org.pimalaya.cardamum.billing.BillingFactory;
 import org.pimalaya.cardamum.client.Cards;
@@ -62,12 +57,12 @@ public class MainActivity extends Activity {
     // NOTE: contacts, contact, advanced and source are the content
     // flipper's child indexes; home and auth are whole-frame overlays
     // sliding over it, bar included (only the FAB stays above them).
-    private static final int PANEL_CONTACTS = 0;
-    private static final int PANEL_CONTACT = 1;
-    private static final int PANEL_ADVANCED = 2;
-    private static final int PANEL_SOURCE = 3;
+    static final int PANEL_CONTACTS = 0;
+    static final int PANEL_CONTACT = 1;
+    static final int PANEL_ADVANCED = 2;
+    static final int PANEL_SOURCE = 3;
     private static final int PANEL_AUTH = 5;
-    private static final int PANEL_ACCOUNT = 6;
+    static final int PANEL_ACCOUNT = 6;
 
     /** The auth flow's steps, inside its own flipper under one bar. */
     static final int STEP_EMAIL = 0;
@@ -92,7 +87,7 @@ public class MainActivity extends Activity {
     private SyncRunner runner;
     private ViewFlipper flipper;
     private ViewFlipper authFlipper;
-    private ContactForm form;
+    ContactForm form;
 
     /** Every connected account (multi-account). */
     final List<AccountEntry> accounts = new ArrayList<>();
@@ -102,28 +97,20 @@ public class MainActivity extends Activity {
 
     private OauthFlow oauth;
 
+    /** The advanced raw-vCard sub-editor over the working document. */
+    private final AdvancedEditor advancedEditor = new AdvancedEditor(this);
+
+    /** The contact save fan-out over the working edit session. */
+    private final ContactWriter writer = new ContactWriter(this);
+
+    /** The vCard file import and export over the contacts list. */
+    private final VcfTransfer vcfTransfer = new VcfTransfer(this);
+
+    /** The full-screen account settings controller over the drawer. */
+    private final AccountSettings accountSettings = new AccountSettings(this);
+
     /** The accounts drawer, opened by the contacts burger. */
     private androidx.drawerlayout.widget.DrawerLayout drawer;
-
-    /** The account whose settings screen is open (null outside it). */
-    private String settingsEmail;
-
-    /** The open settings screen's addressbooks, in store order. */
-    private List<BookEntry> settingsBooks = new ArrayList<>();
-
-    /** Staged switches per addressbook URL; the FAB commits them. */
-    private final Map<String, BookSettings> bookSettings = new java.util.LinkedHashMap<>();
-
-    /** Whether the settings screen's advanced sections are unfolded. */
-    private boolean settingsAdvancedOpen;
-
-    /** One addressbook's staged switches on the account settings screen. */
-    private static final class BookSettings {
-        boolean enabled;
-        boolean remote;
-        boolean local;
-        int interval;
-    }
 
     /**
      * The shared sync state: true while a sync runs. Every UI element
@@ -148,10 +135,10 @@ public class MainActivity extends Activity {
     private Runnable afterContactsPermission;
 
     /** The editor's working state, replaced blank when it leaves. */
-    private EditSession edit = new EditSession();
+    EditSession edit = new EditSession();
 
     /** The screen currently shown: a flipper panel, or an overlay. */
-    private int screen = PANEL_CONTACTS;
+    int screen = PANEL_CONTACTS;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -409,7 +396,7 @@ public class MainActivity extends Activity {
         // The account settings overlay sits above the open drawer, so
         // back peels it off first.
         if (screen == PANEL_ACCOUNT) {
-            leaveAccountSettings();
+            accountSettings.leave();
             return;
         }
         if (drawer.isDrawerOpen(android.view.Gravity.START)) {
@@ -461,7 +448,6 @@ public class MainActivity extends Activity {
         drawer.openDrawer(android.view.Gravity.START);
     }
 
-    // Connection screen
     private void setUpEmailPanel() {
         EditText email = findViewById(R.id.email_input);
         findViewById(R.id.auth_back).setOnClickListener(view -> authBack());
@@ -552,7 +538,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Addressbooks management screen
     private void setUpHomePanel() {
         // Sync slides the drawer shut on its way in, so the modal dialog
         // and its outcome toasts land over the refreshed contacts list.
@@ -567,16 +552,16 @@ public class MainActivity extends Activity {
         findViewById(R.id.drawer_add).setOnClickListener(view -> startAuth());
         findViewById(R.id.drawer_about).setOnClickListener(view -> showAbout());
 
-        findViewById(R.id.account_back).setOnClickListener(view -> leaveAccountSettings());
+        findViewById(R.id.account_back).setOnClickListener(view -> accountSettings.leave());
         findViewById(R.id.account_delete)
-                .setOnClickListener(view -> confirmDeleteAccount(settingsEmail));
+                .setOnClickListener(view -> accountSettings.confirmDeleteCurrent());
 
         // NOTE: the settings overlay carries its own save FAB, the
         // shared one drawing under the drawer the overlay covers.
         android.widget.ImageButton accountFab = findViewById(R.id.account_fab);
         accountFab.setImageTintList(
                 android.content.res.ColorStateList.valueOf(accentContrast()));
-        accountFab.setOnClickListener(view -> saveAccountSettings());
+        accountFab.setOnClickListener(view -> accountSettings.save());
 
         // While a sync runs the row goes inert; the modal dialog carries
         // the only spinner.
@@ -626,7 +611,7 @@ public class MainActivity extends Activity {
      * screen: activation, cadence, the per-addressbook advanced
      * switches and deletion, so the drawer itself stays a plain list.
      */
-    private void reloadHome() {
+    void reloadHome() {
         // With no real account the drawer shows an empty state, and its
         // sync row is hidden.
         boolean hasAccount = hasRealAccount();
@@ -687,343 +672,14 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Opens one account's settings screen: the staged switches load
-     * from the store, the screen fades in over the drawer it came
-     * from, which stays open underneath for the return. The simple
-     * pair (activate, cadence) fans out onto every addressbook;
-     * Advanced unfolds the per-book sections.
+     * Opens one account's settings screen (delegated to
+     * {@link AccountSettings}): the staged switches load from the store,
+     * the screen fades in over the drawer it came from, which stays open
+     * underneath for the return. The simple pair (activate, cadence) fans
+     * out onto every addressbook; Advanced unfolds the per-book sections.
      */
     private void openAccountSettings(String email) {
-        settingsEmail = email;
-        settingsBooks = new ArrayList<>();
-        bookSettings.clear();
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            if (entry.accountEmail.equals(email)) {
-                settingsBooks.add(entry);
-                BookSettings staged = new BookSettings();
-                staged.enabled = entry.subscribed;
-                staged.remote = entry.remoteSynced;
-                staged.local = entry.phoneSynced;
-                staged.interval = BackgroundSync.intervalIndex(this, entry.book.url);
-                bookSettings.put(entry.book.url, staged);
-            }
-        }
-        settingsAdvancedOpen = false;
-
-        ((TextView) findViewById(R.id.account_title)).setText(email);
-        renderAccountSettings();
-        openOverlay(PANEL_ACCOUNT);
-    }
-
-    /**
-     * Rebuilds the settings screen from the staged switches; every bulk
-     * change re-renders, so the simple pair, the advanced sections and
-     * the dimming always agree.
-     */
-    private void renderAccountSettings() {
-        LinearLayout content = findViewById(R.id.account_content);
-        content.removeAllViews();
-
-        LinearLayout.LayoutParams rowParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-
-        boolean anyEnabled = false;
-        for (BookSettings staged : bookSettings.values()) {
-            anyEnabled |= staged.enabled;
-        }
-
-        // The master switch fans onto every addressbook: on puts both
-        // spokes on, off shuts everything down, cadence included.
-        CheckBox activate = new CheckBox(this);
-        activate.setChecked(anyEnabled);
-        content.addView(optionRow(R.string.account_enable, activate), rowParams);
-        activate.setOnCheckedChangeListener(
-                (view, checked) -> {
-                    for (BookSettings staged : bookSettings.values()) {
-                        staged.enabled = checked;
-                        staged.remote = checked;
-                        staged.local = checked;
-                        if (!checked) {
-                            staged.interval = 0;
-                        }
-                    }
-                    renderAccountSettings();
-                });
-
-        // The account-wide cadence shows the first enabled book's pick
-        // and fans a change onto every book.
-        int shown = 0;
-        for (BookSettings staged : bookSettings.values()) {
-            if (staged.enabled) {
-                shown = staged.interval;
-                break;
-            }
-        }
-        Spinner interval = intervalSpinner();
-        interval.setMinimumHeight(dp(48));
-        interval.setSelection(shown);
-        interval.setEnabled(anyEnabled);
-        interval.setAlpha(anyEnabled ? 1f : 0.5f);
-        LinearLayout.LayoutParams intervalParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        // NOTE: the framework caret renders further in than the checkbox
-        // glyph, so the spinner stops 8dp short of the rows' end padding
-        // to line the caret up with the boxes (as the onboarding cadence).
-        intervalParams.setMarginStart(dp(16));
-        intervalParams.setMarginEnd(dp(4));
-        content.addView(interval, intervalParams);
-
-        // A 1dp separator between the account pair and the advanced fold.
-        View line = new View(this);
-        line.setBackgroundColor(getColor(R.color.surface));
-        LinearLayout.LayoutParams lineParams =
-                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1));
-        lineParams.setMargins(0, dp(12), 0, dp(12));
-        content.addView(line, lineParams);
-        onIntervalPicked(
-                interval,
-                position -> {
-                    boolean changed = false;
-                    for (BookSettings staged : bookSettings.values()) {
-                        changed |= staged.interval != position;
-                        staged.interval = position;
-                    }
-                    if (changed && settingsAdvancedOpen) {
-                        renderAccountSettings();
-                    }
-                });
-
-        // The per-addressbook sections below only matter on multi-book
-        // accounts or for spoke-level tuning, so they hide behind a fold.
-        CheckBox advanced = new CheckBox(this);
-        advanced.setChecked(settingsAdvancedOpen);
-        content.addView(optionRow(R.string.account_advanced, advanced), rowParams);
-        advanced.setOnCheckedChangeListener(
-                (view, checked) -> {
-                    settingsAdvancedOpen = checked;
-                    renderAccountSettings();
-                });
-
-        if (!settingsAdvancedOpen) {
-            return;
-        }
-
-        for (BookEntry entry : settingsBooks) {
-            BookSettings staged = bookSettings.get(entry.book.url);
-
-            TextView header = new TextView(this);
-            header.setText(entry.book.name);
-            header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-            header.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-            header.setSingleLine(true);
-            header.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            header.setMinimumHeight(dp(48));
-            header.setPadding(dp(16), 0, dp(16), 0);
-            content.addView(header, rowParams);
-
-            LinearLayout rows = new LinearLayout(this);
-            rows.setOrientation(LinearLayout.VERTICAL);
-            rows.setPadding(dp(12), 0, 0, 0);
-            content.addView(rows, rowParams);
-
-            CheckBox enable = new CheckBox(this);
-            enable.setChecked(staged.enabled);
-            rows.addView(optionRow(R.string.book_enable, enable), rowParams);
-            enable.setOnCheckedChangeListener(
-                    (view, checked) -> {
-                        staged.enabled = checked;
-                        staged.remote = checked;
-                        staged.local = checked;
-                        if (!checked) {
-                            staged.interval = 0;
-                        }
-                        renderAccountSettings();
-                    });
-
-            // The spoke switches and cadence need the book on, so their
-            // rows dim with it.
-            CheckBox remote = new CheckBox(this);
-            remote.setChecked(staged.remote);
-            remote.setEnabled(staged.enabled);
-            View remoteRow = optionRow(R.string.book_remote_sync, remote);
-            remoteRow.setAlpha(staged.enabled ? 1f : 0.5f);
-            rows.addView(remoteRow, rowParams);
-            remote.setOnCheckedChangeListener((view, checked) -> staged.remote = checked);
-
-            CheckBox local = new CheckBox(this);
-            local.setChecked(staged.local);
-            local.setEnabled(staged.enabled);
-            View localRow = optionRow(R.string.book_local_sync, local);
-            localRow.setAlpha(staged.enabled ? 1f : 0.5f);
-            rows.addView(localRow, rowParams);
-            local.setOnCheckedChangeListener((view, checked) -> staged.local = checked);
-
-            Spinner cadence = intervalSpinner();
-            cadence.setMinimumHeight(dp(48));
-            cadence.setSelection(staged.interval);
-            cadence.setEnabled(staged.enabled);
-            cadence.setAlpha(staged.enabled ? 1f : 0.5f);
-            LinearLayout.LayoutParams cadenceParams =
-                    new LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT);
-            cadenceParams.setMarginStart(dp(16));
-            cadenceParams.setMarginEnd(dp(4));
-            rows.addView(cadence, cadenceParams);
-            onIntervalPicked(cadence, position -> staged.interval = position);
-        }
-    }
-
-    /**
-     * Wires a cadence spinner's user picks to the staged state,
-     * swallowing the selection callback Android fires on layout for
-     * the initial value (it would clobber differing per-book picks).
-     */
-    private void onIntervalPicked(Spinner spinner, java.util.function.IntConsumer picked) {
-        spinner.setOnItemSelectedListener(
-                new android.widget.AdapterView.OnItemSelectedListener() {
-                    private boolean initial = true;
-
-                    @Override
-                    public void onItemSelected(
-                            android.widget.AdapterView<?> parent,
-                            View view,
-                            int position,
-                            long id) {
-                        if (initial) {
-                            initial = false;
-                            return;
-                        }
-                        picked.accept(position);
-                    }
-
-                    @Override
-                    public void onNothingSelected(android.widget.AdapterView<?> parent) {}
-                });
-    }
-
-    /** Commits the staged switches and returns to the drawer. */
-    private void saveAccountSettings() {
-        boolean cadence = false;
-        for (Map.Entry<String, BookSettings> staged : bookSettings.entrySet()) {
-            BookSettings state = staged.getValue();
-            base.setBookState(staged.getKey(), state.enabled, state.remote, state.local);
-            long minutes =
-                    state.enabled ? BackgroundSync.INTERVAL_MINUTES[state.interval] : 0;
-            BackgroundSync.setInterval(this, staged.getKey(), minutes);
-            cadence |= minutes > 0;
-        }
-        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
-        if (cadence) {
-            ensureNotificationsPermission();
-        }
-
-        // The subscription switches move what the contacts root shows.
-        reloadContacts();
-        leaveAccountSettings();
-    }
-
-    /** Leaves the settings screen, landing on the still-open drawer. */
-    private void leaveAccountSettings() {
-        settingsEmail = null;
-        closeOverlay(PANEL_ACCOUNT);
-        screen = PANEL_CONTACTS;
-        applyChrome(PANEL_CONTACTS);
-        // NOTE: the drawer never closed under the overlay, so its rows
-        // refresh in place.
-        reloadHome();
-    }
-
-    /**
-     * One settings row: the label on the left, the checkbox at the end,
-     * vertically centred on a shared height; tapping anywhere on the row
-     * toggles the box (while it is enabled). Pads itself like the edit
-     * form's rows (the container stays unpadded for the separators);
-     * the 12dp end centres the checkbox glyph under the bar's 48dp
-     * buttons (4dp bar padding + 24 = 28dp centreline, the glyph
-     * sitting 16dp in from the widget's end).
-     */
-    private View optionRow(int label, CheckBox box) {
-        TextView text = new TextView(this);
-        text.setText(label);
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        text.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        text.setLayoutParams(
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setMinimumHeight(dp(48));
-        row.setPadding(dp(16), 0, dp(12), 0);
-        row.addView(text);
-        row.addView(box);
-        row.setOnClickListener(
-                view -> {
-                    if (box.isEnabled()) {
-                        box.toggle();
-                    }
-                });
-        return row;
-    }
-
-    /**
-     * Confirms, then removes the account and everything under it,
-     * leaving its settings screen for the drawer underneath.
-     */
-    private void confirmDeleteAccount(String email) {
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.delete_account)
-                .setMessage(R.string.delete_account_confirm)
-                .setPositiveButton(
-                        android.R.string.ok,
-                        (dialog, which) -> {
-                            deleteAccount(email);
-                            if (screen == PANEL_ACCOUNT) {
-                                leaveAccountSettings();
-                            }
-                        })
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    private void deleteAccount(String email) {
-        // NOTE: zero the books' sync intervals and reconcile while they
-        // are still listed, so their periodic work cancels; remember
-        // their URLs to remove the phone accounts that mirrored them.
-        List<String> urls = new ArrayList<>();
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            if (entry.accountEmail.equals(email)) {
-                urls.add(entry.book.url);
-                BackgroundSync.setInterval(this, entry.book.url, 0);
-            }
-        }
-        BackgroundSync.reconcile(this, base.loadAllAddressbooks());
-
-        store.remove(email);
-        base.detachAccountToLocal(email);
-        accounts.removeIf(entry -> entry.email.equals(email));
-        reloadHome();
-
-        // NOTE: the deleted books' phone accounts go explicitly (their
-        // rows are already gone, so a reconcile could not name them);
-        // reconciling the remaining phone-synced set sweeps any straggler.
-        List<BookEntry> phoneBooks = phoneSyncedBooks();
-        io.execute(() -> {
-            try {
-                for (String url : urls) {
-                    Accounts.remove(this, url);
-                }
-                Accounts.reconcile(this, phoneBooks);
-            } catch (Exception error) {
-                Log.w("cardamum", "account purge failed for " + email + ": " + error);
-            }
-        });
+        accountSettings.open(email);
     }
 
     /** Runs the pending contacts-sync retry once the permission lands. */
@@ -1050,8 +706,6 @@ public class MainActivity extends Activity {
     boolean onContactsScreen() {
         return screen == PANEL_CONTACTS;
     }
-
-    // Sync
 
     /**
      * The runner's hooks into this activity's presentation: the loader
@@ -1317,7 +971,7 @@ public class MainActivity extends Activity {
     }
 
     /** The subscribed addressbooks set to mirror into the phone. */
-    private List<BookEntry> phoneSyncedBooks() {
+    List<BookEntry> phoneSyncedBooks() {
         return runner.phoneSyncedBooks();
     }
 
@@ -1327,7 +981,7 @@ public class MainActivity extends Activity {
      * (and its pending-conflicts warning) can show. Denying keeps
      * background sync working, just silent.
      */
-    private void ensureNotificationsPermission() {
+    void ensureNotificationsPermission() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                         != PackageManager.PERMISSION_GRANTED) {
@@ -1354,8 +1008,6 @@ public class MainActivity extends Activity {
                 REQUEST_CONTACTS);
         return false;
     }
-
-    // Contacts screen
 
     /**
      * Opens a merged row in the editor: one form for the whole contact
@@ -1463,109 +1115,9 @@ public class MainActivity extends Activity {
             return;
         }
         if (request == REQUEST_IMPORT) {
-            chooseImportTarget(data.getData());
+            vcfTransfer.importFile(data.getData());
         } else if (request == REQUEST_EXPORT) {
-            exportFile(data.getData());
-        }
-    }
-
-    /**
-     * Picks the addressbook the file imports into: the hidden local book
-     * when no real account is configured, the sole book when there is one,
-     * otherwise a chooser (the local book is never offered explicitly).
-     */
-    private void chooseImportTarget(Uri uri) {
-        List<BookEntry> books = new ArrayList<>();
-        BookEntry local = null;
-        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-            if (LocalBook.is(entry.accountEmail)) {
-                local = entry;
-            } else {
-                books.add(entry);
-            }
-        }
-
-        if (books.isEmpty()) {
-            if (local != null) {
-                importFile(uri, local);
-            }
-            return;
-        }
-        if (books.size() == 1) {
-            importFile(uri, books.get(0));
-            return;
-        }
-
-        List<BookEntry> targets = books;
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.import_target_title)
-                .setItems(
-                        bookLabels(targets),
-                        (dialog, which) -> importFile(uri, targets.get(which)))
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    /**
-     * Reads a vCard file off the main thread and stores each card it holds
-     * in the chosen addressbook (a card in the local book stays unattached
-     * and shows muted until placed).
-     */
-    private void importFile(Uri uri, BookEntry target) {
-        // The FAB disables and spins while the file reads, as in the auth flow.
-        setAuthLoading(R.id.fab, R.id.fab_progress, true);
-        io.execute(
-                () -> {
-                    int count = 0;
-                    Exception failure = null;
-                    try {
-                        count = importCards(readText(uri), target);
-                    } catch (Exception error) {
-                        failure = error;
-                    }
-                    int imported = count;
-                    Exception error = failure;
-                    main.post(
-                            () -> {
-                                setAuthLoading(R.id.fab, R.id.fab_progress, false);
-                                if (error != null) {
-                                    showError(error, R.string.import_failed);
-                                } else {
-                                    reloadContacts();
-                                    toast(getString(R.string.import_done, imported));
-                                }
-                            });
-                });
-    }
-
-    /** Splits the text into vCards and stores each in the target book. */
-    private int importCards(String text, BookEntry target) {
-        AccountEntry account = accountFor(target.accountEmail);
-        int count = 0;
-        for (String vcard : Vcf.split(text)) {
-            String uid = cardIndex(vcard).optString("uid");
-            String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
-            String key =
-                    account != null
-                            ? ContactPool.cardKey(account.account, target.book.url, id)
-                            : CardStore.key(target.book.url, id);
-            base.saveLocal(
-                    target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
-            count++;
-        }
-        return count;
-    }
-
-    /** Reads a content Uri fully as UTF-8 text. */
-    private String readText(Uri uri) throws java.io.IOException {
-        try (java.io.InputStream in = getContentResolver().openInputStream(uri);
-                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-            }
-            return out.toString("UTF-8");
+            vcfTransfer.exportFile(data.getData());
         }
     }
 
@@ -1583,53 +1135,9 @@ public class MainActivity extends Activity {
         startActivityForResult(intent, REQUEST_EXPORT);
     }
 
-    /**
-     * Writes the active contacts view (the currently listed, search-filtered
-     * contacts) to the chosen file as one vCard file, each contact's raw
-     * document appended verbatim, off the main thread behind the FAB loader.
-     */
-    private void exportFile(Uri uri) {
-        List<Group> snapshot = new ArrayList<>(contactsList.visibleGroups());
-        setAuthLoading(R.id.fab, R.id.fab_progress, true);
-        io.execute(
-                () -> {
-                    Exception failure = null;
-                    try {
-                        writeText(uri, buildVcf(snapshot));
-                    } catch (Exception error) {
-                        failure = error;
-                    }
-                    Exception error = failure;
-                    main.post(
-                            () -> {
-                                setAuthLoading(R.id.fab, R.id.fab_progress, false);
-                                if (error != null) {
-                                    showError(error, R.string.export_failed);
-                                } else {
-                                    toast(getString(R.string.export_done, snapshot.size()));
-                                }
-                            });
-                });
-    }
-
-    /** One vCard per contact (its primary replica's document), appended
-     *  verbatim so the file round-trips through the importer. */
-    private String buildVcf(List<Group> groups) {
-        List<String> vcards = new ArrayList<>(groups.size());
-        for (Group group : groups) {
-            vcards.add(group.primary().card.vcard);
-        }
-        return Vcf.join(vcards);
-    }
-
-    /** Writes text to a content Uri as UTF-8. */
-    private void writeText(Uri uri, String text) throws java.io.IOException {
-        try (java.io.OutputStream out = getContentResolver().openOutputStream(uri, "w")) {
-            if (out == null) {
-                throw new java.io.IOException("Could not open the destination file");
-            }
-            out.write(text.getBytes("UTF-8"));
-        }
+    /** The active contacts view, for the vCard export snapshot. */
+    List<Group> visibleGroups() {
+        return contactsList.visibleGroups();
     }
 
     /**
@@ -1691,7 +1199,7 @@ public class MainActivity extends Activity {
     }
 
     /** One two-line label per addressbook of a picker dialog. */
-    private CharSequence[] bookLabels(List<BookEntry> books) {
+    CharSequence[] bookLabels(List<BookEntry> books) {
         CharSequence[] labels = new CharSequence[books.size()];
         for (int index = 0; index < books.size(); index++) {
             BookEntry entry = books.get(index);
@@ -1729,7 +1237,7 @@ public class MainActivity extends Activity {
     }
 
     /** Stages a copied card into the target addressbook. */
-    private void createCopy(BookEntry target, AccountEntry account, String id, String vcard) {
+    void createCopy(BookEntry target, AccountEntry account, String id, String vcard) {
         String key = ContactPool.cardKey(account.account, target.book.url, id);
 
         // NOTE: Google creates land in myContacts; the group membership
@@ -1825,8 +1333,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Contact screen
-
     /** Opens the edit form on a fresh card in the target addressbook. */
     private void openNewContact(Addressbook book, String accountEmail) {
         edit = new EditSession();
@@ -1914,469 +1420,13 @@ public class MainActivity extends Activity {
         showBack(PANEL_CONTACTS);
     }
 
-    // Advanced editor
-
     /**
-     * Opens the raw-property editor on the working document, the form's
-     * current state baked in first so both views agree. Only offered on
-     * single-card contacts (and new ones): raw lines cannot fan out to
-     * several physical documents.
+     * Opens the raw-property editor on the working document (delegated to
+     * {@link AdvancedEditor}). Only offered on single-card contacts (and
+     * new ones): raw lines cannot fan out to several physical documents.
      */
     private void openAdvanced() {
-        try {
-            String working = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
-            edit.advancedVcard = Cards.applyCard(working, form.collect());
-            renderAdvanced();
-        } catch (Exception error) {
-            showError(error, R.string.contact_open_failed);
-            return;
-        }
-        show(PANEL_ADVANCED);
-    }
-
-    /** Back to the form, rebuilt from the edited document. */
-    private void closeAdvanced() {
-        try {
-            form.load(Cards.projectCard(edit.advancedVcard), null, null);
-        } catch (Exception error) {
-            showError(error, R.string.contact_open_failed);
-        }
-        showBack(PANEL_CONTACT);
-    }
-
-    /** Rebuilds the property rows and the closing source block. */
-    private void renderAdvanced() {
-        LinearLayout container = findViewById(R.id.advanced_container);
-        container.removeAllViews();
-
-        org.json.JSONArray props = Cards.cardProps(edit.advancedVcard);
-        for (int index = 0; props != null && index < props.length(); index++) {
-            int at = index;
-            JSONObject prop = props.optJSONObject(index);
-            container.addView(
-                    propertyRow(
-                            prop.optString("name"),
-                            prop.optString("line"),
-                            () -> advancedDialog(at, prop)));
-        }
-
-        android.widget.ImageView addIcon = new android.widget.ImageView(this);
-        addIcon.setImageResource(R.drawable.ic_add);
-        addIcon.setImageTintList(
-                android.content.res.ColorStateList.valueOf(
-                        resolveColor(android.R.attr.textColorPrimary)));
-
-        TextView add = new TextView(this);
-        add.setText(R.string.advanced_add);
-        add.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        add.setTextSize(14);
-        LinearLayout.LayoutParams addParams =
-                new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-        addParams.setMarginStart(dp(8));
-
-        LinearLayout addRow = new LinearLayout(this);
-        addRow.setOrientation(LinearLayout.HORIZONTAL);
-        addRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        addRow.setPadding(dp(16), dp(12), dp(16), dp(12));
-        addRow.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        addRow.setOnClickListener(view -> advancedDialog(-1, new JSONObject()));
-        addRow.addView(addIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        addRow.addView(add, addParams);
-        container.addView(addRow);
-
-        TextView header = new TextView(this);
-        header.setText(R.string.advanced_source);
-        header.setTextColor(resolveColor(android.R.attr.colorAccent));
-        header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        header.setPadding(dp(16), dp(24), dp(16), dp(4));
-        container.addView(header);
-
-        TextView source = new TextView(this);
-        source.setText(edit.advancedVcard);
-        source.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-        source.setTypeface(android.graphics.Typeface.MONOSPACE);
-        source.setTextSize(12);
-        source.setPadding(dp(16), 0, dp(16), dp(12));
-        source.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        source.setOnClickListener(view -> openSource());
-        container.addView(source);
-    }
-
-    /** A tappable property row: the name over the whole raw line. */
-    private View propertyRow(String title, String line, Runnable onClick) {
-        TextView titleView = new TextView(this);
-        titleView.setText(title);
-        titleView.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-        titleView.setTextSize(15);
-
-        TextView lineView = new TextView(this);
-        lineView.setText(line);
-        lineView.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-        lineView.setTypeface(android.graphics.Typeface.MONOSPACE);
-        lineView.setTextSize(12);
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
-        row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-        row.setOnClickListener(view -> onClick.run());
-        row.addView(titleView);
-        row.addView(lineView);
-        return row;
-    }
-
-    /**
-     * Edits one property as a structured form: its name, one row per
-     * parameter (name and comma-separated values, an emptied name
-     * drops the parameter), a closing accent row to add one, and the
-     * raw value. OK recomposes through the bridge, Remove drops the
-     * whole property.
-     */
-    private void advancedDialog(int index, JSONObject prop) {
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(16), dp(8), dp(16), 0);
-
-        android.widget.AutoCompleteTextView name =
-                registryField(R.string.advanced_prop_name, prop.optString("name"), KNOWN_PROPS);
-        name.setInputType(
-                android.text.InputType.TYPE_CLASS_TEXT
-                        | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-        content.addView(name);
-
-        LinearLayout params = new LinearLayout(this);
-        params.setOrientation(LinearLayout.VERTICAL);
-        org.json.JSONArray existing = prop.optJSONArray("params");
-        for (int at = 0; existing != null && at < existing.length(); at++) {
-            JSONObject param = existing.optJSONObject(at);
-            org.json.JSONArray values = param.optJSONArray("values");
-            List<String> parts = new ArrayList<>();
-            for (int v = 0; values != null && v < values.length(); v++) {
-                parts.add(values.optString(v));
-            }
-            params.addView(paramRow(param.optString("name"), String.join(",", parts)));
-        }
-        content.addView(params);
-
-        TextView addParam = new TextView(this);
-        addParam.setText(R.string.advanced_add_param);
-        addParam.setTextColor(resolveColor(android.R.attr.colorAccent));
-        addParam.setTextSize(14);
-        addParam.setPadding(0, dp(8), 0, dp(8));
-        addParam.setOnClickListener(view -> params.addView(paramRow("", "")));
-        content.addView(addParam);
-
-        // The value area shapes itself from the property name: one
-        // labeled field per component of a structured value, or one raw field.
-        LinearLayout valueArea = new LinearLayout(this);
-        valueArea.setOrientation(LinearLayout.VERTICAL);
-        buildValueArea(valueArea, prop.optString("name"), prop);
-        name.addTextChangedListener(
-                new android.text.TextWatcher() {
-                    @Override
-                    public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-
-                    @Override
-                    public void onTextChanged(CharSequence s, int a, int b, int c) {}
-
-                    @Override
-                    public void afterTextChanged(android.text.Editable s) {
-                        buildValueArea(valueArea, s.toString(), prop);
-                    }
-                });
-        content.addView(valueArea);
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(content);
-
-        AlertDialog.Builder builder =
-                new AlertDialog.Builder(this)
-                        .setTitle(
-                                index < 0
-                                        ? getString(R.string.advanced_add)
-                                        : prop.optString("name"))
-                        .setView(scroll)
-                        .setPositiveButton(
-                                android.R.string.ok,
-                                (dialog, which) ->
-                                        applyAdvancedParts(
-                                                index, collectProp(name, params, valueArea)))
-                        .setNegativeButton(android.R.string.cancel, null);
-        if (index >= 0) {
-            builder.setNeutralButton(
-                    R.string.remove_row,
-                    (dialog, which) -> applyAdvancedRaw(index, ""));
-        }
-        builder.show();
-    }
-
-    /** RFC 6350 property names, proposed by the advanced editor. */
-    private static final String[] KNOWN_PROPS = {
-        "ADR", "ANNIVERSARY", "BDAY", "CALADRURI", "CALURI", "CATEGORIES",
-        "CLIENTPIDMAP", "EMAIL", "FBURL", "FN", "GENDER", "GEO", "IMPP",
-        "KEY", "KIND", "LANG", "LOGO", "MEMBER", "N", "NICKNAME", "NOTE",
-        "ORG", "PHOTO", "PRODID", "RELATED", "REV", "ROLE", "SOUND",
-        "SOURCE", "TEL", "TITLE", "TZ", "UID", "URL", "VERSION", "XML",
-    };
-
-    /** RFC 6350 parameter names, proposed by the advanced editor. */
-    private static final String[] KNOWN_PARAMS = {
-        "ALTID", "CALSCALE", "GEO", "LABEL", "LANGUAGE", "MEDIATYPE",
-        "PID", "PREF", "SORT-AS", "TYPE", "TZ", "VALUE",
-    };
-
-    /** RFC 6350 TYPE values (general, TEL and RELATED registries). */
-    private static final String[] TYPE_VALUES = {
-        "home", "work", "cell", "fax", "voice", "video", "pager", "text",
-        "textphone", "contact", "acquaintance", "friend", "met",
-        "co-worker", "colleague", "co-resident", "neighbor", "child",
-        "parent", "sibling", "spouse", "kin", "muse", "crush", "date",
-        "sweetheart", "me", "agent", "emergency",
-    };
-
-    /** RFC 6350 VALUE kinds. */
-    private static final String[] VALUE_KINDS = {
-        "text", "uri", "date", "time", "date-time", "date-and-or-time",
-        "timestamp", "boolean", "integer", "float", "utc-offset",
-        "language-tag",
-    };
-
-    /** The known values of a parameter, empty when free-form. */
-    private static String[] paramValues(String param) {
-        switch (param.trim().toUpperCase(java.util.Locale.ROOT)) {
-            case "TYPE":
-                return TYPE_VALUES;
-            case "VALUE":
-                return VALUE_KINDS;
-            case "CALSCALE":
-                return new String[] {"gregorian"};
-            default:
-                return new String[0];
-        }
-    }
-
-    /** A free-text field proposing the given registry as a dropdown. */
-    private android.widget.AutoCompleteTextView registryField(
-            int hint, String text, String[] registry) {
-        android.widget.AutoCompleteTextView field =
-                new android.widget.AutoCompleteTextView(this);
-        field.setHint(hint);
-        field.setText(text);
-        field.setThreshold(1);
-        field.setAdapter(
-                new android.widget.ArrayAdapter<>(
-                        this, android.R.layout.simple_dropdown_item_1line, registry));
-        // NOTE: a first tap only focuses (the click fires on the second),
-        // so focus gain opens the dropdown too.
-        field.setOnClickListener(view -> field.showDropDown());
-        field.setOnFocusChangeListener(
-                (view, focused) -> {
-                    if (focused) {
-                        field.post(field::showDropDown);
-                    }
-                });
-        return field;
-    }
-
-    private LinearLayout paramRow(String name, String values) {
-        android.widget.AutoCompleteTextView nameField =
-                registryField(R.string.advanced_param_name, name, KNOWN_PARAMS);
-        nameField.setInputType(
-                android.text.InputType.TYPE_CLASS_TEXT
-                        | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-
-        // The values complete per comma-separated token, against the
-        // named parameter's registry (TYPE, VALUE, CALSCALE).
-        android.widget.MultiAutoCompleteTextView valuesField =
-                new android.widget.MultiAutoCompleteTextView(this);
-        valuesField.setHint(R.string.advanced_param_values);
-        valuesField.setText(values);
-        valuesField.setThreshold(1);
-        valuesField.setTokenizer(
-                new android.widget.MultiAutoCompleteTextView.CommaTokenizer());
-        valuesField.setOnClickListener(view -> valuesField.showDropDown());
-        valuesField.setOnFocusChangeListener(
-                (view, focused) -> {
-                    if (focused) {
-                        valuesField.post(valuesField::showDropDown);
-                    }
-                });
-        Runnable retune =
-                () ->
-                        valuesField.setAdapter(
-                                new android.widget.ArrayAdapter<>(
-                                        this,
-                                        android.R.layout.simple_dropdown_item_1line,
-                                        paramValues(nameField.getText().toString())));
-        retune.run();
-        nameField.addTextChangedListener(
-                new android.text.TextWatcher() {
-                    @Override
-                    public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-
-                    @Override
-                    public void onTextChanged(CharSequence s, int a, int b, int c) {}
-
-                    @Override
-                    public void afterTextChanged(android.text.Editable s) {
-                        retune.run();
-                    }
-                });
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setBaselineAligned(false);
-        row.addView(
-                nameField,
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        row.addView(
-                valuesField,
-                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2));
-        return row;
-    }
-
-    /**
-     * Shapes the dialog's value area from the property name: one
-     * labeled field per component of a structured value (the labels
-     * from the bridge, mirroring the vcard-rs value types), or one raw
-     * monospace field. Only rebuilt when the shape actually changes,
-     * so typing in the fields survives name keystrokes.
-     */
-    private void buildValueArea(LinearLayout area, String propName, JSONObject prop) {
-        List<String> labels = new ArrayList<>();
-        try {
-            org.json.JSONArray found = Cards.cardPropLabels(propName.trim());
-            for (int index = 0; found != null && index < found.length(); index++) {
-                labels.add(found.optString(index));
-            }
-        } catch (Exception ignored) {
-            // NOTE: an unreadable registry just leaves the raw field.
-        }
-
-        String shape = String.join("\u001F", labels);
-        if (shape.equals(area.getTag())) {
-            return;
-        }
-        area.setTag(shape);
-        area.removeAllViews();
-
-        if (labels.isEmpty()) {
-            EditText value = new EditText(this);
-            value.setHint(R.string.advanced_value);
-            value.setText(prop.optString("value"));
-            value.setTypeface(android.graphics.Typeface.MONOSPACE);
-            value.setInputType(
-                    android.text.InputType.TYPE_CLASS_TEXT
-                            | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-            area.addView(value);
-            return;
-        }
-
-        org.json.JSONArray existing = prop.optJSONArray("components");
-        for (int index = 0; index < labels.size(); index++) {
-            EditText component = new EditText(this);
-            component.setHint(labels.get(index));
-            if (existing != null && index < existing.length()) {
-                component.setText(existing.optJSONObject(index).optString("value"));
-            }
-            area.addView(component);
-        }
-    }
-
-    /** The structured property the dialog's fields describe. */
-    private static JSONObject collectProp(
-            EditText name, LinearLayout params, LinearLayout valueArea) {
-        try {
-            org.json.JSONArray collected = new org.json.JSONArray();
-            for (int index = 0; index < params.getChildCount(); index++) {
-                LinearLayout row = (LinearLayout) params.getChildAt(index);
-                String paramName =
-                        ((EditText) row.getChildAt(0)).getText().toString().trim();
-                if (paramName.isEmpty()) {
-                    continue;
-                }
-                org.json.JSONArray values = new org.json.JSONArray();
-                for (String part :
-                        ((EditText) row.getChildAt(1)).getText().toString().split(",")) {
-                    if (!part.trim().isEmpty()) {
-                        values.put(part.trim());
-                    }
-                }
-                collected.put(
-                        new JSONObject().put("name", paramName).put("values", values));
-            }
-
-            JSONObject prop =
-                    new JSONObject()
-                            .put("name", name.getText().toString().trim())
-                            .put("params", collected);
-
-            String shape = (String) valueArea.getTag();
-            if (shape == null || shape.isEmpty()) {
-                prop.put("value", ((EditText) valueArea.getChildAt(0)).getText().toString());
-            } else {
-                String[] labels = shape.split("\u001F", -1);
-                org.json.JSONArray components = new org.json.JSONArray();
-                for (int index = 0; index < valueArea.getChildCount(); index++) {
-                    components.put(
-                            new JSONObject()
-                                    .put("name", labels[index])
-                                    .put(
-                                            "value",
-                                            ((EditText) valueArea.getChildAt(index))
-                                                    .getText()
-                                                    .toString()));
-                }
-                prop.put("components", components);
-            }
-            return prop;
-        } catch (JSONException error) {
-            throw new IllegalStateException(error);
-        }
-    }
-
-    private void applyAdvancedParts(int index, JSONObject prop) {
-        try {
-            edit.advancedVcard = Cards.cardSetPropParts(edit.advancedVcard, index, prop);
-            edit.advancedDirty = true;
-            renderAdvanced();
-        } catch (Exception error) {
-            showError(error, R.string.advanced_invalid);
-        }
-    }
-
-    /** A raw rewrite: only removal uses it (a blank line drops). */
-    private void applyAdvancedRaw(int index, String line) {
-        try {
-            edit.advancedVcard = Cards.cardSetProp(edit.advancedVcard, index, line);
-            edit.advancedDirty = true;
-            renderAdvanced();
-        } catch (Exception error) {
-            showError(error, R.string.advanced_invalid);
-        }
-    }
-
-    /** The advanced editor's second level: the free-hand source. */
-    private void openSource() {
-        ((EditText) findViewById(R.id.source_input)).setText(edit.advancedVcard);
-        show(PANEL_SOURCE);
-    }
-
-    /** Applies the hand-edited source (it must reparse) and returns. */
-    private void applySource() {
-        try {
-            edit.advancedVcard =
-                    Cards.cardSource(
-                            ((EditText) findViewById(R.id.source_input)).getText().toString());
-            edit.advancedDirty = true;
-            renderAdvanced();
-        } catch (Exception error) {
-            showError(error, R.string.advanced_invalid);
-            return;
-        }
-        showBack(PANEL_ADVANCED);
+        advancedEditor.open();
     }
 
     /**
@@ -2440,238 +1490,19 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Applies the addressbooks dialog's desired state on save: staged
-     * memberships, copies (carrying the just-saved content), removals.
-     */
-    private void applyBookState(String vcard) {
-        Map<String, Boolean> desired = edit.pendingBookState;
-        edit.pendingBookState = null;
-        if (desired == null) {
-            return;
-        }
-
-        Map<String, Entry> replicaByBook = new HashMap<>();
-        for (Entry entry : edit.replicas) {
-            replicaByBook.put(entry.book.url, entry);
-        }
-
-        for (BookEntry target : base.loadSubscribedAddressbooks()) {
-            Boolean wanted = desired.get(target.book.url);
-            if (wanted == null || wanted == replicaByBook.containsKey(target.book.url)) {
-                continue;
-            }
-            AccountEntry account = accountFor(target.accountEmail);
-            if (account == null) {
-                continue;
-            }
-
-            if (wanted) {
-                addToBook(target, account, vcard);
-            } else {
-                removeFromBook(target, replicaByBook);
-            }
-        }
-    }
-
-    /**
-     * Adds the contact to an addressbook: a staged membership when the
-     * contact already has a card on that account-level backend, a
-     * copied card sharing the vCard UID anywhere else.
-     */
-    private void addToBook(BookEntry target, AccountEntry account, String vcard) {
-        if (CardamumClient.isAccountLevel(account.account)) {
-            for (Entry entry : edit.replicas) {
-                if (entry.accountEmail.equals(target.accountEmail)) {
-                    base.stageMembership(
-                            entry.accountEmail,
-                            ContactPool.cardKey(account.account, entry.book.url, entry.card.id),
-                            target.book.url,
-                            true);
-                    return;
-                }
-            }
-        }
-
-        String uid = cardIndex(vcard).optString("uid");
-        String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
-        createCopy(target, account, id, vcard);
-    }
-
-    /**
-     * Removes the contact from an addressbook: a staged membership
-     * removal when its card keeps other books, a staged delete of the
-     * card otherwise.
-     */
-    private void removeFromBook(BookEntry target, Map<String, Entry> replicaByBook) {
-        Entry replica = replicaByBook.get(target.book.url);
-        if (replica == null) {
-            return;
-        }
-        AccountEntry owner = accountFor(replica.accountEmail);
-        if (owner == null) {
-            return;
-        }
-        String replicaKey = ContactPool.cardKey(owner.account, replica.book.url, replica.card.id);
-
-        if (CardamumClient.isAccountLevel(owner.account)
-                && base.loadMemberships(replica.accountEmail, replicaKey).size() > 1) {
-            base.stageMembership(replica.accountEmail, replicaKey, target.book.url, false);
-        } else {
-            // Last place of this card, so the card itself goes.
-            base.markDeleted(replica.accountEmail, replicaKey, replica.card);
-        }
-    }
-
-    /**
-     * Stages the edited contact in the base (offline first: nothing
-     * touches the network until the next sync pushes it) and returns to
-     * the list. The form model applies to every replica's own document
-     * (docs/merged-view.md): each keeps its UID and unmanaged
-     * properties while the managed content converges; replicas already
-     * carrying the resulting content are skipped.
+     * Stages the edited contact in the base and returns to the list
+     * (delegated to {@link ContactWriter}). The form model applies to
+     * every replica's own document (docs/merged-view.md), fanning out
+     * onto every replica, conflict and merge branches included.
      */
     private void saveContact() {
-        String birthday = form.birthday();
-        if (!birthday.isEmpty() && !birthday.matches("\\d{4}-\\d{2}-\\d{2}")) {
-            toast(getString(R.string.invalid_birthday));
-            return;
-        }
-        String anniversary = form.anniversary();
-        if (!anniversary.isEmpty() && !anniversary.matches("\\d{4}-\\d{2}-\\d{2}")) {
-            toast(getString(R.string.invalid_anniversary));
-            return;
-        }
-
-        try {
-            JSONObject model = form.collect();
-
-            if (edit.card == null) {
-                AccountEntry account = accountFor(edit.accountEmail);
-                if (account == null) {
-                    // The account was deleted while the editor was open.
-                    toast(getString(R.string.save_failed));
-                    return;
-                }
-                String source = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
-                String vcard = Cards.applyCard(source, model);
-                String uid = cardIndex(vcard).optString("uid");
-                String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
-                base.saveLocal(
-                        edit.accountEmail,
-                        ContactPool.cardKey(account.account, edit.book.url, id),
-                        edit.book.url,
-                        new Card(id, null, null, vcard));
-            } else if (edit.resolvingConflict) {
-                saveConflictResolution(model);
-            } else if (edit.mergeSurvivor != null) {
-                saveMerge(model);
-            } else {
-                saveFanOut(model);
-            }
-
-            // The copies carry the just-saved content.
-            if (edit.card != null && edit.pendingBookState != null) {
-                applyBookState(Cards.applyCard(edit.card.vcard, model));
-            }
-        } catch (Exception error) {
-            showError(error, R.string.save_failed);
-            return;
-        }
-
-        reloadContacts();
-        showBack(PANEL_CONTACTS);
-    }
-
-    /**
-     * The fan-out save: the form model applies to every card's own
-     * document, each staged through the engine (editing a conflicted
-     * replica resolves it).
-     */
-    private void saveFanOut(JSONObject model) throws JSONException {
-        OfflineEngine engine = new OfflineEngine(base, client, null, null);
-        java.util.Set<String> staged = new java.util.HashSet<>();
-
-        for (Entry entry : edit.replicas) {
-            // NOTE: an m:n replica appears once per book; stage it once.
-            if (!staged.add(pool.replicaRef(entry))) {
-                continue;
-            }
-
-            // NOTE: a raw edit must stage even when the managed-content
-            // hash is unchanged, so the advanced document stands in.
-            String source = edit.advancedVcard != null ? edit.advancedVcard : entry.card.vcard;
-            String vcard = Cards.applyCard(source, model);
-            if (!edit.advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
-                continue;
-            }
-            engine.mutateEdit(
-                    entry.book.url,
-                    CardStore.rowHandle(entry.book.url, entry.card.uri, entry.card.id),
-                    vcard);
-        }
-    }
-
-    /**
-     * The conflict-resolution save: the form's picks apply onto the
-     * captured three-way merge (so remote's non-conflicting changes and
-     * unmanaged data survive), staged onto the one conflicted replica.
-     * Editing the conflicted placement resolves it in the engine, and the
-     * next sync pushes it guarded on the observed remote revision.
-     */
-    private void saveConflictResolution(JSONObject model) throws JSONException {
-        Entry replica = edit.replicas.get(0);
-        String resolved = Cards.applyCard(edit.vcard, model);
-        new OfflineEngine(base, client, null, null)
-                .mutateEdit(
-                        replica.book.url,
-                        CardStore.rowHandle(replica.book.url, replica.card.uri, replica.card.id),
-                        resolved);
-    }
-
-    /**
-     * The merge save: the form model applies to the surviving card and
-     * every other card behind the form stages a delete.
-     */
-    private void saveMerge(JSONObject model) throws JSONException {
-        Entry survivor = edit.mergeSurvivor;
-        edit.mergeSurvivor = null;
-
-        String vcard = Cards.applyCard(survivor.card.vcard, model);
-        if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
-            new OfflineEngine(base, client, null, null)
-                    .mutateEdit(
-                            survivor.book.url,
-                            CardStore.rowHandle(
-                                    survivor.book.url, survivor.card.uri, survivor.card.id),
-                            vcard);
-        }
-
-        String survivorRef = pool.replicaRef(survivor);
-        java.util.Set<String> removed = new java.util.HashSet<>();
-        for (Entry entry : edit.replicas) {
-            String ref = pool.replicaRef(entry);
-            if (ref.equals(survivorRef) || !removed.add(ref)) {
-                continue;
-            }
-            AccountEntry owner = accountFor(entry.accountEmail);
-            if (owner == null) {
-                continue;
-            }
-            base.markDeleted(
-                    entry.accountEmail,
-                    ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
-                    entry.card);
-        }
-
-        toast(getString(R.string.merge_done));
+        writer.save();
     }
 
     /** Rebuilds the contacts list from the base (staged edits included). */
     void reloadContacts() {
         contactsList.reload();
     }
-
-    // vCard helpers
 
     private static String newVcard() {
         return "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:" + UUID.randomUUID() + "\r\nEND:VCARD\r\n";
@@ -2682,7 +1513,7 @@ public class MainActivity extends Activity {
      * the hot paths read the same index from the store's columns
      * instead. Empty on a parse failure.
      */
-    private JSONObject cardIndex(String vcard) {
+    JSONObject cardIndex(String vcard) {
         try {
             return Cards.indexCard(vcard);
         } catch (Exception error) {
@@ -2691,15 +1522,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    // Utils
-
     /** Navigates forward: the panels slide in from the right. */
-    private void show(int panel) {
+    void show(int panel) {
         show(panel, false);
     }
 
     /** Navigates back: the panels slide in from the left. */
-    private void showBack(int panel) {
+    void showBack(int panel) {
         show(panel, true);
     }
 
@@ -2724,7 +1553,7 @@ public class MainActivity extends Activity {
      * current screen with a fade and a slight zoom. What is underneath
      * stays put.
      */
-    private void openOverlay(int panel) {
+    void openOverlay(int panel) {
         hideKeyboard();
         View overlay = overlayOf(panel);
         overlay.setVisibility(View.VISIBLE);
@@ -2735,7 +1564,7 @@ public class MainActivity extends Activity {
     }
 
     /** Fades the overlay back out (zooming slightly away), then hides it. */
-    private void closeOverlay(int panel) {
+    void closeOverlay(int panel) {
         hideKeyboard();
         View overlay = overlayOf(panel);
         android.view.animation.Animation exit =
@@ -2850,8 +1679,8 @@ public class MainActivity extends Activity {
                     findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
                     findViewById(R.id.fab).setVisibility(View.GONE);
                 };
-        advanced.barBack = this::closeAdvanced;
-        advanced.systemBack = this::closeAdvanced;
+        advanced.barBack = advancedEditor::close;
+        advanced.systemBack = advancedEditor::close;
         screens.put(PANEL_ADVANCED, advanced);
 
         Screen source = new Screen();
@@ -2864,7 +1693,7 @@ public class MainActivity extends Activity {
                     fab.setContentDescription(getString(R.string.contact_save));
                     fab.setVisibility(View.VISIBLE);
                 };
-        source.fab = this::applySource;
+        source.fab = advancedEditor::applySource;
         source.barBack = () -> showBack(PANEL_ADVANCED);
         source.systemBack = () -> showBack(PANEL_ADVANCED);
         screens.put(PANEL_SOURCE, source);
@@ -2891,7 +1720,7 @@ public class MainActivity extends Activity {
         // NOTE: the settings overlay draws above the drawer where the
         // shared FAB cannot follow, so it carries its own save FAB.
         account.chrome = () -> findViewById(R.id.fab).setVisibility(View.GONE);
-        account.fab = this::saveAccountSettings;
+        account.fab = accountSettings::save;
         screens.put(PANEL_ACCOUNT, account);
     }
 
@@ -2900,7 +1729,7 @@ public class MainActivity extends Activity {
      * chrome element goes off, then the screen's own set comes back
      * (the contacts screen delegates to its selection/search state).
      */
-    private void applyChrome(int panel) {
+    void applyChrome(int panel) {
         android.widget.ImageButton fab = findViewById(R.id.fab);
 
         // Every screen change resets the shared FAB to its plain enabled
@@ -2968,7 +1797,7 @@ public class MainActivity extends Activity {
     }
 
     /** Resolves a theme colour attribute to an ARGB int. */
-    private int resolveColor(int attr) {
+    int resolveColor(int attr) {
         return ui.resolveColor(attr);
     }
 
@@ -3032,7 +1861,7 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private int dp(int value) {
+    int dp(int value) {
         return ui.dp(value);
     }
 

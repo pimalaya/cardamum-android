@@ -6,7 +6,7 @@ The Google Play build holds the whole app behind an active subscription; the FOS
 
 ## Where it lives
 
-- `Billing.enforce(Activity)` is called once at launch from `MainActivity`. The FOSS binding is a no-op; the Google binding (`src/google`) enforces the gate. All billing code, the paywall, and the entitlement cache live in the `google` source set, so no other variant sees Google code.
+- `Billing.enforce(Activity)` is called once at launch from `MainActivity`. The FOSS binding is a no-op; the Google binding (src/google) enforces the gate. All billing code, the paywall, and the entitlement cache live in the `google` source set, so no other variant sees Google code.
 - The check is client-side. Play purchases are signed by Google, so this is trustworthy on a normal device but not piracy-proof; that is fine, because the same app is freely available from GitHub CI and F-Droid.
 
 ## The offline model: cache plus grace window

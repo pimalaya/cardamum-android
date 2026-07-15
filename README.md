@@ -52,8 +52,8 @@
 | [CardDAV service discovery][rfc6764] and [PACC][pacc] | Locating the addressbook home from an email address or a bare domain |
 | [JMAP][rfc8620] and [JMAP for Contacts][rfc9610] | Contact synchronization against JMAP servers such as Fastmail |
 | [OAuth 2.0][rfc6749] and [dynamic client registration][rfc7591] | Signing in without a provider console, next to the shipped Google and Microsoft clients |
-| Microsoft Graph | Contact synchronization against Outlook and Microsoft 365 |
-| Google People API | Contact synchronization against Google accounts |
+| [Microsoft Graph][msgraph] | Contact synchronization against Outlook and Microsoft 365 |
+| [Google People API][people] | Contact synchronization against Google accounts |
 
 [rfc6350]: https://www.rfc-editor.org/rfc/rfc6350
 [rfc6352]: https://www.rfc-editor.org/rfc/rfc6352
@@ -63,6 +63,8 @@
 [rfc8620]: https://www.rfc-editor.org/rfc/rfc8620
 [rfc9610]: https://www.rfc-editor.org/rfc/rfc9610
 [pacc]: https://datatracker.ietf.org/doc/html/draft-ietf-mailmaint-pacc
+[msgraph]: https://learn.microsoft.com/en-us/graph/api/resources/contact
+[people]: https://developers.google.com/people
 
 ## Installation
 

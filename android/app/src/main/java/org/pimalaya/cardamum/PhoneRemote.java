@@ -13,6 +13,7 @@ import android.provider.ContactsContract;
 import android.provider.ContactsContract.Data;
 import android.provider.ContactsContract.Groups;
 import android.provider.ContactsContract.RawContacts;
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -44,6 +45,9 @@ final class PhoneRemote {
     /** The store's io-offline seam (the row reads behind the fetch). */
     private final OfflineStore offline;
 
+    /** The store's phone-spoke seam (the phone base behind the fetch). */
+    private final OfflinePhoneStore offlinePhone;
+
     /** Raw contact row ids by handle, primed by the pass's enumerate. */
     private final Map<String, Long> rawIds = new HashMap<>();
 
@@ -51,6 +55,7 @@ final class PhoneRemote {
         this.context = context;
         this.base = base;
         this.offline = new OfflineStore(base);
+        this.offlinePhone = new OfflinePhoneStore(base);
     }
 
     /**
@@ -274,8 +279,7 @@ final class PhoneRemote {
                     taken.append(taken.length() == 0 ? "" : ", ").append(field);
                 }
             }
-            android.util.Log.d(
-                    "cardamum", "phone edit on " + handle + " (fields: " + taken + ")");
+            Log.d("cardamum", "phone edit on " + handle + " (fields: " + taken + ")");
         }
 
         // NOTE: stamp the row clean so it stops enumerating as pending;
@@ -335,7 +339,7 @@ final class PhoneRemote {
                         break;
                 }
             } catch (Exception failure) {
-                android.util.Log.w("cardamum", "phone push failed for " + handle, failure);
+                Log.w("cardamum", "phone push failed for " + handle, failure);
                 results.put(result(handle, false, null, null));
             }
         }
@@ -540,7 +544,7 @@ final class PhoneRemote {
         JSONObject row = offline.loadRow(url, handle);
         String held = null;
         if (row != null) {
-            held = offline.loadPhoneBase(url, handle);
+            held = offlinePhone.loadBase(url, handle);
             if (held == null) {
                 // NOTE: never converged but the hub holds it; its own vCard
                 // is the closest base, healing a lost axis without dropping

@@ -118,12 +118,11 @@ pub fn push_plan(facts: &Value) -> Result<Value, String> {
 
             let mut plan = Map::new();
             plan.insert("action".into(), "create".into());
-            if backend == Backend::Google {
-                if let Some(book_id) = book_id {
-                    if book_id != "myContacts" {
-                        plan.insert("postCreateBooks".into(), json!([book_id]));
-                    }
-                }
+            if backend == Backend::Google
+                && let Some(book_id) = book_id
+                && book_id != "myContacts"
+            {
+                plan.insert("postCreateBooks".into(), json!([book_id]));
             }
             Ok(Value::Object(plan))
         }
@@ -304,10 +303,8 @@ pub fn phone_placement(facts: &Value) -> Result<Option<Value>, String> {
         if let Some(revision) = phone_revision {
             base.insert("revision".into(), revision.into());
         }
-        if !phone_stale {
-            if let Some(phone_base) = phone_base {
-                base.insert("object".into(), byte_hash(phone_base).into());
-            }
+        if !phone_stale && let Some(phone_base) = phone_base {
+            base.insert("object".into(), byte_hash(phone_base).into());
         }
         placement.insert("base".into(), Value::Object(base));
     }
@@ -375,10 +372,10 @@ pub fn upsert_plan(facts: &Value) -> Result<Value, String> {
         row.insert("etag".into(), revision.into());
     }
 
-    if let Some(base_object) = facts.get("baseObjectHash").and_then(Value::as_str) {
-        if base_object != byte_hash(vcard) {
-            row.insert("baseVcardHash".into(), base_object.into());
-        }
+    if let Some(base_object) = facts.get("baseObjectHash").and_then(Value::as_str)
+        && base_object != byte_hash(vcard)
+    {
+        row.insert("baseVcardHash".into(), base_object.into());
     }
 
     match status {
@@ -468,10 +465,10 @@ pub fn phone_upsert_plan(facts: &Value) -> Result<Value, String> {
         (!bool_field(facts, "objectPresent") && existing.is_some_and(|held| !held.is_empty()))
             .into(),
     );
-    if status == "conflict" {
-        if let Some(revision) = facts.get("conflictRevision").and_then(Value::as_str) {
-            axis.insert("phoneConflict".into(), revision.into());
-        }
+    if status == "conflict"
+        && let Some(revision) = facts.get("conflictRevision").and_then(Value::as_str)
+    {
+        axis.insert("phoneConflict".into(), revision.into());
     }
     plan.insert("axis".into(), Value::Object(axis));
 

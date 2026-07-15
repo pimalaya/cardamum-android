@@ -244,8 +244,6 @@ public class CardamumClient {
         }
     }
 
-    // Account base URLs and backend info.
-
     /**
      * Google's CardDAV principal root for the email; the standard
      * PROPFIND discovery runs from there.
@@ -319,8 +317,6 @@ public class CardamumClient {
         return infos.computeIfAbsent(
                 url == null ? "" : url, key -> object(Native.accountInfo(key)));
     }
-
-    // Addressbook and card operations.
 
     /**
      * Lists the account's addressbooks: the CardDAV discovery walk,
@@ -645,8 +641,6 @@ public class CardamumClient {
             transport.close();
         }
     }
-
-    // Bridge reply parsing.
 
     /** Serializes a book id list for the bridge. */
     private static String books(List<String> ids) {

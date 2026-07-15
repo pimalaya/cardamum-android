@@ -60,6 +60,9 @@ final class OfflineEngine implements OfflineDriver {
     /** The store's io-offline seam (placements, writes, conflicts). */
     private final OfflineStore offline;
 
+    /** The store's phone-spoke seam (quiet-path guard counts). */
+    private final OfflinePhoneStore offlinePhone;
+
     private final CardamumClient client;
     private final Account account;
 
@@ -179,6 +182,7 @@ final class OfflineEngine implements OfflineDriver {
     OfflineEngine(CardStore base, CardamumClient client, Account account, Context context) {
         this.base = base;
         this.offline = new OfflineStore(base);
+        this.offlinePhone = new OfflinePhoneStore(base);
         this.client = client;
         this.account = account;
         this.phone = context == null ? null : new PhoneRemote(context, base);
@@ -264,8 +268,8 @@ final class OfflineEngine implements OfflineDriver {
             // nothing. ContactsContract has no per-account changes token,
             // so three cheap counts stand in for one.
             if (!phone.changed(url)
-                    && !offline.phonePending(url)
-                    && phone.count(url) == offline.phoneMemberCount(url)) {
+                    && !offlinePhone.pending(url)
+                    && phone.count(url) == offlinePhone.memberCount(url)) {
                 return;
             }
 

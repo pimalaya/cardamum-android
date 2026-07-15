@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -116,7 +117,7 @@ public class CardStore extends SQLiteOpenHelper {
             values.put("uid", index.optString("uid"));
             values.put("hash", index.optString("hash"));
         } catch (Exception error) {
-            android.util.Log.w("cardamum", "card index failed", error);
+            Log.w("cardamum", "card index failed", error);
             values.put("name", "");
             values.put("email", "");
             values.put("phone", "");

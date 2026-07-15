@@ -13,7 +13,7 @@ Everything below documents only what differs from the Pimalaya standards.
 
 ## Development environment
 
-The development environment is managed by [Nix flakes](https://nixos.wiki/wiki/Flakes). Running `nix develop` spawns a shell with everything pinned: a Rust toolchain carrying the four Android ABI targets (read from `rust-toolchain.toml`), `cargo-ndk`, the Android SDK and NDK, JDK 17, Gradle and `jdt-language-server`.
+The development environment is managed by [Nix flakes](https://nixos.wiki/wiki/Flakes). Running `nix develop` spawns a shell with everything pinned: a Rust toolchain carrying the four Android ABI targets (read from rust-toolchain.toml), `cargo-ndk`, the Android SDK and NDK, JDK 17, Gradle and `jdt-language-server`.
 
 If you do not want to use Nix, provide these yourself: the Android SDK (platform 34, build-tools 34.0.0) and NDK r26, JDK 17, Gradle, plus a Rust toolchain (>= `v1.87`) with the `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android` and `i686-linux-android` targets and `cargo-ndk`.
 
@@ -35,7 +35,7 @@ cd android
 gradle assembleRelease
 ```
 
-`gradle` first cross-compiles the Rust bridge for the four ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`) via cargo-ndk into `client/src/main/jniLibs`, then assembles the APKs. The release build emits one APK per ABI plus a universal one under `app/build/outputs/apk/release/`. For a quick install on your own device, `gradle assembleDebug` produces a ready-to-sideload `app/build/outputs/apk/debug/app-debug.apk`.
+`gradle` first cross-compiles the Rust bridge for the four ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`) via cargo-ndk into client/src/main/jniLibs, then assembles the APKs. The release build emits one APK per ABI plus a universal one under app/build/outputs/apk/release/. For a quick install on your own device, `gradle assembleDebug` produces a ready-to-sideload app/build/outputs/apk/debug/app-debug.apk.
 
 To iterate on the Rust bridge alone: `cd rust && cargo build`.
 

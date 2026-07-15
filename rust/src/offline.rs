@@ -14,6 +14,7 @@
 //! seam, and the engine only ever compares them.
 
 use core::fmt::Display;
+
 use std::collections::BTreeMap;
 
 use io_offline::{
@@ -33,7 +34,7 @@ use jni::{
     objects::{JObject, JString},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Value, from_str, json};
 
 use crate::{client::clear_and_fail, types::BridgeError};
 
@@ -87,7 +88,7 @@ pub fn mutate<'local>(
     mutation: &str,
 ) -> Result<(), BridgeError> {
     let mutation: MutationJson =
-        serde_json::from_str(mutation).map_err(|err| format!("Invalid mutation: {err}"))?;
+        from_str(mutation).map_err(|err| format!("Invalid mutation: {err}"))?;
     Driver::new(env, driver).run(OfflineMutate::new(collection, mutation.into()))
 }
 
@@ -198,7 +199,7 @@ fn yield_json(yielded: &OfflineYield) -> String {
 /// surfacing here is what triggers the token refresh upstairs).
 fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeError> {
     let probe: ErrorJson =
-        serde_json::from_str(reply).map_err(|err| format!("Unreadable driver reply: {err}"))?;
+        from_str(reply).map_err(|err| format!("Unreadable driver reply: {err}"))?;
     if let Some(error) = probe.error {
         return Err(BridgeError {
             message: error,
@@ -286,7 +287,7 @@ fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeEr
 }
 
 fn parse<'de, T: Deserialize<'de>>(reply: &'de str) -> Result<T, String> {
-    serde_json::from_str(reply).map_err(|err| format!("Unreadable driver reply: {err}"))
+    from_str(reply).map_err(|err| format!("Unreadable driver reply: {err}"))
 }
 
 /// Checkpoints are opaque bytes to the engine; every token this app

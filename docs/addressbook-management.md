@@ -9,7 +9,7 @@ The app can list addressbooks and toggle their subscription, but it cannot creat
 - `CardStore.removeAccount`: drop a whole account and every book under it.
 - The home drawer (`MainActivity.reloadHome`) lists books grouped by account, each row a subscription checkbox; long-pressing an account **header** confirms account deletion.
 
-There is no per-addressbook mutation at any layer: not in `CardStore`, not in `CardamumClient` / `Native`, and not in the Rust bridge (`rust/src/client.rs` exposes `list_addressbooks` plus card CRUD only).
+There is no per-addressbook mutation at any layer: not in `CardStore`, not in `CardamumClient` / `Native`, and not in the Rust bridge (rust/src/client.rs exposes `list_addressbooks` plus card CRUD only).
 
 ## What a create / rename / delete would take
 
@@ -24,5 +24,5 @@ Each needs: the protocol coroutine in the relevant io-* crate, a Rust bridge met
 
 ## Desired UI, when the backend lands
 
-- FAB in the home drawer opens a dropdown: "Create account" (primary text tone) and "Create addressbook" (secondary tone), mirroring the sync dropdown (`menu_sync.xml`).
+- FAB in the home drawer opens a dropdown: "Create account" (primary text tone) and "Create addressbook" (secondary tone), mirroring the sync dropdown (menu_sync.xml).
 - Long-press on an addressbook row opens a dialog to rename it, or to delete it; delete triggers a second confirm dialog, like `confirmDeleteAccount`.

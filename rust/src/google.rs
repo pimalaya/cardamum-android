@@ -13,6 +13,7 @@
 //! lists, so every vCard property projects without truncation.
 
 use core::str::FromStr;
+
 use std::borrow::Cow;
 
 use io_google_people::v1::rest::people::{

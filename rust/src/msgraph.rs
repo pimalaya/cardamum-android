@@ -16,6 +16,7 @@
 //! nulls the Outlook backend rejects with HTTP 500.
 
 use core::str::FromStr;
+
 use std::borrow::Cow;
 
 use io_msgraph::v1::{

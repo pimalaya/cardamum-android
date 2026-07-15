@@ -7,7 +7,7 @@
 
 use std::{borrow::Cow, collections::BTreeMap, str::FromStr};
 
-use rand::seq::IndexedRandom;
+use rand::{rng, seq::IndexedRandom};
 
 use io_oauth::{
     rfc6749::{
@@ -22,6 +22,7 @@ use serde::{
     Deserialize,
     de::value::{Error as DeserializeError, StrDeserializer},
 };
+use serde_json::from_str;
 use url::Url;
 
 /// Builds the RFC 6749 §4.1.1 authorization URL with PKCE (S256) and
@@ -53,7 +54,7 @@ pub fn authorize_url(
     let extras: BTreeMap<String, String> = if extras.is_empty() {
         BTreeMap::new()
     } else {
-        serde_json::from_str(extras).map_err(|err| format!("Invalid OAuth extras JSON: {err}"))?
+        from_str(extras).map_err(|err| format!("Invalid OAuth extras JSON: {err}"))?
     };
 
     let params = Oauth20AuthRequestParams {
@@ -129,7 +130,7 @@ const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 
 /// One cryptographically random alphanumeric string of the given size.
 fn random_string(size: usize) -> String {
-    let mut rng = rand::rng();
+    let mut rng = rng();
 
     (0..size)
         .map(|_| *ALPHANUMERIC.choose(&mut rng).expect("non-empty charset") as char)
