@@ -168,49 +168,14 @@ public class MainActivity extends Activity {
     private boolean selectionMode;
     private final java.util.Set<String> selectedKeys = new java.util.HashSet<>();
 
-    /** The card open in the editor (null card means composing a new one). */
-    private Addressbook editingBook;
-    private String editingAccountEmail;
-    private Card editingCard;
-
-    /** The vCard the editor patches: the card's, or a fresh template. */
-    private String editingVcard;
-
-    /** The merged group's replicas behind the editor; saving fans out. */
-    private List<Entry> editingReplicas = new ArrayList<>();
-
-    /** The replica the Merge action keeps; every other card is removed. */
-    private Entry mergeSurvivor;
-
-    /** The addressbooks dialog's desired state, applied on save. */
-    private Map<String, Boolean> pendingBookState;
+    /** The editor's working state, replaced blank when it leaves. */
+    private EditSession edit = new EditSession();
 
     /** Whether the contacts screen's in-bar search field is open. */
     private boolean searchOpen;
 
-    /** The editor's bar title (the shared bar is retitled per screen). */
-    private CharSequence editingTitle = "";
-
-    /** Whether the open contact offers the advanced raw editor. */
-    private boolean advancedAvailable;
-
-    /** Whether the open contact loaded in conflict-resolution mode (the
-     *  form shows only diverging fields), which hides the add-field FAB
-     *  since new fields cannot show under the conflict filter. */
-
-    /** Whether the editor is resolving a both-sides-edited sync conflict:
-     *  the form's picks apply onto the captured three-way merge
-     *  (editingVcard) and stage onto the one conflicted replica. */
-    private boolean resolvingConflict;
-
     /** The screen currently shown: a flipper panel, or an overlay. */
     private int screen = PANEL_CONTACTS;
-
-    /** The advanced editor's working document; null until it opens. */
-    private String advancedVcard;
-
-    /** Set by a raw edit: staging must not skip on an unchanged hash. */
-    private boolean advancedDirty;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -1666,18 +1631,14 @@ public class MainActivity extends Activity {
             return;
         }
 
-        editingBook = replica.book;
-        editingAccountEmail = replica.accountEmail;
-        editingCard = replica.card;
-        editingReplicas = new ArrayList<>(java.util.Collections.singletonList(replica));
-        mergeSurvivor = null;
-        pendingBookState = null;
-        advancedVcard = null;
-        advancedDirty = false;
-        resolvingConflict = true;
-        editingVcard = resolution.optString("vcard");
-        editingTitle = replica.displayName();
-        advancedAvailable = false;
+        edit = new EditSession();
+        edit.book = replica.book;
+        edit.accountEmail = replica.accountEmail;
+        edit.card = replica.card;
+        edit.replicas = new ArrayList<>(java.util.Collections.singletonList(replica));
+        edit.resolvingConflict = true;
+        edit.vcard = resolution.optString("vcard");
+        edit.title = replica.displayName();
 
         org.json.JSONArray changed = resolution.optJSONArray("changed");
         if (changed == null) {
@@ -2241,7 +2202,7 @@ public class MainActivity extends Activity {
     private void openMergeForm(List<Entry> replicas, Entry survivor) {
         exitSelection();
         if (openMerged(replicas)) {
-            mergeSurvivor = survivor;
+            edit.mergeSurvivor = survivor;
         }
     }
 
@@ -2537,19 +2498,12 @@ public class MainActivity extends Activity {
 
     /** Opens the edit form on a fresh card in the target addressbook. */
     private void openNewContact(Addressbook book, String accountEmail) {
-        editingBook = book;
-        editingAccountEmail = accountEmail;
-        editingCard = null;
-        editingReplicas = new ArrayList<>();
-        mergeSurvivor = null;
-        pendingBookState = null;
-        advancedVcard = null;
-        advancedDirty = false;
-        editingVcard = newVcard();
-
-        editingTitle = getString(R.string.contact_new);
-        advancedAvailable = true;
-        resolvingConflict = false;
+        edit = new EditSession();
+        edit.book = book;
+        edit.accountEmail = accountEmail;
+        edit.vcard = newVcard();
+        edit.title = getString(R.string.contact_new);
+        edit.advancedAvailable = true;
 
         form.load(null, null, null);
         show(PANEL_CONTACT);
@@ -2563,15 +2517,11 @@ public class MainActivity extends Activity {
      */
     boolean openMerged(List<Entry> replicas) {
         Entry primary = replicas.get(0);
-        editingBook = primary.book;
-        editingAccountEmail = primary.accountEmail;
-        editingCard = primary.card;
-        editingReplicas = new ArrayList<>(replicas);
-        mergeSurvivor = null;
-        pendingBookState = null;
-        advancedVcard = null;
-        advancedDirty = false;
-        resolvingConflict = false;
+        edit = new EditSession();
+        edit.book = primary.book;
+        edit.accountEmail = primary.accountEmail;
+        edit.card = primary.card;
+        edit.replicas = new ArrayList<>(replicas);
 
         // The distinct documents behind the group: one per normalized
         // content hash. One document means a plain edit; several go
@@ -2589,11 +2539,11 @@ public class MainActivity extends Activity {
         org.json.JSONArray changed = null;
         try {
             if (docs.size() == 1) {
-                editingVcard = primary.card.vcard;
+                edit.vcard = primary.card.vcard;
                 model = client.projectCard(primary.card);
             } else {
                 JSONObject merged = client.mergeCards(docs);
-                editingVcard = merged.optString("vcard");
+                edit.vcard = merged.optString("vcard");
                 model = merged.optJSONObject("model");
                 alternatives = merged.optJSONObject("alternatives");
                 // A non-null changed set turns on the form's conflict
@@ -2608,10 +2558,10 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        editingTitle = primary.displayName();
+        edit.title = primary.displayName();
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
-        advancedAvailable = pool.distinctRefs(replicas).size() == 1;
+        edit.advancedAvailable = pool.distinctRefs(replicas).size() == 1;
 
         // A non-null changed set means the union merge diverged: the
         // form opens in conflict mode, the same full editor with the
@@ -2632,11 +2582,7 @@ public class MainActivity extends Activity {
      * An unsaved Merge is abandoned.
      */
     private void closeContact() {
-        mergeSurvivor = null;
-        pendingBookState = null;
-        advancedVcard = null;
-        advancedDirty = false;
-        resolvingConflict = false;
+        edit = new EditSession();
         reloadContacts();
         showBack(PANEL_CONTACTS);
     }
@@ -2651,8 +2597,8 @@ public class MainActivity extends Activity {
      */
     private void openAdvanced() {
         try {
-            String working = advancedVcard != null ? advancedVcard : editingVcard;
-            advancedVcard = client.applyCard(working, form.collect());
+            String working = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
+            edit.advancedVcard = client.applyCard(working, form.collect());
             renderAdvanced();
         } catch (Exception error) {
             showError(error, R.string.contact_open_failed);
@@ -2664,7 +2610,7 @@ public class MainActivity extends Activity {
     /** Back to the form, rebuilt from the edited document. */
     private void closeAdvanced() {
         try {
-            form.load(client.projectCard(advancedVcard), null, null);
+            form.load(client.projectCard(edit.advancedVcard), null, null);
         } catch (Exception error) {
             showError(error, R.string.contact_open_failed);
         }
@@ -2676,7 +2622,7 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.advanced_container);
         container.removeAllViews();
 
-        org.json.JSONArray props = client.cardProps(advancedVcard);
+        org.json.JSONArray props = client.cardProps(edit.advancedVcard);
         for (int index = 0; props != null && index < props.length(); index++) {
             int at = index;
             JSONObject prop = props.optJSONObject(index);
@@ -2723,7 +2669,7 @@ public class MainActivity extends Activity {
 
         // Tapping the source block opens the free-hand source editor.
         TextView source = new TextView(this);
-        source.setText(advancedVcard);
+        source.setText(edit.advancedVcard);
         source.setTextColor(resolveColor(android.R.attr.textColorSecondary));
         source.setTypeface(android.graphics.Typeface.MONOSPACE);
         source.setTextSize(12);
@@ -3070,8 +3016,8 @@ public class MainActivity extends Activity {
 
     private void applyAdvancedParts(int index, JSONObject prop) {
         try {
-            advancedVcard = client.cardSetPropParts(advancedVcard, index, prop);
-            advancedDirty = true;
+            edit.advancedVcard = client.cardSetPropParts(edit.advancedVcard, index, prop);
+            edit.advancedDirty = true;
             renderAdvanced();
         } catch (Exception error) {
             showError(error, R.string.advanced_invalid);
@@ -3081,8 +3027,8 @@ public class MainActivity extends Activity {
     /** A raw rewrite: only removal uses it (a blank line drops). */
     private void applyAdvancedRaw(int index, String line) {
         try {
-            advancedVcard = client.cardSetProp(advancedVcard, index, line);
-            advancedDirty = true;
+            edit.advancedVcard = client.cardSetProp(edit.advancedVcard, index, line);
+            edit.advancedDirty = true;
             renderAdvanced();
         } catch (Exception error) {
             showError(error, R.string.advanced_invalid);
@@ -3091,17 +3037,17 @@ public class MainActivity extends Activity {
 
     /** The advanced editor's second level: the free-hand source. */
     private void openSource() {
-        ((EditText) findViewById(R.id.source_input)).setText(advancedVcard);
+        ((EditText) findViewById(R.id.source_input)).setText(edit.advancedVcard);
         show(PANEL_SOURCE);
     }
 
     /** Applies the hand-edited source (it must reparse) and returns. */
     private void applySource() {
         try {
-            advancedVcard =
+            edit.advancedVcard =
                     client.cardSource(
                             ((EditText) findViewById(R.id.source_input)).getText().toString());
-            advancedDirty = true;
+            edit.advancedDirty = true;
             renderAdvanced();
         } catch (Exception error) {
             showError(error, R.string.advanced_invalid);
@@ -3123,12 +3069,12 @@ public class MainActivity extends Activity {
      * the card's staged delete on uncheck.
      */
     private void manageBooks() {
-        if (editingReplicas.isEmpty()) {
+        if (edit.replicas.isEmpty()) {
             return;
         }
 
         Map<String, Entry> replicaByBook = new HashMap<>();
-        for (Entry entry : editingReplicas) {
+        for (Entry entry : edit.replicas) {
             replicaByBook.put(entry.book.url, entry);
         }
 
@@ -3143,7 +3089,7 @@ public class MainActivity extends Activity {
         boolean[] checked = new boolean[books.size()];
         for (int index = 0; index < books.size(); index++) {
             String url = books.get(index).book.url;
-            Boolean pending = pendingBookState == null ? null : pendingBookState.get(url);
+            Boolean pending = edit.pendingBookState == null ? null : edit.pendingBookState.get(url);
             checked[index] = pending != null ? pending : replicaByBook.containsKey(url);
         }
 
@@ -3156,15 +3102,15 @@ public class MainActivity extends Activity {
                 .setPositiveButton(
                         android.R.string.ok,
                         (dialog, which) -> {
-                            pendingBookState = new HashMap<>();
+                            edit.pendingBookState = new HashMap<>();
                             boolean anyChecked = false;
                             for (int index = 0; index < books.size(); index++) {
-                                pendingBookState.put(books.get(index).book.url, checked[index]);
+                                edit.pendingBookState.put(books.get(index).book.url, checked[index]);
                                 anyChecked |= checked[index];
                             }
                             // No addressbook checked: the contact is
                             // unattached, kept only in the hidden local book.
-                            pendingBookState.put(LocalBook.URL, !anyChecked);
+                            edit.pendingBookState.put(LocalBook.URL, !anyChecked);
                         })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
@@ -3175,14 +3121,14 @@ public class MainActivity extends Activity {
      * memberships, copies (carrying the just-saved content), removals.
      */
     private void applyBookState(String vcard) {
-        Map<String, Boolean> desired = pendingBookState;
-        pendingBookState = null;
+        Map<String, Boolean> desired = edit.pendingBookState;
+        edit.pendingBookState = null;
         if (desired == null) {
             return;
         }
 
         Map<String, Entry> replicaByBook = new HashMap<>();
-        for (Entry entry : editingReplicas) {
+        for (Entry entry : edit.replicas) {
             replicaByBook.put(entry.book.url, entry);
         }
 
@@ -3211,7 +3157,7 @@ public class MainActivity extends Activity {
      */
     private void addToBook(BookEntry target, AccountEntry account, String vcard) {
         if (CardamumClient.isAccountLevel(account.account)) {
-            for (Entry entry : editingReplicas) {
+            for (Entry entry : edit.replicas) {
                 if (entry.accountEmail.equals(target.accountEmail)) {
                     base.stageMembership(
                             entry.accountEmail,
@@ -3277,25 +3223,25 @@ public class MainActivity extends Activity {
         try {
             JSONObject model = form.collect();
 
-            if (editingCard == null) {
-                AccountEntry account = accountFor(editingAccountEmail);
+            if (edit.card == null) {
+                AccountEntry account = accountFor(edit.accountEmail);
                 if (account == null) {
                     // The account was deleted while the editor was open.
                     toast(getString(R.string.save_failed));
                     return;
                 }
-                String source = advancedVcard != null ? advancedVcard : editingVcard;
+                String source = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
                 String vcard = client.applyCard(source, model);
                 String uid = cardIndex(vcard).optString("uid");
                 String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
                 base.saveLocal(
-                        editingAccountEmail,
-                        ContactPool.cardKey(account.account, editingBook.url, id),
-                        editingBook.url,
+                        edit.accountEmail,
+                        ContactPool.cardKey(account.account, edit.book.url, id),
+                        edit.book.url,
                         new Card(id, null, null, vcard));
-            } else if (resolvingConflict) {
+            } else if (edit.resolvingConflict) {
                 saveConflictResolution(model);
-            } else if (mergeSurvivor != null) {
+            } else if (edit.mergeSurvivor != null) {
                 saveMerge(model);
             } else {
                 saveFanOut(model);
@@ -3303,8 +3249,8 @@ public class MainActivity extends Activity {
 
             // The addressbooks dialog's choices apply here too, the
             // copies carrying the just-saved content.
-            if (editingCard != null && pendingBookState != null) {
-                applyBookState(client.applyCard(editingCard.vcard, model));
+            if (edit.card != null && edit.pendingBookState != null) {
+                applyBookState(client.applyCard(edit.card.vcard, model));
             }
         } catch (Exception error) {
             showError(error, R.string.save_failed);
@@ -3324,7 +3270,7 @@ public class MainActivity extends Activity {
         OfflineEngine engine = new OfflineEngine(base, client, null, null);
         java.util.Set<String> staged = new java.util.HashSet<>();
 
-        for (Entry entry : editingReplicas) {
+        for (Entry entry : edit.replicas) {
             // An m:n replica appears once per book; stage it once.
             if (!staged.add(pool.replicaRef(entry))) {
                 continue;
@@ -3333,9 +3279,9 @@ public class MainActivity extends Activity {
             // The advanced editor only opens on single-card contacts,
             // so its document stands in for the card's; a raw edit must
             // stage even when the managed-content hash is unchanged.
-            String source = advancedVcard != null ? advancedVcard : entry.card.vcard;
+            String source = edit.advancedVcard != null ? edit.advancedVcard : entry.card.vcard;
             String vcard = client.applyCard(source, model);
-            if (!advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
+            if (!edit.advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
                 continue;
             }
             engine.mutateEdit(
@@ -3353,8 +3299,8 @@ public class MainActivity extends Activity {
      * next sync pushes it guarded on the observed remote revision.
      */
     private void saveConflictResolution(JSONObject model) throws JSONException {
-        Entry replica = editingReplicas.get(0);
-        String resolved = client.applyCard(editingVcard, model);
+        Entry replica = edit.replicas.get(0);
+        String resolved = client.applyCard(edit.vcard, model);
         new OfflineEngine(base, client, null, null)
                 .mutateEdit(
                         replica.book.url,
@@ -3367,8 +3313,8 @@ public class MainActivity extends Activity {
      * every other card behind the form stages a delete.
      */
     private void saveMerge(JSONObject model) throws JSONException {
-        Entry survivor = mergeSurvivor;
-        mergeSurvivor = null;
+        Entry survivor = edit.mergeSurvivor;
+        edit.mergeSurvivor = null;
 
         String vcard = client.applyCard(survivor.card.vcard, model);
         if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
@@ -3382,7 +3328,7 @@ public class MainActivity extends Activity {
 
         String survivorRef = pool.replicaRef(survivor);
         java.util.Set<String> removed = new java.util.HashSet<>();
-        for (Entry entry : editingReplicas) {
+        for (Entry entry : edit.replicas) {
             String ref = pool.replicaRef(entry);
             if (ref.equals(survivorRef) || !removed.add(ref)) {
                 continue;
@@ -3586,14 +3532,14 @@ public class MainActivity extends Activity {
                 updateSelectionUi();
                 break;
             case PANEL_CONTACT:
-                title.setText(editingTitle);
+                title.setText(edit.title);
                 findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
                 // Placing the contact in addressbooks needs a real account
                 // to target; with only the local book, or while resolving a
                 // conflict, the button hides.
                 findViewById(R.id.contact_books)
                         .setVisibility(
-                                editingCard != null && hasRealAccount() && !resolvingConflict
+                                edit.card != null && hasRealAccount() && !edit.resolvingConflict
                                         ? View.VISIBLE
                                         : View.GONE);
                 // Add-field lives in the bar, in conflict mode like in a
