@@ -131,8 +131,11 @@ final class ContactForm {
     /** Notified after every render so the host can re-gate its save. */
     private Runnable onRender;
 
+    private final Ui ui;
+
     ContactForm(Activity activity, CardamumClient client) {
         this.activity = activity;
+        this.ui = new Ui(activity);
         this.client = client;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
@@ -1623,21 +1626,14 @@ final class ContactForm {
     }
 
     private int resolveAttr(int attr) {
-        TypedValue value = new TypedValue();
-        activity.getTheme().resolveAttribute(attr, value, true);
-        return value.resourceId;
+        return ui.resolveAttr(attr);
     }
 
     private int resolveColor(int attr) {
-        TypedValue value = new TypedValue();
-        activity.getTheme().resolveAttribute(attr, value, true);
-        if (value.resourceId != 0) {
-            return activity.getResources().getColor(value.resourceId, activity.getTheme());
-        }
-        return value.data;
+        return ui.resolveColor(attr);
     }
 
     private int dp(int value) {
-        return (int) (value * activity.getResources().getDisplayMetrics().density);
+        return ui.dp(value);
     }
 }
