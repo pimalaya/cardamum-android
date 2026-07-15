@@ -89,6 +89,28 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric needs the manifest and resources to build its
+            // simulated Android environment for the store/engine tests.
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+// The engine-level unit tests load the real Rust bridge: cargo builds
+// libcardamum.so for the host, and the test JVM's library path points at
+// it, so the :client Native class binds against the same code the app
+// ships (needs cargo on the PATH, which the nix devshell provides).
+val cargoHostBuild = tasks.register<Exec>("cargoHostBuild") {
+    workingDir = file("../../rust")
+    commandLine("cargo", "build")
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(cargoHostBuild)
+    systemProperty("java.library.path", file("../../rust/target/debug").absolutePath)
 }
 
 dependencies {
@@ -121,4 +143,10 @@ dependencies {
     // host JVM.
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+
+    // Robolectric backs the engine-level tests with a real Android
+    // runtime on the host JVM: the SQLite store and the framework pieces
+    // CardStore and OfflineEngine touch, combined with the real Rust
+    // bridge loaded from the host cargo build (see cargoHostBuild).
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

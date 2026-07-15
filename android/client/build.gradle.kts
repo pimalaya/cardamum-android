@@ -29,6 +29,14 @@ android {
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
 }
 
+dependencies {
+    // JVM-only test dependencies (nothing ships in the AAR). The
+    // org.json artifact stands in for the android.jar stubs so the
+    // reply parsing runs on the host JVM, like in :app.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}
+
 // Cross-compiles the Rust bridge for every ABI and drops each
 // libcardamum.so into jniLibs. Runs before the Android build so the
 // .so is always in sync with the bridge source.

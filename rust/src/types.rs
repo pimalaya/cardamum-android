@@ -41,6 +41,29 @@ impl From<&str> for BridgeError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::BridgeError;
+
+    #[test]
+    fn bridge_error_serializes_the_wire_shape() {
+        let plain: BridgeError = "Invalid URL".into();
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"error":"Invalid URL"}"#,
+        );
+
+        let http = BridgeError {
+            message: "WebDAV server returned HTTP 412".into(),
+            status: Some(412),
+        };
+        assert_eq!(
+            serde_json::to_string(&http).unwrap(),
+            r#"{"error":"WebDAV server returned HTTP 412","status":412}"#,
+        );
+    }
+}
+
 /// Borrowed account credentials threaded through one connection. An
 /// empty login means the password field carries an OAuth 2.0 access
 /// token, authenticated as Bearer instead of Basic.

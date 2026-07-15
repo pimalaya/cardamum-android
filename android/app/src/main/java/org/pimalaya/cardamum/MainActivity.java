@@ -140,6 +140,7 @@ public class MainActivity extends Activity {
 
     private SecureStore store;
     private CardStore base;
+    private SyncRunner runner;
     private ViewFlipper flipper;
     private ViewFlipper authFlipper;
     private ContactForm form;
@@ -312,6 +313,7 @@ public class MainActivity extends Activity {
 
         store = new SecureStore(this);
         base = new CardStore(this);
+        runner = new SyncRunner(this, base, store, client, syncObserver());
         flipper = findViewById(R.id.flipper);
         authFlipper = findViewById(R.id.auth_flipper);
         form = new ContactForm(this, client);
@@ -2770,35 +2772,32 @@ public class MainActivity extends Activity {
     // ---- Sync -----------------------------------------------------------------
 
     /**
-     * Outcome of a remote sync pass: what was pulled from the server,
-     * pushed to it, merged on the phone axis, and left conflicted awaiting
-     * the user's manual resolution, plus the first failure.
+     * The runner's hooks into this activity's presentation: the loader
+     * dialog's title and detail lines, and the in-memory account cache
+     * a token refresh must keep current (mutated on the main thread the
+     * drawer reads it from).
      */
-    private static final class SyncOutcome {
-        final java.util.Set<String> localIn = new java.util.HashSet<>();
-        final java.util.Set<String> localOut = new java.util.HashSet<>();
-        final java.util.Set<String> localChanged = new java.util.HashSet<>();
-        final java.util.Set<String> remoteIn = new java.util.HashSet<>();
-        final java.util.Set<String> remoteOut = new java.util.HashSet<>();
-        final java.util.Set<String> remoteChanged = new java.util.HashSet<>();
-        int conflicts;
+    private SyncRunner.Observer syncObserver() {
+        return new SyncRunner.Observer() {
+            @Override
+            public void bookStarted(BookEntry book) {
+                syncTitle(book.book.name);
+            }
 
-        /** Whether any synced book mirrors into the phone's Contacts
-         *  app, which is what earns the report its Local line. */
-        boolean local;
+            @Override
+            public void step(int stage, int count) {
+                syncStep(stage, count);
+            }
 
-        Exception failure;
-
-        /** Folds one book's report in; the sets dedupe across passes. */
-        void absorb(OfflineEngine.Report report) {
-            localIn.addAll(report.localIn);
-            localOut.addAll(report.localOut);
-            localChanged.addAll(report.localChanged);
-            remoteIn.addAll(report.remoteIn);
-            remoteOut.addAll(report.remoteOut);
-            remoteChanged.addAll(report.remoteChanged);
-            conflicts += report.conflicts;
-        }
+            @Override
+            public void accountRefreshed(AccountEntry updated) {
+                main.post(
+                        () -> {
+                            accounts.removeIf(entry -> entry.email.equals(updated.email));
+                            accounts.add(updated);
+                        });
+            }
+        };
     }
 
     /**
@@ -2909,7 +2908,7 @@ public class MainActivity extends Activity {
 
         io.execute(
                 () -> {
-                    SyncOutcome outcome = runRemoteSync();
+                    SyncRunner.Outcome outcome = runner.syncRemote();
                     postAlive(
                             () -> {
                                 setSyncing(false);
@@ -2917,75 +2916,6 @@ public class MainActivity extends Activity {
                                 reportSync(outcome);
                             });
                 });
-    }
-
-    /** The remote sync pass itself, off the main thread. */
-    private SyncOutcome runRemoteSync() {
-        SyncOutcome outcome = new SyncOutcome();
-
-        // Self-heal: an account whose addressbooks are missing from
-        // the base (a schema rebuild dropped them) gets them
-        // re-fetched, all-subscribed, so the sync has something to
-        // walk again.
-        java.util.Set<String> known = new java.util.HashSet<>();
-        for (BookEntry entry : base.loadAllAddressbooks()) {
-            known.add(entry.accountEmail);
-        }
-        for (AccountEntry account : new ArrayList<>(accounts)) {
-            // The local account has no server to list; its book is seeded
-            // on launch, so it never needs recovery.
-            if (LocalBook.is(account.email) || known.contains(account.email)) {
-                continue;
-            }
-            try {
-                base.replaceAddressbooks(
-                        account.email, client.listAddressbooks(account.account));
-            } catch (Exception error) {
-                Log.w("cardamum", "addressbook recovery failed", error);
-            }
-        }
-
-        Map<String, List<BookEntry>> byAccount = new java.util.LinkedHashMap<>();
-        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-            byAccount
-                    .computeIfAbsent(entry.accountEmail, email -> new ArrayList<>())
-                    .add(entry);
-        }
-
-        for (Map.Entry<String, List<BookEntry>> group : byAccount.entrySet()) {
-            // The local book has no server to reconcile against.
-            if (LocalBook.is(group.getKey())) {
-                continue;
-            }
-            AccountEntry account = accountFor(group.getKey());
-            if (account == null) {
-                continue;
-            }
-
-            try {
-                syncAccount(account.account, group.getValue(), outcome);
-            } catch (Exception error) {
-                // An expired OAuth access token: refresh it and retry
-                // the account once.
-                if (expiredToken(error) && account.refreshToken != null) {
-                    try {
-                        syncAccount(refreshAccount(account), group.getValue(), outcome);
-                        continue;
-                    } catch (Exception retryError) {
-                        error = retryError;
-                    }
-                }
-
-                // One account failing (revoked token, server down) must
-                // not block the others.
-                Log.w("cardamum", "sync failed for " + group.getKey(), error);
-                if (outcome.failure == null) {
-                    outcome.failure = error;
-                }
-            }
-        }
-
-        return outcome;
     }
 
     /**
@@ -2996,7 +2926,7 @@ public class MainActivity extends Activity {
      * wait for manual resolution. The background notification keeps both
      * axes on one card (SyncWorker.notifyReport).
      */
-    private void reportSync(SyncOutcome outcome) {
+    private void reportSync(SyncRunner.Outcome outcome) {
         if (outcome.failure != null) {
             // Offline fallback: the store of the last sync keeps failing
             // addressbooks usable.
@@ -3030,79 +2960,12 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One account's engine pass: every subscribed addressbook
-     * reconciles through io-offline (spine sync, body hydration,
-     * conflict resolution), sharing one driver so the account-level
-     * backends (JMAP, Google) list their cards once per pass.
-     */
-    private void syncAccount(Account acc, List<BookEntry> books, SyncOutcome outcome) {
-        OfflineEngine engine = new OfflineEngine(base, client, acc, this);
-        engine.progress = this::syncStep;
-
-        for (BookEntry entry : books) {
-            syncTitle(entry.book.name);
-            OfflineEngine.Report report;
-            try {
-                report = engine.syncBook(entry.book.url, entry.remoteSynced);
-            } catch (org.json.JSONException error) {
-                throw new IllegalStateException(error);
-            }
-            outcome.absorb(report);
-            outcome.local |= entry.phoneSynced;
-        }
-    }
-
-    /**
      * The replica's storage key (docs/merged-view.md): the bare server
      * id on account-level backends, the collection-scoped key on
      * per-collection ones.
      */
     private static String cardKey(Account account, String bookUrl, String id) {
         return CardamumClient.isAccountLevel(account) ? id : CardStore.key(bookUrl, id);
-    }
-
-    /**
-     * Refreshes an OAuth account's access token and re-persists the
-     * account, returning the fresh credentials. Providers may rotate
-     * the refresh token, so a reissued one replaces the stored one.
-     */
-    private Account refreshAccount(AccountEntry entry) {
-        OauthTokens tokens =
-                client.oauthRefresh(
-                        entry.tokenEndpoint,
-                        entry.clientId,
-                        entry.clientSecret,
-                        entry.refreshToken,
-                        null);
-
-        String refreshToken =
-                tokens.refreshToken != null ? tokens.refreshToken : entry.refreshToken;
-        Account fresh = new Account(entry.account.baseUrl, "", tokens.accessToken);
-        AccountEntry updated =
-                new AccountEntry(
-                        fresh,
-                        entry.email,
-                        refreshToken,
-                        entry.tokenEndpoint,
-                        entry.clientId,
-                        entry.clientSecret);
-
-        // The store write is synchronized; the in-memory cache is
-        // main-thread-owned (the drawer iterates it), and this runs on
-        // the io executor, so its mutation marshals over.
-        main.post(
-                () -> {
-                    accounts.removeIf(candidate -> candidate.email.equals(entry.email));
-                    accounts.add(updated);
-                });
-        store.add(updated);
-        return fresh;
-    }
-
-    /** True for an HTTP 401 from any backend (expired or revoked token). */
-    private static boolean expiredToken(Exception error) {
-        return error instanceof CardamumException
-                && Integer.valueOf(401).equals(((CardamumException) error).status);
     }
 
     /**
@@ -3122,11 +2985,11 @@ public class MainActivity extends Activity {
         setSyncing(true);
         io.execute(
                 () -> {
-                    SyncOutcome outcome = runRemoteSync();
+                    SyncRunner.Outcome outcome = runner.syncRemote();
                     OfflineEngine.Report report = new OfflineEngine.Report();
-                    Exception failure = runLocalSync(report);
+                    Exception failure = runner.syncLocal(report);
                     outcome.absorb(report);
-                    outcome.local |= !phoneSyncedBooks().isEmpty();
+                    outcome.local |= !runner.phoneSyncedBooks().isEmpty();
                     if (outcome.failure == null) {
                         outcome.failure = failure;
                     }
@@ -3166,7 +3029,7 @@ public class MainActivity extends Activity {
         io.execute(
                 () -> {
                     OfflineEngine.Report report = new OfflineEngine.Report();
-                    Exception failure = runLocalSync(report);
+                    Exception failure = runner.syncLocal(report);
                     postAlive(
                             () -> {
                                 setSyncing(false);
@@ -3185,43 +3048,9 @@ public class MainActivity extends Activity {
                 });
     }
 
-    /**
-     * Reconciles the per-addressbook Android accounts and runs one phone
-     * engine pass per phone-synced book, tallying into `report`. Returns
-     * a failure, or null.
-     */
-    private Exception runLocalSync(OfflineEngine.Report report) {
-        // Only the books set to mirror reach the phone; the local book
-        // rides here too when its phone switch is on.
-        List<BookEntry> phoneBooks = phoneSyncedBooks();
-
-        try {
-            // The full phone-synced set at once: reconcile purges the
-            // Android accounts of books no longer mirrored.
-            Accounts.reconcile(this, phoneBooks);
-
-            OfflineEngine engine = new OfflineEngine(base, client, null, this);
-            engine.progress = this::syncStep;
-            for (BookEntry entry : phoneBooks) {
-                syncTitle(entry.book.name);
-                engine.syncPhone(entry.book.url, report);
-            }
-        } catch (Exception error) {
-            return error;
-        }
-
-        return null;
-    }
-
     /** The subscribed addressbooks the user set to mirror into the phone's Contacts app. */
     private List<BookEntry> phoneSyncedBooks() {
-        List<BookEntry> phone = new ArrayList<>();
-        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-            if (entry.phoneSynced) {
-                phone.add(entry);
-            }
-        }
-        return phone;
+        return runner.phoneSyncedBooks();
     }
 
     /**

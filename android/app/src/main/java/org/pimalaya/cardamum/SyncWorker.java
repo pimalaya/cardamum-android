@@ -13,10 +13,7 @@ import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 import java.util.ArrayList;
 import java.util.List;
-import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.CardamumClient;
-import org.pimalaya.cardamum.client.CardamumException;
-import org.pimalaya.cardamum.client.OauthTokens;
 
 /**
  * One addressbook's background pass, scheduled by BackgroundSync at the
@@ -74,7 +71,9 @@ public class SyncWorker extends Worker {
         }
 
         try {
-            OfflineEngine.Report report = sync(context, base, book);
+            OfflineEngine.Report report =
+                    new SyncRunner(context, base, new SecureStore(context), new CardamumClient(), null)
+                            .syncBook(book);
             Log.w(
                     "cardamum",
                     "background sync done for " + url + ": remote " + report.remoteIn.size()
@@ -106,83 +105,6 @@ public class SyncWorker extends Worker {
             // backoff a few times, then wait for the next period.
             return getRunAttemptCount() < MAX_RUN_ATTEMPTS ? Result.retry() : Result.success();
         }
-    }
-
-    /**
-     * One book's engine pass. The local book has no server, so its pass
-     * is the phone spoke alone; a server book runs the full three-spoke
-     * pass with its account's stored credentials.
-     */
-    private OfflineEngine.Report sync(Context context, CardStore base, BookEntry book)
-            throws Exception {
-        CardamumClient client = new CardamumClient();
-        String url = book.book.url;
-
-        if (LocalBook.is(book.accountEmail)) {
-            OfflineEngine.Report report = new OfflineEngine.Report();
-            new OfflineEngine(base, client, null, context).syncPhone(url, report);
-            return report;
-        }
-
-        SecureStore store = new SecureStore(context);
-        AccountEntry entry = null;
-        for (AccountEntry candidate : store.loadAll()) {
-            if (candidate.email.equals(book.accountEmail)) {
-                entry = candidate;
-            }
-        }
-        if (entry == null) {
-            Log.w("cardamum", "no stored account for " + book.accountEmail + ", skipping");
-            return new OfflineEngine.Report();
-        }
-
-        try {
-            return new OfflineEngine(base, client, entry.account, context)
-                    .syncBook(url, book.remoteSynced);
-        } catch (Exception error) {
-            // An expired OAuth access token: refresh it, persist the
-            // rotated credentials, and retry the book once (the in-app
-            // sync does the same).
-            if (!expiredToken(error) || entry.refreshToken == null) {
-                throw error;
-            }
-            return new OfflineEngine(base, client, refresh(client, store, entry), context)
-                    .syncBook(url, book.remoteSynced);
-        }
-    }
-
-    /**
-     * Refreshes an OAuth account's access token and re-persists the
-     * account, returning the fresh credentials. Providers may rotate
-     * the refresh token, so a reissued one replaces the stored one.
-     */
-    private static Account refresh(CardamumClient client, SecureStore store, AccountEntry entry) {
-        OauthTokens tokens =
-                client.oauthRefresh(
-                        entry.tokenEndpoint,
-                        entry.clientId,
-                        entry.clientSecret,
-                        entry.refreshToken,
-                        null);
-
-        String refreshToken =
-                tokens.refreshToken != null ? tokens.refreshToken : entry.refreshToken;
-        Account fresh = new Account(entry.account.baseUrl, "", tokens.accessToken);
-        store.add(
-                new AccountEntry(
-                        fresh,
-                        entry.email,
-                        refreshToken,
-                        entry.tokenEndpoint,
-                        entry.clientId,
-                        entry.clientSecret));
-        return fresh;
-    }
-
-    /** True for an HTTP 401 from any backend (expired or revoked token). */
-    private static boolean expiredToken(Exception error) {
-        return error instanceof CardamumException
-                && Integer.valueOf(401).equals(((CardamumException) error).status);
     }
 
     /**
