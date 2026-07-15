@@ -56,6 +56,10 @@ final class OfflineEngine implements OfflineDriver {
             new ConcurrentHashMap<>();
 
     private final CardStore base;
+
+    /** The store's io-offline seam (placements, writes, conflicts). */
+    private final OfflineStore offline;
+
     private final CardamumClient client;
     private final Account account;
 
@@ -174,6 +178,7 @@ final class OfflineEngine implements OfflineDriver {
      */
     OfflineEngine(CardStore base, CardamumClient client, Account account, Context context) {
         this.base = base;
+        this.offline = new OfflineStore(base);
         this.client = client;
         this.account = account;
         this.phone = context == null ? null : new PhoneRemote(context, base);
@@ -220,7 +225,7 @@ final class OfflineEngine implements OfflineDriver {
         Log.d("cardamum", "server sync " + url + ": " + client.offlineSync(this, url, false));
         hydrate(url);
 
-        List<JSONObject> conflicts = base.loadConflicts(url);
+        List<JSONObject> conflicts = offline.loadConflicts(url);
         if (!conflicts.isEmpty()) {
             step(Progress.STAGE_RESOLVE, conflicts.size());
         }
@@ -262,8 +267,8 @@ final class OfflineEngine implements OfflineDriver {
             // ContactsContract has no per-account changes token to
             // compare instead.
             if (!phone.changed(url)
-                    && !base.phonePending(url)
-                    && phone.count(url) == base.phoneMemberCount(url)) {
+                    && !offline.phonePending(url)
+                    && phone.count(url) == offline.phoneMemberCount(url)) {
                 return;
             }
 
@@ -276,7 +281,7 @@ final class OfflineEngine implements OfflineDriver {
                     "phone sync " + url + ": " + client.offlineSync(this, collection, false));
             hydrate(collection);
 
-            List<JSONObject> conflicts = base.loadConflicts(collection);
+            List<JSONObject> conflicts = offline.loadConflicts(collection);
             if (!conflicts.isEmpty()) {
                 step(Progress.STAGE_RESOLVE, conflicts.size());
                 for (JSONObject conflict : conflicts) {
@@ -298,7 +303,7 @@ final class OfflineEngine implements OfflineDriver {
 
     /** Raises every bodiless or stale placement to its full body. */
     private void hydrate(String url) {
-        List<String> pending = base.handlesBelowFull(url);
+        List<String> pending = offline.handlesBelowFull(url);
         if (!pending.isEmpty()) {
             if (!CardStore.isPhoneCollection(url)) {
                 step(Progress.STAGE_DOWNLOAD, pending.size());
@@ -329,7 +334,7 @@ final class OfflineEngine implements OfflineDriver {
         // this read's etag breaks backends whose read etag differs from the
         // list etag (Google People API), so the push guards on a foreign
         // revision and the server rejects it.
-        base.setConflictRemote(url, handle, remote.vcard);
+        offline.setConflictRemote(url, handle, remote.vcard);
 
         // The base falls back to the local body when it was never
         // captured (a create collision): the local side then reads as
@@ -370,7 +375,7 @@ final class OfflineEngine implements OfflineDriver {
                         remote.getString("body"));
 
         if (!remote.isNull("revision")) {
-            base.setConflictRevision(collection, handle, remote.getString("revision"));
+            offline.setConflictRevision(collection, handle, remote.getString("revision"));
         }
         mutateEdit(collection, handle, merged);
     }
@@ -398,11 +403,11 @@ final class OfflineEngine implements OfflineDriver {
             JSONObject yielded = new JSONObject(yieldJson);
             switch (yielded.getString("op")) {
                 case "load":
-                    return base.loadCollection(yielded.getString("collection")).toString();
+                    return offline.loadCollection(yielded.getString("collection")).toString();
                 case "lookup":
-                    return base.lookupObjects(yielded.getJSONArray("links")).toString();
+                    return offline.lookupObjects(yielded.getJSONArray("links")).toString();
                 case "write":
-                    JSONArray effects = base.applyWrites(yielded.getJSONArray("writes"));
+                    JSONArray effects = offline.applyWrites(yielded.getJSONArray("writes"));
                     for (int index = 0; tally != null && index < effects.length(); index++) {
                         JSONObject effect = effects.getJSONObject(index);
                         tally.tally(
@@ -484,7 +489,7 @@ final class OfflineEngine implements OfflineDriver {
                             .put("books", new JSONArray(card.books))
                             .put(
                                     "known",
-                                    !delta.complete && base.loadRow(url, card.uri) != null));
+                                    !delta.complete && offline.loadRow(url, card.uri) != null));
         }
         JSONObject facts = new JSONObject();
         facts.put("bookId", bookId(url));
@@ -745,7 +750,7 @@ final class OfflineEngine implements OfflineDriver {
             String handle = change.getString("handle");
 
             if ("add".equals(op)) {
-                JSONObject row = base.loadRow(url, handle);
+                JSONObject row = offline.loadRow(url, handle);
                 if (row == null) {
                     results[index] = result(handle, false, null, null);
                     continue;
@@ -761,7 +766,7 @@ final class OfflineEngine implements OfflineDriver {
                 createVcards.add(row.getString("vcard"));
                 createBooks.add(plan.optJSONArray("postCreateBooks"));
             } else if ("remove".equals(op)) {
-                JSONObject row = base.loadRow(url, handle);
+                JSONObject row = offline.loadRow(url, handle);
                 if (row == null) {
                     results[index] = result(handle, true, null, null);
                     continue;
@@ -834,7 +839,7 @@ final class OfflineEngine implements OfflineDriver {
             String handle = change.getString("handle");
 
             if ("add".equals(op)) {
-                JSONObject row = base.loadRow(url, handle);
+                JSONObject row = offline.loadRow(url, handle);
                 if (row == null) {
                     results[index] = result(handle, false, null, null);
                     continue;
@@ -853,7 +858,7 @@ final class OfflineEngine implements OfflineDriver {
                 indexByRef.put(handle, index);
                 batch.put(item);
             } else if ("update".equals(op)) {
-                JSONObject row = base.loadRow(url, handle);
+                JSONObject row = offline.loadRow(url, handle);
                 if (row == null) {
                     results[index] = result(handle, false, null, null);
                     continue;
@@ -869,7 +874,7 @@ final class OfflineEngine implements OfflineDriver {
                 indexByRef.put(handle, index);
                 batch.put(item);
             } else if ("remove".equals(op)) {
-                JSONObject row = base.loadRow(url, handle);
+                JSONObject row = offline.loadRow(url, handle);
                 if (row == null) {
                     results[index] = result(handle, true, null, null);
                     continue;
@@ -990,7 +995,7 @@ final class OfflineEngine implements OfflineDriver {
      */
     private JSONObject pushAdd(String url, JSONObject change) throws JSONException {
         String handle = change.getString("handle");
-        JSONObject row = base.loadRow(url, handle);
+        JSONObject row = offline.loadRow(url, handle);
         if (row == null) {
             return result(handle, false, null, null);
         }
@@ -1017,7 +1022,7 @@ final class OfflineEngine implements OfflineDriver {
     private JSONObject pushUpdate(String url, JSONObject change) throws JSONException {
         String handle = change.getString("handle");
         String ifMatch = change.isNull("ifMatch") ? null : change.getString("ifMatch");
-        JSONObject row = base.loadRow(url, handle);
+        JSONObject row = offline.loadRow(url, handle);
         if (row == null) {
             return result(handle, false, null, null);
         }
@@ -1063,7 +1068,7 @@ final class OfflineEngine implements OfflineDriver {
     private JSONObject pushRemove(String url, JSONObject change) throws JSONException {
         String handle = change.getString("handle");
         String ifMatch = change.isNull("ifMatch") ? null : change.getString("ifMatch");
-        JSONObject row = base.loadRow(url, handle);
+        JSONObject row = offline.loadRow(url, handle);
         if (row == null) {
             return result(handle, true, null, null);
         }

@@ -40,12 +40,17 @@ import org.pimalaya.cardamum.client.Cards;
 final class PhoneRemote {
     private final Context context;
     private final CardStore base;
+
+    /** The store's io-offline seam (the row reads behind the fetch). */
+    private final OfflineStore offline;
+
     /** Raw contact row ids by handle, primed by the pass's enumerate. */
     private final Map<String, Long> rawIds = new HashMap<>();
 
     PhoneRemote(Context context, CardStore base) {
         this.context = context;
         this.base = base;
+        this.offline = new OfflineStore(base);
     }
 
     /**
@@ -164,7 +169,7 @@ final class PhoneRemote {
                     ContentValues values = new ContentValues();
                     values.put(RawContacts.SOURCE_ID, handle);
                     resolver.update(rawContactUri(account, rawId), values, null, null);
-                } else if (base.loadRow(url, sourceId) == null) {
+                } else if (offline.loadRow(url, sourceId) == null) {
                     // A projection of a card the store no longer holds
                     // (interrupted delete, or a pre-phone-spoke store
                     // rebuild): purge instead of resurrecting it.
@@ -365,7 +370,7 @@ final class PhoneRemote {
         Account account = requireAccount(url);
         ContentResolver resolver = context.getContentResolver();
 
-        JSONObject row = base.loadRow(collection, handle);
+        JSONObject row = offline.loadRow(collection, handle);
         if (row == null || row.getString("vcard").isEmpty()) {
             return result(handle, false, null, null);
         }
@@ -393,7 +398,7 @@ final class PhoneRemote {
         Account account = requireAccount(url);
         ContentResolver resolver = context.getContentResolver();
 
-        JSONObject row = base.loadRow(collection, handle);
+        JSONObject row = offline.loadRow(collection, handle);
         Long rawId = rawId(resolver, account, handle);
         if (row == null || rawId == null) {
             return result(handle, false, null, null);
@@ -547,10 +552,10 @@ final class PhoneRemote {
      * carrying its handle as UID.
      */
     private String phoneBase(String url, String handle) throws JSONException {
-        JSONObject row = base.loadRow(url, handle);
+        JSONObject row = offline.loadRow(url, handle);
         String held = null;
         if (row != null) {
-            held = base.loadPhoneBase(url, handle);
+            held = offline.loadPhoneBase(url, handle);
             if (held == null) {
                 // Never converged but the hub holds it: its own vCard
                 // is the closest base (heals a lost axis without

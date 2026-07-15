@@ -1580,7 +1580,7 @@ public class MainActivity extends Activity {
         JSONObject bodies;
         JSONObject resolution;
         try {
-            bodies = base.loadConflict(replica.book.url, handle);
+            bodies = new OfflineStore(base).loadConflict(replica.book.url, handle);
             if (bodies == null) {
                 // The conflict was flagged but its remote is not captured
                 // yet (the capturing sync has not run); edit it plainly.

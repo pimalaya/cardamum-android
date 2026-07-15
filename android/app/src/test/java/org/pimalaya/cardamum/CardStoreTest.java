@@ -120,7 +120,7 @@ public class CardStoreTest {
     public void applyWritesLandsARemoteCreateAndKeepsThePhoneAxis() throws Exception {
         String vcard =
                 "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:u1\r\nFN:Jane Doe\r\nEND:VCARD\r\n";
-        JSONArray effects = store.applyWrites(remoteUpsert(vcard, "e1"));
+        JSONArray effects = new OfflineStore(store).applyWrites(remoteUpsert(vcard, "e1"));
 
         // The pull landed as a created card, indexed by the real
         // bridge at write time, its membership synced.
@@ -150,7 +150,7 @@ public class CardStoreTest {
         db.execSQL("UPDATE membership SET phone_revision = '7', phone_base = 'PB'");
         String updated =
                 "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:u1\r\nFN:Jane Smith\r\nEND:VCARD\r\n";
-        effects = store.applyWrites(remoteUpsert(updated, "e2"));
+        effects = new OfflineStore(store).applyWrites(remoteUpsert(updated, "e2"));
 
         assertEquals(1, effects.length());
         assertEquals("changed", effects.getJSONObject(0).getString("kind"));
