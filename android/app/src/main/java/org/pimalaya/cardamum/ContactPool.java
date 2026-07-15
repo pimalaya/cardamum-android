@@ -7,6 +7,7 @@ import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.client.Cards;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.CardamumClient;
 
@@ -20,16 +21,14 @@ import org.pimalaya.cardamum.client.CardamumClient;
  */
 final class ContactPool {
     private final CardStore base;
-    private final CardamumClient client;
 
     /** The host's in-memory account cache, read on the main thread
      *  only ({@link #replicaRef}); the io-side grouping receives a
      *  snapshot instead. */
     private final List<AccountEntry> accounts;
 
-    ContactPool(CardStore base, CardamumClient client, List<AccountEntry> accounts) {
+    ContactPool(CardStore base, List<AccountEntry> accounts) {
         this.base = base;
-        this.client = client;
         this.accounts = accounts;
     }
 
@@ -70,7 +69,7 @@ final class ContactPool {
         } catch (JSONException error) {
             throw new IllegalStateException(error);
         }
-        JSONArray grouped = client.groupContacts(pool).optJSONArray("groups");
+        JSONArray grouped = Cards.groupContacts(pool).optJSONArray("groups");
 
         List<Group> groups = new ArrayList<>();
         for (int at = 0; grouped != null && at < grouped.length(); at++) {

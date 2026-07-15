@@ -38,6 +38,7 @@ import java.util.concurrent.Executors;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.pimalaya.cardamum.billing.BillingFactory;
+import org.pimalaya.cardamum.client.Cards;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Addressbook;
 import org.pimalaya.cardamum.client.Card;
@@ -199,7 +200,7 @@ public class MainActivity extends Activity {
 
         store = new SecureStore(this);
         base = new CardStore(this);
-        pool = new ContactPool(base, client, accounts);
+        pool = new ContactPool(base, accounts);
         runner = new SyncRunner(this, base, store, client, syncObserver());
         // The two flows reference each other (the grants land back in
         // the wizard), so one side binds late.
@@ -209,11 +210,12 @@ public class MainActivity extends Activity {
         oauth.onAborted = onboarding::resetConfigContinue;
         flipper = findViewById(R.id.flipper);
         authFlipper = findViewById(R.id.auth_flipper);
-        form = new ContactForm(this, client);
+        form = new ContactForm(this);
         // Re-gate the editor's validate FAB whenever the form re-renders
         // (a merge enables it only once every conflict is resolved).
         form.setOnRender(this::updateSaveEnabled);
 
+        setUpScreens();
         setUpEmailPanel();
         setUpContactsPanel();
         setUpContactPanel();
@@ -457,29 +459,11 @@ public class MainActivity extends Activity {
             return;
         }
 
-        switch (screen) {
-            case PANEL_AUTH:
-                authBack();
-                break;
-            case PANEL_CONTACTS:
-                if (searchOpen) {
-                    closeSearch();
-                    break;
-                }
-                // The merged list is the app's root itself.
-                super.onBackPressed();
-                break;
-            case PANEL_CONTACT:
-                closeContact();
-                break;
-            case PANEL_ADVANCED:
-                closeAdvanced();
-                break;
-            case PANEL_SOURCE:
-                showBack(PANEL_ADVANCED);
-                break;
-            default:
-                super.onBackPressed();
+        Screen entry = screens.get(screen);
+        if (entry != null && entry.systemBack != null) {
+            entry.systemBack.run();
+        } else {
+            super.onBackPressed();
         }
     }
 
@@ -1604,7 +1588,7 @@ public class MainActivity extends Activity {
                 return;
             }
             resolution =
-                    client.mergeConflictForm(
+                    Cards.mergeConflictForm(
                             bodies.optString("base"),
                             bodies.optString("local"),
                             bodies.optString("remote"));
@@ -2540,9 +2524,9 @@ public class MainActivity extends Activity {
         try {
             if (docs.size() == 1) {
                 edit.vcard = primary.card.vcard;
-                model = client.projectCard(primary.card);
+                model = Cards.projectCard(primary.card);
             } else {
-                JSONObject merged = client.mergeCards(docs);
+                JSONObject merged = Cards.mergeCards(docs);
                 edit.vcard = merged.optString("vcard");
                 model = merged.optJSONObject("model");
                 alternatives = merged.optJSONObject("alternatives");
@@ -2598,7 +2582,7 @@ public class MainActivity extends Activity {
     private void openAdvanced() {
         try {
             String working = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
-            edit.advancedVcard = client.applyCard(working, form.collect());
+            edit.advancedVcard = Cards.applyCard(working, form.collect());
             renderAdvanced();
         } catch (Exception error) {
             showError(error, R.string.contact_open_failed);
@@ -2610,7 +2594,7 @@ public class MainActivity extends Activity {
     /** Back to the form, rebuilt from the edited document. */
     private void closeAdvanced() {
         try {
-            form.load(client.projectCard(edit.advancedVcard), null, null);
+            form.load(Cards.projectCard(edit.advancedVcard), null, null);
         } catch (Exception error) {
             showError(error, R.string.contact_open_failed);
         }
@@ -2622,7 +2606,7 @@ public class MainActivity extends Activity {
         LinearLayout container = findViewById(R.id.advanced_container);
         container.removeAllViews();
 
-        org.json.JSONArray props = client.cardProps(edit.advancedVcard);
+        org.json.JSONArray props = Cards.cardProps(edit.advancedVcard);
         for (int index = 0; props != null && index < props.length(); index++) {
             int at = index;
             JSONObject prop = props.optJSONObject(index);
@@ -2924,7 +2908,7 @@ public class MainActivity extends Activity {
     private void buildValueArea(LinearLayout area, String propName, JSONObject prop) {
         List<String> labels = new ArrayList<>();
         try {
-            org.json.JSONArray found = client.cardPropLabels(propName.trim());
+            org.json.JSONArray found = Cards.cardPropLabels(propName.trim());
             for (int index = 0; found != null && index < found.length(); index++) {
                 labels.add(found.optString(index));
             }
@@ -3016,7 +3000,7 @@ public class MainActivity extends Activity {
 
     private void applyAdvancedParts(int index, JSONObject prop) {
         try {
-            edit.advancedVcard = client.cardSetPropParts(edit.advancedVcard, index, prop);
+            edit.advancedVcard = Cards.cardSetPropParts(edit.advancedVcard, index, prop);
             edit.advancedDirty = true;
             renderAdvanced();
         } catch (Exception error) {
@@ -3027,7 +3011,7 @@ public class MainActivity extends Activity {
     /** A raw rewrite: only removal uses it (a blank line drops). */
     private void applyAdvancedRaw(int index, String line) {
         try {
-            edit.advancedVcard = client.cardSetProp(edit.advancedVcard, index, line);
+            edit.advancedVcard = Cards.cardSetProp(edit.advancedVcard, index, line);
             edit.advancedDirty = true;
             renderAdvanced();
         } catch (Exception error) {
@@ -3045,7 +3029,7 @@ public class MainActivity extends Activity {
     private void applySource() {
         try {
             edit.advancedVcard =
-                    client.cardSource(
+                    Cards.cardSource(
                             ((EditText) findViewById(R.id.source_input)).getText().toString());
             edit.advancedDirty = true;
             renderAdvanced();
@@ -3231,7 +3215,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 String source = edit.advancedVcard != null ? edit.advancedVcard : edit.vcard;
-                String vcard = client.applyCard(source, model);
+                String vcard = Cards.applyCard(source, model);
                 String uid = cardIndex(vcard).optString("uid");
                 String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
                 base.saveLocal(
@@ -3250,7 +3234,7 @@ public class MainActivity extends Activity {
             // The addressbooks dialog's choices apply here too, the
             // copies carrying the just-saved content.
             if (edit.card != null && edit.pendingBookState != null) {
-                applyBookState(client.applyCard(edit.card.vcard, model));
+                applyBookState(Cards.applyCard(edit.card.vcard, model));
             }
         } catch (Exception error) {
             showError(error, R.string.save_failed);
@@ -3280,7 +3264,7 @@ public class MainActivity extends Activity {
             // so its document stands in for the card's; a raw edit must
             // stage even when the managed-content hash is unchanged.
             String source = edit.advancedVcard != null ? edit.advancedVcard : entry.card.vcard;
-            String vcard = client.applyCard(source, model);
+            String vcard = Cards.applyCard(source, model);
             if (!edit.advancedDirty && cardIndex(vcard).optString("hash").equals(entry.hash)) {
                 continue;
             }
@@ -3300,7 +3284,7 @@ public class MainActivity extends Activity {
      */
     private void saveConflictResolution(JSONObject model) throws JSONException {
         Entry replica = edit.replicas.get(0);
-        String resolved = client.applyCard(edit.vcard, model);
+        String resolved = Cards.applyCard(edit.vcard, model);
         new OfflineEngine(base, client, null, null)
                 .mutateEdit(
                         replica.book.url,
@@ -3316,7 +3300,7 @@ public class MainActivity extends Activity {
         Entry survivor = edit.mergeSurvivor;
         edit.mergeSurvivor = null;
 
-        String vcard = client.applyCard(survivor.card.vcard, model);
+        String vcard = Cards.applyCard(survivor.card.vcard, model);
         if (!cardIndex(vcard).optString("hash").equals(survivor.hash)) {
             new OfflineEngine(base, client, null, null)
                     .mutateEdit(
@@ -3382,7 +3366,7 @@ public class MainActivity extends Activity {
      */
     private JSONObject cardIndex(String vcard) {
         try {
-            return client.indexCard(vcard);
+            return Cards.indexCard(vcard);
         } catch (Exception error) {
             Log.w("cardamum", "card index failed", error);
             return new JSONObject();
@@ -3465,6 +3449,143 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * One screen's share of the persistent chrome: whether it carries
+     * its own bar (the overlays do), how the shared bar and FAB
+     * configure, what the FAB does, and what the two backs do. One
+     * table entry per screen ({@link #setUpScreens}) replaces the four
+     * parallel switches that each used to carry every screen.
+     */
+    private static final class Screen {
+        /** True when the screen brings its own bar (the overlays). */
+        boolean ownBar;
+
+        /** Configures the shared chrome, after the common reset. */
+        Runnable chrome = () -> {};
+
+        /** The shared FAB's action. */
+        Runnable fab = () -> {};
+
+        /** The main bar's back arrow (shown by the screen's chrome). */
+        Runnable barBack = () -> {};
+
+        /** The system back; null falls through to the framework. */
+        Runnable systemBack;
+    }
+
+    /** The screens by panel id (flipper children 0-3, overlays 5-6,
+     *  matching the include order in activity_main.xml). */
+    private final Map<Integer, Screen> screens = new HashMap<>();
+
+    /** Fills the screen table; every entry reads like one screen's card. */
+    private void setUpScreens() {
+        Screen contacts = new Screen();
+        contacts.chrome =
+                () -> {
+                    android.widget.ImageButton fab = findViewById(R.id.fab);
+                    fab.setImageResource(R.drawable.ic_person_add);
+                    fab.setContentDescription(getString(R.string.contacts_add));
+                    fab.setVisibility(View.VISIBLE);
+                    updateSelectionUi();
+                };
+        contacts.fab = this::addContact;
+        contacts.systemBack =
+                () -> {
+                    if (searchOpen) {
+                        closeSearch();
+                    } else {
+                        // The merged list is the app's root itself.
+                        MainActivity.super.onBackPressed();
+                    }
+                };
+        screens.put(PANEL_CONTACTS, contacts);
+
+        Screen contact = new Screen();
+        contact.chrome =
+                () -> {
+                    ((TextView) findViewById(R.id.bar_title)).setText(edit.title);
+                    findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                    // Placing the contact in addressbooks needs a real
+                    // account to target; with only the local book, or while
+                    // resolving a conflict, the button hides.
+                    findViewById(R.id.contact_books)
+                            .setVisibility(
+                                    edit.card != null
+                                                    && hasRealAccount()
+                                                    && !edit.resolvingConflict
+                                            ? View.VISIBLE
+                                            : View.GONE);
+                    // Add-field lives in the bar, in conflict mode like in a
+                    // plain edit: the conflict form is the full editor.
+                    findViewById(R.id.contact_add_field).setVisibility(View.VISIBLE);
+                    // The FAB validates (check); while diverging rows await
+                    // review it turns into the error disc instead
+                    // (updateSaveEnabled).
+                    android.widget.ImageButton fab = findViewById(R.id.fab);
+                    fab.setImageResource(R.drawable.ic_check);
+                    fab.setContentDescription(getString(R.string.contact_save));
+                    fab.setVisibility(View.VISIBLE);
+                    updateSaveEnabled();
+                };
+        contact.fab = this::saveContact;
+        contact.barBack = this::closeContact;
+        contact.systemBack = this::closeContact;
+        screens.put(PANEL_CONTACT, contact);
+
+        Screen advanced = new Screen();
+        advanced.chrome =
+                () -> {
+                    ((TextView) findViewById(R.id.bar_title)).setText(R.string.advanced_title);
+                    findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                    findViewById(R.id.fab).setVisibility(View.GONE);
+                };
+        advanced.barBack = this::closeAdvanced;
+        advanced.systemBack = this::closeAdvanced;
+        screens.put(PANEL_ADVANCED, advanced);
+
+        Screen source = new Screen();
+        source.chrome =
+                () -> {
+                    ((TextView) findViewById(R.id.bar_title)).setText(R.string.advanced_source);
+                    findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
+                    android.widget.ImageButton fab = findViewById(R.id.fab);
+                    fab.setImageResource(R.drawable.ic_check);
+                    fab.setContentDescription(getString(R.string.contact_save));
+                    fab.setVisibility(View.VISIBLE);
+                };
+        source.fab = this::applySource;
+        source.barBack = () -> showBack(PANEL_ADVANCED);
+        source.systemBack = () -> showBack(PANEL_ADVANCED);
+        screens.put(PANEL_SOURCE, source);
+
+        Screen auth = new Screen();
+        auth.ownBar = true;
+        auth.chrome =
+                () -> {
+                    // The shared FAB is the continue action through the flow.
+                    android.widget.ImageButton fab = findViewById(R.id.fab);
+                    fab.setImageResource(R.drawable.ic_arrow_forward);
+                    fab.setContentDescription(getString(R.string.email_submit));
+                    fab.setVisibility(View.VISIBLE);
+                    setFabEnabled(
+                            R.id.fab,
+                            onboarding.stepReady(authFlipper.getDisplayedChild()));
+                    applyAuthChrome();
+                };
+        auth.fab = () -> onboarding.continueStep(authFlipper.getDisplayedChild());
+        auth.systemBack = this::authBack;
+        screens.put(PANEL_AUTH, auth);
+
+        Screen account = new Screen();
+        account.ownBar = true;
+        // The settings overlay draws above the drawer, where the shared
+        // FAB cannot follow; it carries its own save FAB. Its system
+        // back peels the overlay before anything else (onBackPressed).
+        account.chrome = () -> findViewById(R.id.fab).setVisibility(View.GONE);
+        account.fab = this::saveAccountSettings;
+        screens.put(PANEL_ACCOUNT, account);
+    }
+
+    /**
      * Configures the persistent app bar and FAB for the screen: every
      * chrome element goes off, then the screen's own set comes back
      * (the contacts screen delegates to its selection/search state).
@@ -3476,147 +3597,61 @@ public class MainActivity extends Activity {
         // step that navigated on while its loader was up) and re-enables
         // the disc: the icon comes back, the spinner goes, the dim from
         // a disabled auth step lifts, and the error tones of a left-open
-        // conflict form reset. The auth branch re-disables per step
-        // below, updateSaveEnabled re-applies the error state.
+        // conflict form reset. The auth entry re-disables per step,
+        // updateSaveEnabled re-applies the error state.
         fab.setImageAlpha(255);
         fab.setBackgroundTintList(null);
         fab.setImageTintList(android.content.res.ColorStateList.valueOf(accentContrast()));
         findViewById(R.id.fab_progress).setVisibility(View.GONE);
         setFabEnabled(R.id.fab, true);
 
-        // The overlays carry their own bars; only the FAB is shared.
-        if (panel == PANEL_AUTH) {
-            // The shared FAB is the continue action through the flow.
-            fab.setImageResource(R.drawable.ic_arrow_forward);
-            fab.setContentDescription(getString(R.string.email_submit));
-            fab.setVisibility(View.VISIBLE);
-            setFabEnabled(R.id.fab, authStepReady());
-            applyAuthChrome();
+        Screen entry = screens.get(panel);
+        if (entry == null) {
             return;
         }
-        if (panel == PANEL_ACCOUNT) {
-            // The settings overlay draws above the drawer, where the
-            // shared FAB cannot follow; it carries its own save FAB.
-            fab.setVisibility(View.GONE);
-            return;
-        }
-        for (int id :
-                new int[] {
-                    R.id.bar_back,
-                    R.id.contacts_menu,
-                    R.id.contacts_close,
-                    R.id.contacts_search_pill,
-                    R.id.contacts_search_close,
-                    R.id.contacts_search,
-                    R.id.contacts_birthdays,
-                    R.id.contacts_duplicates,
-                    R.id.contacts_merge,
-                    R.id.contacts_delete,
-                    R.id.contacts_select_all_slot,
-                    R.id.contacts_more_slot,
-                    R.id.contact_advanced,
-                    R.id.contact_books,
-                    R.id.contact_add_field,
-                }) {
-            findViewById(id).setVisibility(View.GONE);
-        }
-        findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
-        findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
 
-        TextView title = findViewById(R.id.bar_title);
-        switch (panel) {
-            case PANEL_CONTACTS:
-                fab.setImageResource(R.drawable.ic_person_add);
-                fab.setContentDescription(getString(R.string.contacts_add));
-                fab.setVisibility(View.VISIBLE);
-                updateSelectionUi();
-                break;
-            case PANEL_CONTACT:
-                title.setText(edit.title);
-                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                // Placing the contact in addressbooks needs a real account
-                // to target; with only the local book, or while resolving a
-                // conflict, the button hides.
-                findViewById(R.id.contact_books)
-                        .setVisibility(
-                                edit.card != null && hasRealAccount() && !edit.resolvingConflict
-                                        ? View.VISIBLE
-                                        : View.GONE);
-                // Add-field lives in the bar, in conflict mode like in a
-                // plain edit: the conflict form is the full editor.
-                findViewById(R.id.contact_add_field).setVisibility(View.VISIBLE);
-                // The FAB validates (check); while diverging rows await
-                // review it turns into the error disc instead
-                // (updateSaveEnabled).
-                fab.setImageResource(R.drawable.ic_check);
-                fab.setContentDescription(getString(R.string.contact_save));
-                fab.setVisibility(View.VISIBLE);
-                updateSaveEnabled();
-                break;
-            case PANEL_ADVANCED:
-                title.setText(R.string.advanced_title);
-                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                fab.setVisibility(View.GONE);
-                break;
-            case PANEL_SOURCE:
-                title.setText(R.string.advanced_source);
-                findViewById(R.id.bar_back).setVisibility(View.VISIBLE);
-                fab.setImageResource(R.drawable.ic_check);
-                fab.setContentDescription(getString(R.string.contact_save));
-                fab.setVisibility(View.VISIBLE);
-                break;
-            default:
-                break;
+        // The overlays carry their own bars; only the FAB is shared.
+        if (!entry.ownBar) {
+            for (int id :
+                    new int[] {
+                        R.id.bar_back,
+                        R.id.contacts_menu,
+                        R.id.contacts_close,
+                        R.id.contacts_search_pill,
+                        R.id.contacts_search_close,
+                        R.id.contacts_search,
+                        R.id.contacts_birthdays,
+                        R.id.contacts_duplicates,
+                        R.id.contacts_merge,
+                        R.id.contacts_delete,
+                        R.id.contacts_select_all_slot,
+                        R.id.contacts_more_slot,
+                        R.id.contact_advanced,
+                        R.id.contact_books,
+                        R.id.contact_add_field,
+                    }) {
+                findViewById(id).setVisibility(View.GONE);
+            }
+            findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
+            findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
         }
+
+        entry.chrome.run();
     }
 
     /** The shared FAB's action, per screen. */
     private void onFabClick() {
-        switch (screen) {
-            case PANEL_CONTACTS:
-                addContact();
-                break;
-            case PANEL_CONTACT:
-                saveContact();
-                break;
-            case PANEL_SOURCE:
-                applySource();
-                break;
-            case PANEL_AUTH:
-                authContinue();
-                break;
-            case PANEL_ACCOUNT:
-                saveAccountSettings();
-                break;
-            default:
-                break;
+        Screen entry = screens.get(screen);
+        if (entry != null) {
+            entry.fab.run();
         }
-    }
-
-    /** The shared FAB's continue action for the current auth step. */
-    private void authContinue() {
-        onboarding.continueStep(authFlipper.getDisplayedChild());
-    }
-
-    /** Whether the current auth step's continue is available. */
-    private boolean authStepReady() {
-        return onboarding.stepReady(authFlipper.getDisplayedChild());
     }
 
     /** The main bar's back arrow, per screen (overlays have their own). */
     private void onBarBack() {
-        switch (screen) {
-            case PANEL_CONTACT:
-                closeContact();
-                break;
-            case PANEL_ADVANCED:
-                closeAdvanced();
-                break;
-            case PANEL_SOURCE:
-                showBack(PANEL_ADVANCED);
-                break;
-            default:
-                break;
+        Screen entry = screens.get(screen);
+        if (entry != null) {
+            entry.barBack.run();
         }
     }
 

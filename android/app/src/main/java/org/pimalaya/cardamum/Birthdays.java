@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Locale;
+import org.pimalaya.cardamum.client.Cards;
 
 /**
  * The next-birthday peek behind the app bar's cake icon: one sentence
@@ -39,7 +40,7 @@ final class Birthdays {
                         for (Entry entry : group.replicas) {
                             try {
                                 String projected =
-                                        host.client.projectCard(entry.card).optString("birthday");
+                                        Cards.projectCard(entry.card).optString("birthday");
                                 if (projected.matches("\\d{4}-\\d{2}-\\d{2}")) {
                                     birthday = projected;
                                     break;

@@ -18,6 +18,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.client.Cards;
 import org.pimalaya.cardamum.client.Account;
 import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardDelta;
@@ -175,7 +176,7 @@ final class OfflineEngine implements OfflineDriver {
         this.base = base;
         this.client = client;
         this.account = account;
-        this.phone = context == null ? null : new PhoneRemote(context, base, client);
+        this.phone = context == null ? null : new PhoneRemote(context, base);
     }
 
     /**
@@ -337,7 +338,7 @@ final class OfflineEngine implements OfflineDriver {
         String local = conflict.getString("vcard");
         String baseVcard =
                 conflict.isNull("baseVcard") ? local : conflict.getString("baseVcard");
-        JSONObject resolution = client.mergeConflictForm(baseVcard, local, remote.vcard);
+        JSONObject resolution = Cards.mergeConflictForm(baseVcard, local, remote.vcard);
 
         JSONObject alternatives = resolution.optJSONObject("alternatives");
         if (alternatives != null && alternatives.length() > 0) {
@@ -363,7 +364,7 @@ final class OfflineEngine implements OfflineDriver {
         }
 
         String merged =
-                client.mergeCardChanges(
+                Cards.mergeCardChanges(
                         conflict.isNull("baseVcard") ? "" : conflict.getString("baseVcard"),
                         conflict.getString("vcard"),
                         remote.getString("body"));
@@ -385,7 +386,7 @@ final class OfflineEngine implements OfflineDriver {
         mutation.put("hash", CardStore.byteHash(vcard));
         mutation.put("size", vcard.getBytes(StandardCharsets.UTF_8).length);
         mutation.put("body", vcard);
-        mutation.put("meta", client.indexCard(vcard).toString());
+        mutation.put("meta", Cards.indexCard(vcard).toString());
         client.offlineMutate(this, url, mutation);
     }
 
@@ -491,7 +492,7 @@ final class OfflineEngine implements OfflineDriver {
         facts.put("changed", changed);
         facts.put("vanished", new JSONArray(delta.vanished));
 
-        JSONObject projected = client.offlineAccountSnapshot(facts);
+        JSONObject projected = Cards.offlineAccountSnapshot(facts);
         List<Card> members = new ArrayList<>();
         JSONArray indexes = projected.optJSONArray("members");
         for (int at = 0; indexes != null && at < indexes.length(); at++) {
@@ -600,7 +601,7 @@ final class OfflineEngine implements OfflineDriver {
      * refresh next sync and then converges.
      */
     private JSONObject fetchedItem(String url, String handle, Card card) throws JSONException {
-        JSONObject index = client.indexCard(card.vcard);
+        JSONObject index = Cards.indexCard(card.vcard);
         String uid = index.optString("uid");
 
         Map<String, String> listed = listedEtags.get(url);
@@ -1142,7 +1143,7 @@ final class OfflineEngine implements OfflineDriver {
         facts.put("bookId", bookId(url));
         facts.put("origin", origin);
         facts.put("deleted", deleted);
-        return client.offlinePushPlan(facts);
+        return Cards.offlinePushPlan(facts);
     }
 
     /**
@@ -1160,7 +1161,7 @@ final class OfflineEngine implements OfflineDriver {
             facts.put("complete", Boolean.TRUE.equals(listedComplete.get(url)));
             facts.put("handle", handle);
             facts.put("ifMatch", ifMatch);
-            return client.offlineRetryUnguarded(facts);
+            return Cards.offlineRetryUnguarded(facts);
         } catch (JSONException error) {
             throw new IllegalStateException(error);
         }

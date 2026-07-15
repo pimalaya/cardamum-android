@@ -14,6 +14,7 @@ import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.client.Cards;
 import org.pimalaya.cardamum.client.Addressbook;
 import org.pimalaya.cardamum.client.Card;
 import org.pimalaya.cardamum.client.CardamumClient;
@@ -41,10 +42,6 @@ public class CardStore extends SQLiteOpenHelper {
     // remote can re-hydrate, see rebuildCardTables); addressbook's
     // own additions land as ALTERs in onUpgrade instead.
     private static final int VERSION = 2;
-
-    /** Indexes vCards at write time (pure bridge computation). */
-    private final org.pimalaya.cardamum.client.CardamumClient client =
-            new org.pimalaya.cardamum.client.CardamumClient();
 
     /** Membership state: mirrored from the server. */
     private static final int MEMBER_SYNCED = 0;
@@ -115,7 +112,7 @@ public class CardStore extends SQLiteOpenHelper {
     private ContentValues indexValues(String vcard) {
         ContentValues values = new ContentValues();
         try {
-            org.json.JSONObject index = client.indexCard(vcard);
+            org.json.JSONObject index = Cards.indexCard(vcard);
             values.put("name", index.optString("name"));
             values.put("email", index.optString("email"));
             values.put("phone", index.optString("phone"));
@@ -1005,7 +1002,7 @@ public class CardStore extends SQLiteOpenHelper {
                         new String[] {url, accountEmail})) {
             while (cursor.moveToNext()) {
                 JSONObject placement =
-                        client.offlinePlacement(placementFacts(url, cursor, memberships));
+                        Cards.offlinePlacement(placementFacts(url, cursor, memberships));
                 if (placement != null) {
                     placements.put(placement);
                 }
@@ -1164,7 +1161,7 @@ public class CardStore extends SQLiteOpenHelper {
                         new String[] {url, accountEmail})) {
             while (cursor.moveToNext()) {
                 JSONObject placement =
-                        client.offlinePhonePlacement(phonePlacementFacts(collection, cursor));
+                        Cards.offlinePhonePlacement(phonePlacementFacts(collection, cursor));
                 if (placement != null) {
                     placements.put(placement);
                 }
@@ -1360,7 +1357,7 @@ public class CardStore extends SQLiteOpenHelper {
             facts.put("baseObjectHash", jsonString(base, "object"));
         }
 
-        JSONObject plan = client.offlineUpsertPlan(facts);
+        JSONObject plan = Cards.offlineUpsertPlan(facts);
         switch (plan.getString("action")) {
             case "removeMembership":
                 // Only this book's membership goes; the card stays.
@@ -1490,7 +1487,7 @@ public class CardStore extends SQLiteOpenHelper {
             facts.put("baseObjectHash", jsonString(base, "object"));
         }
 
-        JSONObject plan = client.offlinePhoneUpsertPlan(facts);
+        JSONObject plan = Cards.offlinePhoneUpsertPlan(facts);
         String action = plan.getString("action");
         if ("skip".equals(action)) {
             return null;
@@ -1682,7 +1679,7 @@ public class CardStore extends SQLiteOpenHelper {
             facts.put("collection", url);
             facts.put("deleted", deleted);
             facts.put("otherMemberships", countOtherMemberships(db, accountEmail, key, url));
-            plan = client.offlinePhoneDropPlan(facts);
+            plan = Cards.offlinePhoneDropPlan(facts);
         } catch (JSONException error) {
             throw new IllegalStateException(error);
         }

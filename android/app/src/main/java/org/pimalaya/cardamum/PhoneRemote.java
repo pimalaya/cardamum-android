@@ -22,7 +22,7 @@ import java.util.UUID;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.pimalaya.cardamum.client.CardamumClient;
+import org.pimalaya.cardamum.client.Cards;
 
 /**
  * The ContactsContract half of the io-offline driver: the phone spoke's
@@ -40,15 +40,12 @@ import org.pimalaya.cardamum.client.CardamumClient;
 final class PhoneRemote {
     private final Context context;
     private final CardStore base;
-    private final CardamumClient client;
-
     /** Raw contact row ids by handle, primed by the pass's enumerate. */
     private final Map<String, Long> rawIds = new HashMap<>();
 
-    PhoneRemote(Context context, CardStore base, CardamumClient client) {
+    PhoneRemote(Context context, CardStore base) {
         this.context = context;
         this.base = base;
-        this.client = client;
     }
 
     /**
@@ -262,7 +259,7 @@ final class PhoneRemote {
         }
 
         String baseVcard = phoneBase(url, handle);
-        JSONObject baseModel = client.projectCard(baseVcard);
+        JSONObject baseModel = Cards.projectCard(baseVcard);
         JSONObject phoneModel = Mapping.model(dataRows(resolver, account, rawId));
         JSONObject merged = Mapping.merge(baseModel, phoneModel);
 
@@ -272,7 +269,7 @@ final class PhoneRemote {
         // rewritten in canonical form), and the engine diffs content by
         // hash, so the no-op would read as a phone edit and cascade to
         // the server.
-        String body = merged == null ? baseVcard : client.applyCard(baseVcard, merged);
+        String body = merged == null ? baseVcard : Cards.applyCard(baseVcard, merged);
         if (merged != null) {
             // Which fields the phone won: the one trace that explains a
             // phone-won hub change when hunting phantom edits.
@@ -303,7 +300,7 @@ final class PhoneRemote {
             revision = revisionOf(heldToken, dirty, version);
         }
 
-        JSONObject index = client.indexCard(body);
+        JSONObject index = Cards.indexCard(body);
         String uid = index.optString("uid");
 
         JSONObject item = new JSONObject();
@@ -373,7 +370,7 @@ final class PhoneRemote {
             return result(handle, false, null, null);
         }
         String vcard = row.getString("vcard");
-        JSONObject model = client.projectCard(vcard);
+        JSONObject model = Cards.projectCard(vcard);
 
         Long existing = rawId(resolver, account, handle);
         long rawId;
@@ -408,7 +405,7 @@ final class PhoneRemote {
         }
 
         String vcard = row.getString("vcard");
-        rewrite(resolver, account, rawId, client.projectCard(vcard));
+        rewrite(resolver, account, rawId, Cards.projectCard(vcard));
         return result(handle, true, null, stampRevision(resolver, account, rawId, vcard));
     }
 

@@ -34,7 +34,7 @@ import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.pimalaya.cardamum.client.CardamumClient;
+import org.pimalaya.cardamum.client.Cards;
 
 /**
  * The contact edit form, settings-style like the system apps: one
@@ -91,7 +91,6 @@ final class ContactForm {
     }
 
     private final Activity activity;
-    private final CardamumClient client;
     private final int accentColor;
     private final int labelColor;
     private final int surfaceColor;
@@ -133,10 +132,9 @@ final class ContactForm {
 
     private final Ui ui;
 
-    ContactForm(Activity activity, CardamumClient client) {
+    ContactForm(Activity activity) {
         this.activity = activity;
         this.ui = new Ui(activity);
-        this.client = client;
         this.accentColor = resolveColor(android.R.attr.colorAccent);
         this.labelColor = resolveColor(android.R.attr.textColorSecondary);
         this.surfaceColor = activity.getColor(R.color.surface);
@@ -446,7 +444,7 @@ final class ContactForm {
 
     /** Rebuilds the whole page from the working model. */
     private void render() {
-        view = client.formView(model);
+        view = Cards.formView(model);
         container.removeAllViews();
         pending.clear();
 
@@ -1059,7 +1057,7 @@ final class ContactForm {
                                 phones,
                                 index,
                                 text(number),
-                                client.formEntry(
+                                Cards.formEntry(
                                         "phone",
                                         type.getSelectedItemPosition(),
                                         text(number),
@@ -1088,7 +1086,7 @@ final class ContactForm {
                                 emails,
                                 index,
                                 text(address),
-                                client.formEntry(
+                                Cards.formEntry(
                                         "email",
                                         type.getSelectedItemPosition(),
                                         text(address),
@@ -1144,7 +1142,7 @@ final class ContactForm {
                                         .put("pref", safe.optBoolean("pref"))
                                         .put(
                                                 "types",
-                                                client.formEntry(
+                                                Cards.formEntry(
                                                                 "address",
                                                                 type.getCheckedRadioButtonId() - 1,
                                                                 "",
@@ -1241,7 +1239,7 @@ final class ContactForm {
                                 relations,
                                 index,
                                 text(value),
-                                client.formEntry(
+                                Cards.formEntry(
                                         "relation",
                                         type.getSelectedItemPosition(),
                                         text(value),
@@ -1280,7 +1278,7 @@ final class ContactForm {
                             model.put(
                                     "gender",
                                     position > 0
-                                            ? client.formEntry("gender", position, "", false)
+                                            ? Cards.formEntry("gender", position, "", false)
                                             : new JSONObject().put("sex", "").put("identity", value));
                             revealed.add("gender");
                         }
@@ -1335,7 +1333,7 @@ final class ContactForm {
                         activity,
                         (picker, year, month, day) -> {
                             try {
-                                model.put(field, client.formDate(year, month + 1, day));
+                                model.put(field, Cards.formDate(year, month + 1, day));
                                 revealed.add(field);
                             } catch (JSONException error) {
                                 throw new IllegalStateException(error);

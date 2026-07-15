@@ -14,6 +14,7 @@ import java.util.UUID;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.pimalaya.cardamum.client.Cards;
 import org.pimalaya.cardamum.client.Card;
 
 /**
@@ -57,7 +58,7 @@ final class DuplicateReview {
                     List<Entry> first = null;
                     Exception failure = null;
                     try {
-                        JSONArray found = host.client.findDuplicates(cards);
+                        JSONArray found = Cards.findDuplicates(cards);
                         for (int index = 0; found != null && index < found.length(); index++) {
                             JSONArray refs = found.optJSONObject(index).optJSONArray("refs");
                             List<Entry> members = new ArrayList<>();
@@ -196,7 +197,7 @@ final class DuplicateReview {
         } catch (JSONException error) {
             throw new IllegalStateException(error);
         }
-        return host.client.duplicateGroup(refs);
+        return Cards.duplicateGroup(refs);
     }
 
     /**
@@ -225,7 +226,7 @@ final class DuplicateReview {
                 if (owner == null) {
                     continue;
                 }
-                String vcard = host.client.setCardUid(entry.card.vcard, uid);
+                String vcard = Cards.setCardUid(entry.card.vcard, uid);
                 host.base.saveLocal(
                         entry.accountEmail,
                         ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
