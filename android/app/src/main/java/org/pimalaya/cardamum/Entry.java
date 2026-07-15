@@ -20,6 +20,11 @@ final class Entry {
     final String hash;
     final boolean conflicted;
 
+    /** The replica's display name from its index, id fallback. */
+    String displayName() {
+        return name.isEmpty() ? card.id : name;
+    }
+
     Entry(Addressbook book, String accountEmail, CardStore.Indexed indexed) {
         this.book = book;
         this.accountEmail = accountEmail;

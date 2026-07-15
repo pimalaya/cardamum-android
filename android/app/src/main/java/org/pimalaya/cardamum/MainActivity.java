@@ -146,7 +146,7 @@ public class MainActivity extends Activity {
     private List<Entry> contacts = new ArrayList<>();
 
     /** The pool's loader and bridge grouping (built in onCreate). */
-    private ContactPool pool;
+    ContactPool pool;
 
     /** The merged rows as the bridge grouped them, unfiltered. */
     private List<Group> groupedContacts = new ArrayList<>();
@@ -400,7 +400,7 @@ public class MainActivity extends Activity {
     }
 
     /** The account entry matching an email, or null. */
-    private AccountEntry accountFor(String email) {
+    AccountEntry accountFor(String email) {
         for (AccountEntry entry : accounts) {
             if (entry.email.equals(email)) {
                 return entry;
@@ -1474,8 +1474,12 @@ public class MainActivity extends Activity {
 
     private void setUpContactsPanel() {
         findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
-        findViewById(R.id.contacts_birthdays).setOnClickListener(view -> showBirthdays());
-        findViewById(R.id.contacts_duplicates).setOnClickListener(view -> findDuplicates());
+        findViewById(R.id.contacts_birthdays)
+                .setOnClickListener(
+                        view -> new Birthdays(this).show(new ArrayList<>(sortedContacts)));
+        findViewById(R.id.contacts_duplicates)
+                .setOnClickListener(
+                        view -> new DuplicateReview(this).find(new ArrayList<>(contacts)));
         // Pull down on the list to run the very same sync as the drawer
         // (syncAll, with its outcome toast). The gesture only triggers:
         // its spinner retracts right away, the modal dialog carries the
@@ -1556,7 +1560,7 @@ public class MainActivity extends Activity {
                     public void onScroll(
                             android.widget.AbsListView v, int first, int count, int total) {
                         if (first < sortedContacts.size()) {
-                            sticky.setText(letter(displayName(sortedContacts.get(first).primary())));
+                            sticky.setText(letter(sortedContacts.get(first).primary().displayName()));
                         }
                     }
                 });
@@ -1585,122 +1589,6 @@ public class MainActivity extends Activity {
                     }
                 });
         menu.show();
-    }
-
-    /**
-     * The cake button: scans every merged contact for a birthday (as
-     * projected by the bridge, full yyyy-mm-dd dates only) and shows
-     * the one(s) whose next occurrence comes soonest, with the date and
-     * the wait. The projections run off the UI thread: one bridge call
-     * per replica until a birthday turns up.
-     */
-    private void showBirthdays() {
-        List<Group> snapshot = new ArrayList<>(sortedContacts);
-        io.execute(
-                () -> {
-                    java.util.Calendar today = java.util.Calendar.getInstance();
-                    today.set(java.util.Calendar.HOUR_OF_DAY, 0);
-                    today.set(java.util.Calendar.MINUTE, 0);
-                    today.set(java.util.Calendar.SECOND, 0);
-                    today.set(java.util.Calendar.MILLISECOND, 0);
-
-                    long soonest = Long.MAX_VALUE;
-                    java.util.Calendar date = null;
-                    List<String> names = new ArrayList<>();
-                    for (Group group : snapshot) {
-                        // The group's birthday: the first replica
-                        // projecting one wins, like the merged form.
-                        String birthday = null;
-                        for (Entry entry : group.replicas) {
-                            try {
-                                String projected =
-                                        client.projectCard(entry.card).optString("birthday");
-                                if (projected.matches("\\d{4}-\\d{2}-\\d{2}")) {
-                                    birthday = projected;
-                                    break;
-                                }
-                            } catch (Exception error) {
-                                // NOTE: an unparsable card does not compete.
-                            }
-                        }
-                        if (birthday == null) {
-                            continue;
-                        }
-
-                        // The next occurrence, at local midnight; a lenient
-                        // calendar rolls Feb 29 to Mar 1 off leap years. The
-                        // rounding absorbs the DST hour between midnights.
-                        java.util.Calendar next = (java.util.Calendar) today.clone();
-                        next.set(java.util.Calendar.MONTH,
-                                Integer.parseInt(birthday.substring(5, 7)) - 1);
-                        next.set(java.util.Calendar.DAY_OF_MONTH,
-                                Integer.parseInt(birthday.substring(8, 10)));
-                        if (next.before(today)) {
-                            next.add(java.util.Calendar.YEAR, 1);
-                        }
-                        long days =
-                                Math.round(
-                                        (next.getTimeInMillis() - today.getTimeInMillis())
-                                                / 86400000.0);
-
-                        if (days < soonest) {
-                            soonest = days;
-                            date = next;
-                            names.clear();
-                        }
-                        if (days == soonest) {
-                            names.add(displayName(group.primary()));
-                        }
-                    }
-
-                    // One readable sentence: "Alice and Bob celebrate
-                    // their birthdays on 12 April, in 3 days."
-                    String message;
-                    if (names.isEmpty()) {
-                        message = getString(R.string.birthdays_none);
-                    } else {
-                        String joined =
-                                names.size() == 1
-                                        ? names.get(0)
-                                        : String.join(", ", names.subList(0, names.size() - 1))
-                                                + getString(R.string.birthdays_and)
-                                                + names.get(names.size() - 1);
-                        if (soonest == 0) {
-                            message =
-                                    getResources()
-                                            .getQuantityString(
-                                                    R.plurals.birthdays_message_today,
-                                                    names.size(),
-                                                    joined);
-                        } else {
-                            String when =
-                                    getResources()
-                                            .getQuantityString(
-                                                    R.plurals.birthday_in_days,
-                                                    (int) soonest,
-                                                    (int) soonest);
-                            String day =
-                                    new java.text.SimpleDateFormat(
-                                                    "d MMMM", java.util.Locale.getDefault())
-                                            .format(date.getTime());
-                            message =
-                                    getResources()
-                                            .getQuantityString(
-                                                    R.plurals.birthdays_message,
-                                                    names.size(),
-                                                    joined,
-                                                    day,
-                                                    when);
-                        }
-                    }
-                    main.post(
-                            () ->
-                                    new AlertDialog.Builder(this)
-                                            .setTitle(R.string.birthdays_title)
-                                            .setMessage(message)
-                                            .setPositiveButton(android.R.string.ok, null)
-                                            .show());
-                });
     }
 
     /**
@@ -1788,7 +1676,7 @@ public class MainActivity extends Activity {
         advancedDirty = false;
         resolvingConflict = true;
         editingVcard = resolution.optString("vcard");
-        editingTitle = displayName(replica);
+        editingTitle = replica.displayName();
         advancedAvailable = false;
 
         org.json.JSONArray changed = resolution.optJSONArray("changed");
@@ -2025,215 +1913,6 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    // ---- Duplicate remover ---------------------------------------------------
-
-    /**
-     * Scans every replica for likely duplicates (exact normalized
-     * email, phone or full-name matches, computed by the bridge) and
-     * reviews the groups one by one. Dismissed groups are remembered
-     * and never proposed again.
-     */
-    private void findDuplicates() {
-        Map<String, Entry> byRef = new HashMap<>();
-        org.json.JSONArray cards = new org.json.JSONArray();
-        try {
-            for (Entry entry : contacts) {
-                String ref = pool.replicaRef(entry);
-                if (byRef.putIfAbsent(ref, entry) == null) {
-                    cards.put(new JSONObject().put("ref", ref).put("vcard", entry.card.vcard));
-                }
-            }
-        } catch (JSONException error) {
-            throw new IllegalStateException(error);
-        }
-
-        io.execute(
-                () -> {
-                    List<Entry> first = null;
-                    Exception failure = null;
-                    try {
-                        org.json.JSONArray found = client.findDuplicates(cards);
-                        for (int index = 0; found != null && index < found.length(); index++) {
-                            org.json.JSONArray refs =
-                                    found.optJSONObject(index).optJSONArray("refs");
-                            List<Entry> members = new ArrayList<>();
-                            for (int at = 0; refs != null && at < refs.length(); at++) {
-                                Entry entry = byRef.get(refs.optString(at));
-                                if (entry != null) {
-                                    members.add(entry);
-                                }
-                            }
-                            if (members.size() >= 2
-                                    && !base.isDuplicateDismissed(
-                                            duplicateGroup(members).optString("key"))) {
-                                first = members;
-                                break;
-                            }
-                        }
-                    } catch (Exception error) {
-                        Log.w("cardamum", "duplicate scan failed", error);
-                        failure = error;
-                    }
-
-                    List<Entry> pending = first;
-                    Exception scanFailure = failure;
-                    main.post(
-                            () -> {
-                                if (scanFailure != null) {
-                                    showError(scanFailure, R.string.dup_none);
-                                    return;
-                                }
-                                if (pending == null) {
-                                    toast(getString(R.string.dup_none));
-                                } else {
-                                    reviewDuplicate(pending);
-                                }
-                            });
-                });
-    }
-
-    /**
-     * Reviews the first duplicate group found, one shot: after any
-     * verb, tapping the bar icon again surfaces the next group (a
-     * handled group no longer matches, an ignored one is remembered).
-     * Each card is a tappable row leaving the review for its editor.
-     * Merge runs the normal merge flow; Link makes the cards one
-     * contact by sharing a UID, offered only when every card lives in
-     * its own addressbook (UID uniqueness is per collection).
-     */
-    private void reviewDuplicate(List<Entry> members) {
-        JSONObject dup = duplicateGroup(members);
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(0, dp(8), 0, 0);
-
-        AlertDialog[] shown = new AlertDialog[1];
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (Entry entry : members) {
-            if (!seen.add(pool.replicaRef(entry))) {
-                continue;
-            }
-
-            TextView name = new TextView(this);
-            name.setText(displayName(entry));
-            name.setTextSize(15);
-            name.setTextColor(resolveColor(android.R.attr.textColorPrimary));
-
-            TextView book = new TextView(this);
-            book.setText(entry.book.name);
-            book.setTextSize(13);
-            book.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-
-            TextView account = new TextView(this);
-            account.setText(entry.accountEmail);
-            account.setTextSize(12);
-            account.setTextColor(resolveColor(android.R.attr.textColorSecondary));
-
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(dp(24), dp(8), dp(24), dp(8));
-            row.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-            row.addView(name);
-            row.addView(book);
-            row.addView(account);
-            row.setOnClickListener(
-                    view -> {
-                        shown[0].dismiss();
-                        openMerged(java.util.Collections.singletonList(entry));
-                    });
-            content.addView(row);
-        }
-
-        // Link rides as a content action: the three dialog buttons are
-        // taken by Merge, Ignore and Cancel.
-        if (dup.optBoolean("linkable")) {
-            TextView link = new TextView(this);
-            link.setText(R.string.dup_link);
-            link.setTextSize(14);
-            link.setTextColor(resolveColor(android.R.attr.colorAccent));
-            link.setPadding(dp(24), dp(12), dp(24), dp(12));
-            link.setBackgroundResource(resolveAttr(android.R.attr.selectableItemBackground));
-            link.setOnClickListener(
-                    view -> {
-                        shown[0].dismiss();
-                        linkDuplicates(members);
-                    });
-            content.addView(link);
-        }
-
-        shown[0] =
-                new AlertDialog.Builder(this)
-                        .setTitle(R.string.dup_title)
-                        .setView(content)
-                        .setPositiveButton(
-                                R.string.dup_merge,
-                                (dialog, which) -> mergeReplicas(members))
-                        .setNeutralButton(
-                                R.string.dup_ignore,
-                                (dialog, which) ->
-                                        base.dismissDuplicate(dup.optString("key")))
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show();
-    }
-
-    /**
-     * The group's duplicate-review facts from the bridge: its
-     * dismissal key and whether Link may be offered.
-     */
-    private JSONObject duplicateGroup(List<Entry> members) {
-        org.json.JSONArray refs = new org.json.JSONArray();
-        try {
-            for (Entry entry : members) {
-                refs.put(
-                        new JSONObject()
-                                .put("ref", pool.replicaRef(entry))
-                                .put("book", entry.book.url));
-            }
-        } catch (JSONException error) {
-            throw new IllegalStateException(error);
-        }
-        return client.duplicateGroup(refs);
-    }
-
-    /**
-     * Links the cards into one contact by staging the same UID on all
-     * of them; transparent UID grouping does the rest.
-     */
-    private void linkDuplicates(List<Entry> members) {
-        String uid = "";
-        for (Entry entry : members) {
-            if (!entry.uid.isEmpty()) {
-                uid = entry.uid;
-                break;
-            }
-        }
-        if (uid.isEmpty()) {
-            uid = UUID.randomUUID().toString();
-        }
-
-        try {
-            java.util.Set<String> staged = new java.util.HashSet<>();
-            for (Entry entry : members) {
-                if (!staged.add(pool.replicaRef(entry)) || uid.equals(entry.uid)) {
-                    continue;
-                }
-                AccountEntry owner = accountFor(entry.accountEmail);
-                if (owner == null) {
-                    continue;
-                }
-                String vcard = client.setCardUid(entry.card.vcard, uid);
-                base.saveLocal(
-                        entry.accountEmail,
-                        ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
-                        entry.book.url,
-                        new Card(entry.card.id, entry.card.uri, entry.card.etag, vcard));
-            }
-        } catch (Exception error) {
-            showError(error, R.string.save_failed);
-        }
-        reloadContacts();
-    }
 
     /**
      * Groups the replica pool into merged rows (UID-linked and sorted
@@ -2271,7 +1950,7 @@ public class MainActivity extends Activity {
         // addressbook, or no account at all.
         boolean empty = sortedContacts.isEmpty();
         findViewById(R.id.contacts_empty).setVisibility(empty ? View.VISIBLE : View.GONE);
-        sticky.setText(empty ? "" : letter(displayName(sortedContacts.get(0).primary())));
+        sticky.setText(empty ? "" : letter(sortedContacts.get(0).primary().displayName()));
 
         // Rows are uniform (empty sub-lines keep their space): size the
         // sticky letter box to the row height once, so both letters'
@@ -2313,7 +1992,7 @@ public class MainActivity extends Activity {
 
             Group group = sortedContacts.get(position);
             Entry entry = group.primary();
-            String name = displayName(entry);
+            String name = entry.displayName();
 
             TextView avatar = row.findViewById(R.id.contact_avatar);
             avatar.setText(letter(name));
@@ -2482,7 +2161,7 @@ public class MainActivity extends Activity {
     }
 
     /** The survivor chooser over any replica list, then the merge. */
-    private void mergeReplicas(List<Entry> replicas) {
+    void mergeReplicas(List<Entry> replicas) {
         if (pool.distinctRefs(replicas).size() < 2) {
             return;
         }
@@ -2621,7 +2300,7 @@ public class MainActivity extends Activity {
     private void toggleLetter(String letter) {
         List<String> keys = new ArrayList<>();
         for (Group group : sortedContacts) {
-            if (letter.equals(letter(displayName(group.primary())))) {
+            if (letter.equals(letter(group.primary().displayName()))) {
                 keys.add(groupKey(group));
             }
         }
@@ -2845,11 +2524,6 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    /** The replica's display name from its index, id fallback. */
-    private static String displayName(Entry entry) {
-        return entry.name.isEmpty() ? entry.card.id : entry.name;
-    }
-
     private static String letter(String name) {
         String trimmed = name.trim();
         if (trimmed.isEmpty()) {
@@ -2887,7 +2561,7 @@ public class MainActivity extends Activity {
      * when they diverge. Saving stages the form onto every replica.
      * Returns false when the documents could not be read.
      */
-    private boolean openMerged(List<Entry> replicas) {
+    boolean openMerged(List<Entry> replicas) {
         Entry primary = replicas.get(0);
         editingBook = primary.book;
         editingAccountEmail = primary.accountEmail;
@@ -2934,7 +2608,7 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        editingTitle = displayName(primary);
+        editingTitle = primary.displayName();
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
         advancedAvailable = pool.distinctRefs(replicas).size() == 1;
@@ -3734,7 +3408,7 @@ public class MainActivity extends Activity {
      * order. The account snapshot keeps the grouping off the live
      * main-thread cache.
      */
-    private void reloadContacts() {
+    void reloadContacts() {
         List<AccountEntry> snapshot = new ArrayList<>(accounts);
         io.execute(
                 () -> {
