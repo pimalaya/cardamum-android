@@ -83,52 +83,9 @@ public class MainActivity extends Activity {
     /**
      * One replica in the contacts pool: a card, the addressbook it
      * lives in, the account owning it and its write-time index
-     * (docs/merged-view.md), so rendering never parses a vCard.
+     * (docs/merged-view.md), so rendering never parses a vCard: see
+     * {@link Entry}, {@link Group} and {@link ContactPool}.
      */
-    private static final class Entry {
-        final Addressbook book;
-        final String accountEmail;
-        final Card card;
-        final String name;
-        final String email;
-        final String phone;
-        final String info;
-        final String uid;
-        final String hash;
-        final boolean conflicted;
-
-        Entry(Addressbook book, String accountEmail, CardStore.Indexed indexed) {
-            this.book = book;
-            this.accountEmail = accountEmail;
-            this.card = indexed.card;
-            this.name = indexed.name;
-            this.email = indexed.email;
-            this.phone = indexed.phone;
-            this.info = indexed.info;
-            this.uid = indexed.uid;
-            this.hash = indexed.hash;
-            this.conflicted = indexed.conflicted;
-        }
-    }
-
-    /**
-     * One merged row: the replicas sharing a logical contact (same
-     * vCard UID across accounts and addressbooks, grouped by the
-     * bridge); a card without a UID stays a singleton group.
-     */
-    private static final class Group {
-        final String key;
-        final List<Entry> replicas = new ArrayList<>();
-
-        Group(String key) {
-            this.key = key;
-        }
-
-        Entry primary() {
-            return replicas.get(0);
-        }
-    }
-
     final CardamumClient client = new CardamumClient();
     final ExecutorService io = Executors.newSingleThreadExecutor();
     final Handler main = new Handler(Looper.getMainLooper());
@@ -187,6 +144,12 @@ public class MainActivity extends Activity {
 
     /** The replica pool of the contacts screen. */
     private List<Entry> contacts = new ArrayList<>();
+
+    /** The pool's loader and bridge grouping (built in onCreate). */
+    private ContactPool pool;
+
+    /** The merged rows as the bridge grouped them, unfiltered. */
+    private List<Group> groupedContacts = new ArrayList<>();
 
     /** The merged rows, sorted; backs the recycling adapter. */
     private List<Group> sortedContacts = new ArrayList<>();
@@ -271,6 +234,7 @@ public class MainActivity extends Activity {
 
         store = new SecureStore(this);
         base = new CardStore(this);
+        pool = new ContactPool(base, client, accounts);
         runner = new SyncRunner(this, base, store, client, syncObserver());
         // The two flows reference each other (the grants land back in
         // the wizard), so one side binds late.
@@ -560,8 +524,7 @@ public class MainActivity extends Activity {
         closeSearch();
         exitSelection();
 
-        contacts = loadEntries();
-        renderContacts();
+        reloadContacts();
 
         // Landing on the root is always a return: the auth sheet slides
         // back out, the drawer closes, the root stays put underneath.
@@ -1071,8 +1034,7 @@ public class MainActivity extends Activity {
         }
 
         // The subscription switches move what the contacts root shows.
-        contacts = loadEntries();
-        renderContacts();
+        reloadContacts();
         leaveAccountSettings();
     }
 
@@ -1181,16 +1143,6 @@ public class MainActivity extends Activity {
      * The replica pool from the store: every subscribed addressbook's
      * cards, tagged with their book and account.
      */
-    private List<Entry> loadEntries() {
-        List<Entry> entries = new ArrayList<>();
-        for (BookEntry entry : base.loadSubscribedAddressbooks()) {
-            for (CardStore.Indexed indexed : base.loadIndexedCards(entry.book.url)) {
-                entries.add(new Entry(entry.book, entry.accountEmail, indexed));
-            }
-        }
-        return entries;
-    }
-
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         if (request == REQUEST_CONTACTS && hasContactsPermission()) {
@@ -1397,15 +1349,6 @@ public class MainActivity extends Activity {
                     .append(getString(R.string.sync_conflicts_pending, outcome.conflicts));
         }
         toast(message.toString());
-    }
-
-    /**
-     * The replica's storage key (docs/merged-view.md): the bare server
-     * id on account-level backends, the collection-scoped key on
-     * per-collection ones.
-     */
-    private static String cardKey(Account account, String bookUrl, String id) {
-        return CardamumClient.isAccountLevel(account) ? id : CardStore.key(bookUrl, id);
     }
 
     /**
@@ -1950,20 +1893,13 @@ public class MainActivity extends Activity {
     /** Splits the text into vCards and stores each in the target book. */
     private int importCards(String text, BookEntry target) {
         AccountEntry account = accountFor(target.accountEmail);
-        java.util.regex.Matcher matcher =
-                java.util.regex.Pattern.compile(
-                                "BEGIN:VCARD.*?END:VCARD",
-                                java.util.regex.Pattern.DOTALL
-                                        | java.util.regex.Pattern.CASE_INSENSITIVE)
-                        .matcher(text);
         int count = 0;
-        while (matcher.find()) {
-            String vcard = matcher.group();
+        for (String vcard : Vcf.split(text)) {
             String uid = cardIndex(vcard).optString("uid");
             String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
             String key =
                     account != null
-                            ? cardKey(account.account, target.book.url, id)
+                            ? ContactPool.cardKey(account.account, target.book.url, id)
                             : CardStore.key(target.book.url, id);
             base.saveLocal(
                     target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
@@ -2031,12 +1967,11 @@ public class MainActivity extends Activity {
     /** One vCard per contact (its primary replica's document), appended
      *  verbatim so the file round-trips through the importer. */
     private String buildVcf(List<Group> groups) {
-        StringBuilder vcf = new StringBuilder();
+        List<String> vcards = new ArrayList<>(groups.size());
         for (Group group : groups) {
-            vcf.append(group.primary().card.vcard.trim());
-            vcf.append("\r\n");
+            vcards.add(group.primary().card.vcard);
         }
-        return vcf.toString();
+        return Vcf.join(vcards);
     }
 
     /** Writes text to a content Uri as UTF-8. */
@@ -2103,7 +2038,7 @@ public class MainActivity extends Activity {
         org.json.JSONArray cards = new org.json.JSONArray();
         try {
             for (Entry entry : contacts) {
-                String ref = replicaRefOf(entry);
+                String ref = pool.replicaRef(entry);
                 if (byRef.putIfAbsent(ref, entry) == null) {
                     cards.put(new JSONObject().put("ref", ref).put("vcard", entry.card.vcard));
                 }
@@ -2176,7 +2111,7 @@ public class MainActivity extends Activity {
         AlertDialog[] shown = new AlertDialog[1];
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (Entry entry : members) {
-            if (!seen.add(replicaRefOf(entry))) {
+            if (!seen.add(pool.replicaRef(entry))) {
                 continue;
             }
 
@@ -2252,7 +2187,7 @@ public class MainActivity extends Activity {
             for (Entry entry : members) {
                 refs.put(
                         new JSONObject()
-                                .put("ref", replicaRefOf(entry))
+                                .put("ref", pool.replicaRef(entry))
                                 .put("book", entry.book.url));
             }
         } catch (JSONException error) {
@@ -2280,7 +2215,7 @@ public class MainActivity extends Activity {
         try {
             java.util.Set<String> staged = new java.util.HashSet<>();
             for (Entry entry : members) {
-                if (!staged.add(replicaRefOf(entry)) || uid.equals(entry.uid)) {
+                if (!staged.add(pool.replicaRef(entry)) || uid.equals(entry.uid)) {
                     continue;
                 }
                 AccountEntry owner = accountFor(entry.accountEmail);
@@ -2290,7 +2225,7 @@ public class MainActivity extends Activity {
                 String vcard = client.setCardUid(entry.card.vcard, uid);
                 base.saveLocal(
                         entry.accountEmail,
-                        cardKey(owner.account, entry.book.url, entry.card.id),
+                        ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
                         entry.book.url,
                         new Card(entry.card.id, entry.card.uri, entry.card.etag, vcard));
             }
@@ -2310,36 +2245,8 @@ public class MainActivity extends Activity {
         TextView sticky = findViewById(R.id.contacts_sticky_letter);
         updateSelectionUi();
 
-        JSONObject pool;
-        try {
-            org.json.JSONArray replicas = new org.json.JSONArray();
-            for (Entry entry : contacts) {
-                replicas.put(
-                        new JSONObject()
-                                .put("ref", replicaRefOf(entry))
-                                .put("uid", entry.uid)
-                                .put("name", entry.name)
-                                .put("id", entry.card.id));
-            }
-            pool =
-                    new JSONObject()
-                            .put("replicas", replicas)
-                            .put("links", new JSONObject(base.loadLinks()))
-                            .put("detached", new org.json.JSONArray(base.loadDetached()));
-        } catch (JSONException error) {
-            throw new IllegalStateException(error);
-        }
-        org.json.JSONArray groups = client.groupContacts(pool).optJSONArray("groups");
-
         sortedContacts = new ArrayList<>();
-        for (int at = 0; groups != null && at < groups.length(); at++) {
-            JSONObject grouped = groups.optJSONObject(at);
-            Group group = new Group(grouped.optString("key"));
-            org.json.JSONArray members = grouped.optJSONArray("replicas");
-            for (int index = 0; members != null && index < members.length(); index++) {
-                group.replicas.add(contacts.get(members.optInt(index)));
-            }
-
+        for (Group group : groupedContacts) {
             boolean matches = searchQuery.isEmpty();
             for (Entry entry : group.replicas) {
                 if (matches || entry.card.vcard.toLowerCase().contains(searchQuery)) {
@@ -2428,7 +2335,7 @@ public class MainActivity extends Activity {
 
             // The link glyph and card count, for a contact backed by
             // several physical cards.
-            int cards = distinctRefs(group.replicas).size();
+            int cards = pool.distinctRefs(group.replicas).size();
             row.findViewById(R.id.contact_link_icon)
                     .setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
             TextView links = row.findViewById(R.id.contact_links);
@@ -2466,16 +2373,6 @@ public class MainActivity extends Activity {
             }
         }
         return true;
-    }
-
-    /** The replica's link-layer reference. */
-    private String replicaRefOf(Entry entry) {
-        AccountEntry account = accountFor(entry.accountEmail);
-        String key =
-                account == null
-                        ? CardStore.key(entry.book.url, entry.card.id)
-                        : cardKey(account.account, entry.book.url, entry.card.id);
-        return CardStore.replicaRef(entry.accountEmail, key);
     }
 
     private String groupKey(Group group) {
@@ -2551,7 +2448,7 @@ public class MainActivity extends Activity {
 
     /** Stages a copied card into the target addressbook. */
     private void createCopy(BookEntry target, AccountEntry account, String id, String vcard) {
-        String key = cardKey(account.account, target.book.url, id);
+        String key = ContactPool.cardKey(account.account, target.book.url, id);
 
         // Google creates land in myContacts; the group membership
         // pushes right after the create (the key rename of confirmPush
@@ -2586,7 +2483,7 @@ public class MainActivity extends Activity {
 
     /** The survivor chooser over any replica list, then the merge. */
     private void mergeReplicas(List<Entry> replicas) {
-        if (distinctRefs(replicas).size() < 2) {
+        if (pool.distinctRefs(replicas).size() < 2) {
             return;
         }
 
@@ -2640,10 +2537,10 @@ public class MainActivity extends Activity {
     private void mergeDirect(List<Entry> replicas, Entry survivor) {
         exitSelection();
 
-        String survivorRef = replicaRefOf(survivor);
+        String survivorRef = pool.replicaRef(survivor);
         java.util.Set<String> removed = new java.util.HashSet<>();
         for (Entry entry : replicas) {
-            String ref = replicaRefOf(entry);
+            String ref = pool.replicaRef(entry);
             if (ref.equals(survivorRef) || !removed.add(ref)) {
                 continue;
             }
@@ -2653,7 +2550,7 @@ public class MainActivity extends Activity {
             }
             base.markDeleted(
                     entry.accountEmail,
-                    cardKey(owner.account, entry.book.url, entry.card.id),
+                    ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
                     entry.card);
         }
 
@@ -2670,14 +2567,6 @@ public class MainActivity extends Activity {
     }
 
     /** The distinct physical cards behind a replica list, as refs. */
-    private java.util.Set<String> distinctRefs(List<Entry> replicas) {
-        java.util.Set<String> refs = new java.util.HashSet<>();
-        for (Entry entry : replicas) {
-            refs.add(replicaRefOf(entry));
-        }
-        return refs;
-    }
-
     /** Toggles a contact's selection and refreshes the list and app bar. */
     private void toggleSelection(String key) {
         if (!selectedKeys.remove(key)) {
@@ -2838,7 +2727,7 @@ public class MainActivity extends Activity {
         // already offers that).
         findViewById(R.id.contacts_merge)
                 .setVisibility(
-                        selectionMode && distinctRefs(selectedReplicas()).size() > 1
+                        selectionMode && pool.distinctRefs(selectedReplicas()).size() > 1
                                 ? View.VISIBLE
                                 : View.GONE);
         findViewById(R.id.contacts_delete)
@@ -2880,7 +2769,7 @@ public class MainActivity extends Activity {
                     }
                     base.markDeleted(
                             entry.accountEmail,
-                            cardKey(account.account, entry.book.url, entry.card.id),
+                            ContactPool.cardKey(account.account, entry.book.url, entry.card.id),
                             entry.card);
                 }
             }
@@ -3048,7 +2937,7 @@ public class MainActivity extends Activity {
         editingTitle = displayName(primary);
         // Raw lines cannot fan out to several physical documents, so
         // the advanced editor only opens on single-card contacts.
-        advancedAvailable = distinctRefs(replicas).size() == 1;
+        advancedAvailable = pool.distinctRefs(replicas).size() == 1;
 
         // A non-null changed set means the union merge diverged: the
         // form opens in conflict mode, the same full editor with the
@@ -3652,7 +3541,7 @@ public class MainActivity extends Activity {
                 if (entry.accountEmail.equals(target.accountEmail)) {
                     base.stageMembership(
                             entry.accountEmail,
-                            cardKey(account.account, entry.book.url, entry.card.id),
+                            ContactPool.cardKey(account.account, entry.book.url, entry.card.id),
                             target.book.url,
                             true);
                     return;
@@ -3679,7 +3568,7 @@ public class MainActivity extends Activity {
         if (owner == null) {
             return;
         }
-        String replicaKey = cardKey(owner.account, replica.book.url, replica.card.id);
+        String replicaKey = ContactPool.cardKey(owner.account, replica.book.url, replica.card.id);
 
         if (CardamumClient.isAccountLevel(owner.account)
                 && base.loadMemberships(replica.accountEmail, replicaKey).size() > 1) {
@@ -3727,7 +3616,7 @@ public class MainActivity extends Activity {
                 String id = uid.isEmpty() ? UUID.randomUUID().toString() : uid;
                 base.saveLocal(
                         editingAccountEmail,
-                        cardKey(account.account, editingBook.url, id),
+                        ContactPool.cardKey(account.account, editingBook.url, id),
                         editingBook.url,
                         new Card(id, null, null, vcard));
             } else if (resolvingConflict) {
@@ -3763,7 +3652,7 @@ public class MainActivity extends Activity {
 
         for (Entry entry : editingReplicas) {
             // An m:n replica appears once per book; stage it once.
-            if (!staged.add(replicaRefOf(entry))) {
+            if (!staged.add(pool.replicaRef(entry))) {
                 continue;
             }
 
@@ -3817,10 +3706,10 @@ public class MainActivity extends Activity {
                             vcard);
         }
 
-        String survivorRef = replicaRefOf(survivor);
+        String survivorRef = pool.replicaRef(survivor);
         java.util.Set<String> removed = new java.util.HashSet<>();
         for (Entry entry : editingReplicas) {
-            String ref = replicaRefOf(entry);
+            String ref = pool.replicaRef(entry);
             if (ref.equals(survivorRef) || !removed.add(ref)) {
                 continue;
             }
@@ -3830,17 +3719,34 @@ public class MainActivity extends Activity {
             }
             base.markDeleted(
                     entry.accountEmail,
-                    cardKey(owner.account, entry.book.url, entry.card.id),
+                    ContactPool.cardKey(owner.account, entry.book.url, entry.card.id),
                     entry.card);
         }
 
         toast(getString(R.string.merge_done));
     }
 
-    /** Rebuilds the contacts list from the base (staged edits included). */
+    /**
+     * Rebuilds the contacts list from the base (staged edits included):
+     * the full table scan and the bridge grouping run on the io
+     * executor, and the render lands back on the main thread; the io
+     * executor is single-threaded, so overlapping reloads apply in
+     * order. The account snapshot keeps the grouping off the live
+     * main-thread cache.
+     */
     private void reloadContacts() {
-        contacts = loadEntries();
-        renderContacts();
+        List<AccountEntry> snapshot = new ArrayList<>(accounts);
+        io.execute(
+                () -> {
+                    List<Entry> entries = pool.loadEntries();
+                    List<Group> groups = pool.group(entries, snapshot);
+                    postAlive(
+                            () -> {
+                                contacts = entries;
+                                groupedContacts = groups;
+                                renderContacts();
+                            });
+                });
     }
 
     // ---- vCard helpers ------------------------------------------------------
