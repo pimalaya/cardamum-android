@@ -1126,11 +1126,8 @@ public class MainActivity extends Activity {
         };
     }
 
-    /**
-     * Toggles the contacts app-bar sync icon between the glyph and an
-     * in-place spinner while a sync runs.
-     */
-    /** Pushes the sync flag to every subscribed element. */
+    /** Pushes the sync flag to every subscribed element (the modal
+     *  loader, the drawer's inert sync row). */
     private void setSyncing(boolean value) {
         syncing = value;
         for (java.util.function.Consumer<Boolean> observer : syncObservers) {

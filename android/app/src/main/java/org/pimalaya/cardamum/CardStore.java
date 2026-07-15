@@ -535,7 +535,6 @@ public class CardStore extends SQLiteOpenHelper {
         }
     }
 
-    /** Drops an account and everything under it (its addressbooks and cards). */
     /**
      * Removes an account but keeps its contacts: its live cards are
      * reassigned to the local "On this device" book, cleared of every
@@ -858,24 +857,6 @@ public class CardStore extends SQLiteOpenHelper {
     }
 
     /**
-     * The addressbook's live cards: last sync plus staged edits, minus
-     * staged deletes, resolved through the membership table.
-     */
-    public List<Card> loadCards(String addressbookUrl) {
-        SQLiteDatabase db = getReadableDatabase();
-        try (Cursor cursor =
-                db.rawQuery(
-                        "SELECT c.id, c.uri, c.etag, c.vcard FROM card c"
-                                + " JOIN membership m ON m.account_email = c.account_email"
-                                + " AND m.card_key = c.key"
-                                + " WHERE m.addressbook_url = ? AND c.deleted = 0"
-                                + " AND c.vcard != '' AND m.state != " + MEMBER_REMOVED,
-                        new String[] {addressbookUrl})) {
-            return readCards(cursor);
-        }
-    }
-
-    /**
      * The addressbook's live cards with their write-time index, so the
      * contacts list renders without parsing a single vCard.
      */
@@ -911,19 +892,6 @@ public class CardStore extends SQLiteOpenHelper {
             }
             return cards;
         }
-    }
-
-    private List<Card> readCards(Cursor cursor) {
-        List<Card> cards = new ArrayList<>(cursor.getCount());
-        while (cursor.moveToNext()) {
-            cards.add(
-                    new Card(
-                            cursor.getString(0),
-                            cursor.isNull(1) ? null : cursor.getString(1),
-                            cursor.isNull(2) ? null : cursor.getString(2),
-                            cursor.getString(3)));
-        }
-        return cards;
     }
 
     /** Marks a collection id as the addressbook's phone spoke. */

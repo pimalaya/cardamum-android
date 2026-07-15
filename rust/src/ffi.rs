@@ -938,52 +938,6 @@ pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_pushCards<'local
     .resolve::<LogErrorAndDefault>()
 }
 
-/// `Native.enumCards`: enumerates the card spine (resource name plus
-/// ETag, no body) of the addressbook collection. Returns a JSON array
-/// of `{id, uri, etag}` objects.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_pimalaya_cardamum_client_Native_enumCards<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    transport: JObject<'local>,
-    addressbook_url: JString<'local>,
-    login: JString<'local>,
-    password: JString<'local>,
-) -> JObject<'local> {
-    env.with_env(|env| -> Result<JObject<'local>, Error> {
-        let addressbook_url = read_string(env, &addressbook_url);
-        let login = read_string(env, &login);
-        let password = read_string(env, &password);
-        let credentials = Credentials {
-            login: &login,
-            password: &password,
-        };
-
-        let json = match parse_url(&addressbook_url) {
-            Err(err) => error_json(err),
-            Ok(url) => match Client::new(env, &transport).enum_cards(&url, &credentials) {
-                Ok(refs) => {
-                    let refs: Vec<serde_json::Value> = refs
-                        .into_iter()
-                        .map(|entry| {
-                            serde_json::json!({
-                                "id": entry.id,
-                                "uri": entry.uri,
-                                "etag": entry.etag,
-                            })
-                        })
-                        .collect();
-                    serde_json::Value::Array(refs).to_string()
-                }
-                Err(err) => error_json(err),
-            },
-        };
-
-        Ok(env.new_string(json)?.into())
-    })
-    .resolve::<LogErrorAndDefault>()
-}
-
 /// `Native.syncCards`: lists the collection's changes since the given
 /// cursor (empty runs the initial round: the complete member set plus
 /// the cursor to delta from next time), the backend dispatched from

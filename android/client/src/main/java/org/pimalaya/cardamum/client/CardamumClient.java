@@ -322,11 +322,6 @@ public class CardamumClient {
 
     // ---- Addressbook and card operations ------------------------------------
 
-    /** Connects, authenticates and lists once to prove the account is usable. */
-    public void verify(Account account) {
-        listAddressbooks(account);
-    }
-
     /**
      * Lists the account's addressbooks: the CardDAV discovery walk,
      * the Graph contact folders (default Contacts folder first), the
@@ -384,38 +379,6 @@ public class CardamumClient {
                             addressbookUrl,
                             account.login,
                             account.password));
-        } finally {
-            transport.close();
-        }
-    }
-
-    /**
-     * Enumerates a CardDAV addressbook's card spine (resource name
-     * plus ETag, no body); the bodies are then batch-fetched with
-     * {@link #multigetCards}.
-     */
-    public List<Card> enumCards(Account account, String addressbookUrl) {
-        Transport transport = new Transport();
-        try {
-            JSONArray reply =
-                    array(
-                            Native.enumCards(
-                                    transport,
-                                    addressbookUrl,
-                                    account.login,
-                                    account.password));
-
-            List<Card> cards = new ArrayList<>(reply.length());
-            for (int index = 0; index < reply.length(); index++) {
-                JSONObject entry = object(reply, index);
-                cards.add(
-                        new Card(
-                                string(entry, "id"),
-                                string(entry, "uri"),
-                                optString(entry, "etag"),
-                                ""));
-            }
-            return cards;
         } finally {
             transport.close();
         }

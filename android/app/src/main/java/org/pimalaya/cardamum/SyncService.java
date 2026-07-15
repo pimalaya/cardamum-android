@@ -59,7 +59,7 @@ public class SyncService extends Service {
             Context context = getContext();
 
             String url = Accounts.url(context, account);
-            Log.w("cardamum", "phone sync for " + account.name + ", url " + url);
+            Log.d("cardamum", "phone sync for " + account.name + ", url " + url);
             if (url == null) {
                 return;
             }
@@ -70,7 +70,7 @@ public class SyncService extends Service {
                         new OfflineEngine(store, new CardamumClient(), null, context);
                 OfflineEngine.Report report = new OfflineEngine.Report();
                 engine.syncPhone(url, report);
-                Log.w(
+                Log.d(
                         "cardamum",
                         "phone sync done: " + report.localIn.size() + " in, "
                                 + report.localOut.size() + " out, "

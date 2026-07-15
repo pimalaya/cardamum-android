@@ -303,15 +303,6 @@ final class Native {
             String changes);
 
     /**
-     * Enumerates the addressbook's card spine (resource name plus
-     * ETag, no body) as a JSON array of {@code {id, uri, etag}};
-     * CardDAV only, the incremental primitive behind
-     * {@link #syncCards}'s fallback.
-     */
-    static native String enumCards(
-            Transport transport, String addressbookUrl, String login, String password);
-
-    /**
      * Lists the collection's changes since the given cursor (empty
      * runs the initial round: the complete member set plus the cursor
      * to delta from next time), the backend dispatched from the base

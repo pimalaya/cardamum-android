@@ -74,7 +74,7 @@ public class SyncWorker extends Worker {
             OfflineEngine.Report report =
                     new SyncRunner(context, base, new SecureStore(context), new CardamumClient(), null)
                             .syncBook(book);
-            Log.w(
+            Log.d(
                     "cardamum",
                     "background sync done for " + url + ": remote " + report.remoteIn.size()
                             + " in, " + report.remoteOut.size() + " out, "

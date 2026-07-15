@@ -24,9 +24,9 @@
 //! `offline*` entry points run io-offline's replica engine
 //! (sync, upgrade, mutate), upcalling a Java `OfflineDriver` on each
 //! yield so storage stays in the Java CardStore and remote operations
-//! reuse the backend clients; `enumCards`, `syncCards` and
-//! `multigetCards` are the CardDAV primitives its remote seam builds
-//! on (RFC 6578 sync-collection with a full-enumeration fallback, and
+//! reuse the backend clients; `syncCards` and `multigetCards` are the
+//! CardDAV primitives its remote seam builds on (RFC 6578
+//! sync-collection with a full-enumeration fallback, and
 //! addressbook-multiget body fetches).
 
 mod account;

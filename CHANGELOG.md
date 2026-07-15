@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed removing an account leaving its phone (Android) accounts behind: the delete now removes each of the account's book-backed phone accounts explicitly (ContactsProvider purging their raw contacts with them) and then reconciles against the remaining phone-synced books, the same set the sync path maintains, where it used to reconcile against every subscribed book and count on the absence-purge alone.
 - Fixed the minified builds (every release build, so every APK users actually install) failing all network operations with a JNI method-not-found error, the discovery screen landing on the not-found row plus the Google/Microsoft fallback chooser. The R8 keep rules described an older Transport API (connect, read and write without the URL parameter), so they matched nothing and R8 stripped the real read(String) and write(String, byte[]), which only native code calls; the rules now pin the actual signatures and also cover OfflineDriver.serve, the offline engine's upcall, which had no rule at all. Debug builds do not shrink, which is why development installs never showed it.
 
+### Removed
+
+- Deleted the dead CardDAV enumeration chain exposed over the bridge (the Native.enumCards declaration, its JNI export and the CardamumClient.enumCards wrapper): the io-offline sync path enumerates through syncCards, whose initial-round fallback keeps the internal Rust enumeration, so nothing called the exposed one. Also removed the unused CardamumClient.verify and CardStore.loadCards (with its now-orphaned row reader); the merged-view link verbs (linkGroups, unlinkGroup) stay, reserved for the link-cluster flow.
+
 ### Changed
 
 - The conflict merge now reports whether it needs the user: the bridge's merge-conflict-form result carries a `resolved` verdict (true when no field genuinely collides), so the sync-time auto-resolve and the tap-time resolution form read one decision instead of each re-checking the alternatives by hand. Behaviour is unchanged; the drift risk of the two sites disagreeing on what counts as auto-resolvable is gone.
