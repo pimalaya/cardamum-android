@@ -19,4 +19,15 @@ final class Group {
     Entry primary() {
         return replicas.get(0);
     }
+
+    /** True when any replica is a both-sides-edited sync conflict
+     *  awaiting the user's manual resolution. */
+    boolean conflicted() {
+        for (Entry entry : replicas) {
+            if (entry.conflicted) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

@@ -20,7 +20,6 @@ import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -143,37 +142,17 @@ public class MainActivity extends Activity {
     /** The modal sync dialog, up while the syncing flag is (showSyncDialog). */
     private AlertDialog syncDialog;
 
-    /** The replica pool of the contacts screen. */
-    private List<Entry> contacts = new ArrayList<>();
-
     /** The pool's loader and bridge grouping (built in onCreate). */
     ContactPool pool;
 
-    /** The merged rows as the bridge grouped them, unfiltered. */
-    private List<Group> groupedContacts = new ArrayList<>();
-
-    /** The merged rows, sorted; backs the recycling adapter. */
-    private List<Group> sortedContacts = new ArrayList<>();
-    private ContactsAdapter adapter;
-
-    /** Lower-cased raw-vCard filter from the search bar; empty shows all. */
-    private String searchQuery = "";
-
-    /** Debounced search refresh, so typing does not re-render per keystroke. */
-    private Runnable pendingSearch;
+    /** The contacts screen: list, adapter, search and selection. */
+    private ContactsList contactsList;
 
     /** Sync to re-run once the contacts permission is granted, if any. */
     private Runnable afterContactsPermission;
 
-    /** Multi-select state on the contacts list, keyed by merged group. */
-    private boolean selectionMode;
-    private final java.util.Set<String> selectedKeys = new java.util.HashSet<>();
-
     /** The editor's working state, replaced blank when it leaves. */
     private EditSession edit = new EditSession();
-
-    /** Whether the contacts screen's in-bar search field is open. */
-    private boolean searchOpen;
 
     /** The screen currently shown: a flipper panel, or an overlay. */
     private int screen = PANEL_CONTACTS;
@@ -201,6 +180,7 @@ public class MainActivity extends Activity {
         store = new SecureStore(this);
         base = new CardStore(this);
         pool = new ContactPool(base, accounts);
+        contactsList = new ContactsList(this);
         runner = new SyncRunner(this, base, store, client, syncObserver());
         // The two flows reference each other (the grants land back in
         // the wizard), so one side binds late.
@@ -217,7 +197,7 @@ public class MainActivity extends Activity {
 
         setUpScreens();
         setUpEmailPanel();
-        setUpContactsPanel();
+        contactsList.setUp();
         setUpContactPanel();
         setUpHomePanel();
 
@@ -454,8 +434,8 @@ public class MainActivity extends Activity {
             drawer.closeDrawer(android.view.Gravity.START);
             return;
         }
-        if (screen == PANEL_CONTACTS && selectionMode) {
-            exitSelection();
+        if (screen == PANEL_CONTACTS && contactsList.isSelectionMode()) {
+            contactsList.exitSelection();
             return;
         }
 
@@ -469,9 +449,8 @@ public class MainActivity extends Activity {
 
     /** The app's root: the merged contacts list across every account. */
     private void goHome() {
-        searchQuery = "";
-        closeSearch();
-        exitSelection();
+        contactsList.closeSearch();
+        contactsList.exitSelection();
 
         reloadContacts();
 
@@ -496,7 +475,7 @@ public class MainActivity extends Activity {
      * Refreshes the addressbooks management screen and slides it over
      * the contacts list like a drawer (the list stays put).
      */
-    private void openBooksManager() {
+    void openBooksManager() {
         reloadHome();
         drawer.openDrawer(android.view.Gravity.START);
     }
@@ -1110,6 +1089,12 @@ public class MainActivity extends Activity {
                         == PackageManager.PERMISSION_GRANTED;
     }
 
+    /** True while the merged contacts list is the shown screen (the
+     *  shared bar is the contacts list's only when this holds). */
+    boolean onContactsScreen() {
+        return screen == PANEL_CONTACTS;
+    }
+
     // ---- Sync -----------------------------------------------------------------
 
     /**
@@ -1306,7 +1291,7 @@ public class MainActivity extends Activity {
      * mirror, under a single spinner. The contacts permission is asked
      * only when something actually projects to the phone.
      */
-    private void syncAll() {
+    void syncAll() {
         // The phone passes touch ContactsContract, so they need the
         // permission; reconciling the Android accounts (which also purges
         // a book just switched off) does not, so it always runs.
@@ -1421,133 +1406,14 @@ public class MainActivity extends Activity {
 
     // ---- Contacts screen ----------------------------------------------------
 
-    private void setUpContactsPanel() {
-        findViewById(R.id.contacts_more).setOnClickListener(this::showMoreMenu);
-        findViewById(R.id.contacts_birthdays)
-                .setOnClickListener(
-                        view -> new Birthdays(this).show(new ArrayList<>(sortedContacts)));
-        findViewById(R.id.contacts_duplicates)
-                .setOnClickListener(
-                        view -> new DuplicateReview(this).find(new ArrayList<>(contacts)));
-        // Pull down on the list to run the very same sync as the drawer
-        // (syncAll, with its outcome toast). The gesture only triggers:
-        // its spinner retracts right away, the modal dialog carries the
-        // wait (the FAB keeps its plain icon too).
-        androidx.swiperefreshlayout.widget.SwipeRefreshLayout refresh =
-                findViewById(R.id.contacts_refresh);
-        refresh.setColorSchemeColors(resolveColor(android.R.attr.colorAccent));
-        refresh.setOnRefreshListener(
-                () -> {
-                    refresh.setRefreshing(false);
-                    syncAll();
-                });
-
-        findViewById(R.id.contacts_menu).setOnClickListener(view -> openBooksManager());
-        findViewById(R.id.contacts_merge).setOnClickListener(view -> mergeSelected());
-        findViewById(R.id.contacts_delete).setOnClickListener(view -> confirmDeleteSelected());
-        findViewById(R.id.contacts_close).setOnClickListener(view -> exitSelection());
-        findViewById(R.id.contacts_select_all).setOnClickListener(view -> toggleSelectAll());
-
-        findViewById(R.id.contacts_search).setOnClickListener(view -> openSearch());
-        findViewById(R.id.contacts_search_close).setOnClickListener(view -> closeSearch());
-        ((EditText) findViewById(R.id.contacts_search_input))
-                .addTextChangedListener(
-                        new android.text.TextWatcher() {
-                            @Override
-                            public void beforeTextChanged(
-                                    CharSequence s, int start, int count, int after) {}
-
-                            @Override
-                            public void onTextChanged(
-                                    CharSequence s, int start, int before, int count) {}
-
-                            @Override
-                            public void afterTextChanged(android.text.Editable s) {
-                                String query = s.toString().trim().toLowerCase();
-                                if (pendingSearch != null) {
-                                    main.removeCallbacks(pendingSearch);
-                                }
-                                pendingSearch =
-                                        () -> {
-                                            searchQuery = query;
-                                            renderContacts();
-                                        };
-                                main.postDelayed(pendingSearch, 250);
-                            }
-                        });
-
-        ListView list = findViewById(R.id.contacts_list);
-        adapter = new ContactsAdapter();
-        list.setAdapter(adapter);
-        list.setOnItemClickListener(
-                (parent, view, position, id) -> {
-                    Group group = sortedContacts.get(position);
-                    if (selectionMode) {
-                        toggleSelection(groupKey(group));
-                    } else {
-                        openGroup(group);
-                    }
-                });
-        list.setOnItemLongClickListener(
-                (parent, view, position, id) -> {
-                    selectionMode = true;
-                    toggleSelection(groupKey(sortedContacts.get(position)));
-                    return true;
-                });
-
-        TextView sticky = findViewById(R.id.contacts_sticky_letter);
-        // Clickable only in selection mode (else it passes touches through
-        // to the list): tapping it selects or clears that whole letter.
-        sticky.setClickable(false);
-        sticky.setOnClickListener(view -> toggleLetter(sticky.getText().toString()));
-        list.setOnScrollListener(
-                new android.widget.AbsListView.OnScrollListener() {
-                    @Override
-                    public void onScrollStateChanged(android.widget.AbsListView v, int state) {}
-
-                    @Override
-                    public void onScroll(
-                            android.widget.AbsListView v, int first, int count, int total) {
-                        if (first < sortedContacts.size()) {
-                            sticky.setText(letter(sortedContacts.get(first).primary().displayName()));
-                        }
-                    }
-                });
-
-    }
-
-    /** The contacts overflow menu: Import, Export (sync lives in the
-     *  drawer and the pull-down, duplicates and birthdays on their own
-     *  bar buttons). Text-only: the framework popup renders forced
-     *  icons flush against their labels on some Android releases. */
-    private void showMoreMenu(View anchor) {
-        android.widget.PopupMenu menu = new android.widget.PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, R.string.import_contacts);
-        menu.getMenu().add(0, 2, 1, R.string.export_contacts);
-        menu.setOnMenuItemClickListener(
-                item -> {
-                    switch (item.getItemId()) {
-                        case 1:
-                            importContacts();
-                            return true;
-                        case 2:
-                            exportContacts();
-                            return true;
-                        default:
-                            return false;
-                    }
-                });
-        menu.show();
-    }
-
     /**
      * Opens a merged row in the editor: one form for the whole contact
      * (docs/merged-view.md), the union of the replicas' documents with
      * per-field alternative chips when they diverge. Saving fans the
      * form out onto every replica.
      */
-    private void openGroup(Group group) {
-        if (conflicted(group)) {
+    void openGroup(Group group) {
+        if (group.conflicted()) {
             openConflict(group);
         } else {
             openMerged(group.replicas);
@@ -1633,7 +1499,7 @@ public class MainActivity extends Activity {
     }
 
     /** Prompts for a vCard file to import. */
-    private void importContacts() {
+    void importContacts() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -1756,8 +1622,8 @@ public class MainActivity extends Activity {
 
     /** Prompts for a destination file, then exports the active view as a
      *  single vCard file. */
-    private void exportContacts() {
-        if (sortedContacts.isEmpty()) {
+    void exportContacts() {
+        if (contactsList.visibleGroups().isEmpty()) {
             toast(getString(R.string.export_empty));
             return;
         }
@@ -1774,7 +1640,7 @@ public class MainActivity extends Activity {
      * document appended verbatim, off the main thread behind the FAB loader.
      */
     private void exportFile(Uri uri) {
-        List<Group> snapshot = new ArrayList<>(sortedContacts);
+        List<Group> snapshot = new ArrayList<>(contactsList.visibleGroups());
         setAuthLoading(R.id.fab, R.id.fab_progress, true);
         io.execute(
                 () -> {
@@ -1858,165 +1724,6 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-
-    /**
-     * Groups the replica pool into merged rows (UID-linked and sorted
-     * by the bridge), filters them by the search query and refreshes
-     * the list. A group matches the query when any of its replicas
-     * does.
-     */
-    private void renderContacts() {
-        TextView sticky = findViewById(R.id.contacts_sticky_letter);
-        updateSelectionUi();
-
-        sortedContacts = new ArrayList<>();
-        for (Group group : groupedContacts) {
-            boolean matches = searchQuery.isEmpty();
-            for (Entry entry : group.replicas) {
-                if (matches || entry.card.vcard.toLowerCase().contains(searchQuery)) {
-                    matches = true;
-                    break;
-                }
-            }
-            if (matches) {
-                sortedContacts.add(group);
-            }
-        }
-
-        // Conflicts float to the top so they cannot be missed; the sort
-        // is stable, so the bridge's display-name order survives within
-        // the conflicted and the settled buckets alike.
-        java.util.Collections.sort(
-                sortedContacts,
-                (left, right) -> Boolean.compare(conflicted(right), conflicted(left)));
-        adapter.notifyDataSetChanged();
-
-        // One empty state for every cause: a search miss, an empty
-        // addressbook, or no account at all.
-        boolean empty = sortedContacts.isEmpty();
-        findViewById(R.id.contacts_empty).setVisibility(empty ? View.VISIBLE : View.GONE);
-        sticky.setText(empty ? "" : letter(sortedContacts.get(0).primary().displayName()));
-
-        // Rows are uniform (empty sub-lines keep their space): size the
-        // sticky letter box to the row height once, so both letters'
-        // centres align.
-        ListView list = findViewById(R.id.contacts_list);
-        list.post(
-                () -> {
-                    View first = list.getChildAt(0);
-                    if (first != null && sticky.getLayoutParams().height != first.getHeight()) {
-                        sticky.getLayoutParams().height = first.getHeight();
-                        sticky.requestLayout();
-                    }
-                });
-    }
-
-    /** Recycling adapter for the contacts list. */
-    private final class ContactsAdapter extends android.widget.BaseAdapter {
-        @Override
-        public int getCount() {
-            return sortedContacts.size();
-        }
-
-        @Override
-        public Object getItem(int position) {
-            return sortedContacts.get(position);
-        }
-
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
-
-        @Override
-        public View getView(int position, View convertView, android.view.ViewGroup parent) {
-            View row =
-                    convertView != null
-                            ? convertView
-                            : getLayoutInflater().inflate(R.layout.item_contact, parent, false);
-
-            Group group = sortedContacts.get(position);
-            Entry entry = group.primary();
-            String name = entry.displayName();
-
-            TextView avatar = row.findViewById(R.id.contact_avatar);
-            avatar.setText(letter(name));
-            avatar.setBackground(
-                    avatarCircle(entry.card != null ? entry.card.vcard : name));
-
-            ((TextView) row.findViewById(R.id.contact_name)).setText(name);
-
-            // One supporting line: the first phone, else the first
-            // email, else the card's fallback info.
-            String subtitle = entry.phone;
-            if (subtitle == null || subtitle.isEmpty()) {
-                subtitle = entry.email;
-            }
-            if (subtitle == null || subtitle.isEmpty()) {
-                subtitle = entry.info;
-            }
-            bindLine(row.findViewById(R.id.contact_subtitle), subtitle);
-
-            // The link glyph and card count, for a contact backed by
-            // several physical cards.
-            int cards = pool.distinctRefs(group.replicas).size();
-            row.findViewById(R.id.contact_link_icon)
-                    .setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
-            TextView links = row.findViewById(R.id.contact_links);
-            links.setVisibility(cards > 1 ? View.VISIBLE : View.GONE);
-            links.setText(String.valueOf(cards));
-
-            // The trailing slot: the selection checkbox, or (outside
-            // selection) the warning flag for a both-sides-edited conflict
-            // awaiting resolution or a merged-view replica divergence.
-            boolean isFlagged = conflicted(group) || diverged(group);
-            CheckBox check = row.findViewById(R.id.contact_check);
-            check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-            check.setChecked(selectedKeys.contains(groupKey(group)));
-            android.widget.ImageView danger = row.findViewById(R.id.contact_diverged);
-            danger.setImageTintList(
-                    android.content.res.ColorStateList.valueOf(
-                            resolveColor(android.R.attr.colorError)));
-            danger.setVisibility(!selectionMode && isFlagged ? View.VISIBLE : View.GONE);
-            row.findViewById(R.id.contact_end_slot)
-                    .setVisibility(selectionMode || isFlagged ? View.VISIBLE : View.GONE);
-
-            // A contact living only in the hidden local book (attached to
-            // no addressbook) is shown muted.
-            row.setAlpha(attachedToNoBook(group) ? 0.5f : 1f);
-
-            return row;
-        }
-    }
-
-    /** True when every replica of the group is in the hidden local book. */
-    private boolean attachedToNoBook(Group group) {
-        for (Entry entry : group.replicas) {
-            if (!LocalBook.is(entry.accountEmail)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private String groupKey(Group group) {
-        return group.key;
-    }
-
-    /** The single selected merged row, or null when several are. */
-    private Group selectedGroup() {
-        Group selected = null;
-        for (Group group : sortedContacts) {
-            if (selectedKeys.contains(groupKey(group))) {
-                if (selected != null) {
-                    return null;
-                }
-                selected = group;
-            }
-        }
-        return selected;
-    }
-
     /** The subscribed addressbooks the group does not already live in. */
     private List<BookEntry> booksOutside(Group group) {
         java.util.Set<String> current = new java.util.HashSet<>();
@@ -2083,28 +1790,6 @@ public class MainActivity extends Activity {
         base.saveLocal(target.accountEmail, key, target.book.url, new Card(id, null, null, vcard));
     }
 
-    /** The selected rows' replicas, in list order. */
-    private List<Entry> selectedReplicas() {
-        List<Entry> replicas = new ArrayList<>();
-        for (Group group : sortedContacts) {
-            if (selectedKeys.contains(groupKey(group))) {
-                replicas.addAll(group.replicas);
-            }
-        }
-        return replicas;
-    }
-
-    /**
-     * Merges the selected rows into one single card through the merge
-     * form: the user picks the addressbook whose copy remains (skipped
-     * when every card shares one addressbook), the union of the
-     * documents prefills the editor, and saving stages the merged
-     * content onto the surviving card and a delete for every other.
-     */
-    private void mergeSelected() {
-        mergeReplicas(selectedReplicas());
-    }
-
     /** The survivor chooser over any replica list, then the merge. */
     void mergeReplicas(List<Entry> replicas) {
         if (pool.distinctRefs(replicas).size() < 2) {
@@ -2159,7 +1844,7 @@ public class MainActivity extends Activity {
 
     /** Absorbs identical cards into the survivor, no form needed. */
     private void mergeDirect(List<Entry> replicas, Entry survivor) {
-        exitSelection();
+        contactsList.exitSelection();
 
         String survivorRef = pool.replicaRef(survivor);
         java.util.Set<String> removed = new java.util.HashSet<>();
@@ -2184,298 +1869,10 @@ public class MainActivity extends Activity {
 
     /** Opens the merge form with a surviving replica armed. */
     private void openMergeForm(List<Entry> replicas, Entry survivor) {
-        exitSelection();
+        contactsList.exitSelection();
         if (openMerged(replicas)) {
             edit.mergeSurvivor = survivor;
         }
-    }
-
-    /** The distinct physical cards behind a replica list, as refs. */
-    /** Toggles a contact's selection and refreshes the list and app bar. */
-    private void toggleSelection(String key) {
-        if (!selectedKeys.remove(key)) {
-            selectedKeys.add(key);
-        }
-        if (selectedKeys.isEmpty()) {
-            exitSelection();
-        } else {
-            updateSelectionUi();
-            adapter.notifyDataSetChanged();
-        }
-    }
-
-    private void exitSelection() {
-        selectionMode = false;
-        selectedKeys.clear();
-        updateSelectionUi();
-        adapter.notifyDataSetChanged();
-    }
-
-    /** True when every listed contact is selected. */
-    private boolean allSelected() {
-        if (sortedContacts.isEmpty()) {
-            return false;
-        }
-        for (Group group : sortedContacts) {
-            if (!selectedKeys.contains(groupKey(group))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /** Selects every contact, or clears them when all are already selected. */
-    private void toggleSelectAll() {
-        boolean all = allSelected();
-        selectedKeys.clear();
-        if (!all) {
-            for (Group group : sortedContacts) {
-                selectedKeys.add(groupKey(group));
-            }
-        }
-        updateSelectionUi();
-        adapter.notifyDataSetChanged();
-    }
-
-    /**
-     * Selects every contact under a letter, or clears them when they are
-     * all already selected (the sticky letter's tap target in selection
-     * mode).
-     */
-    private void toggleLetter(String letter) {
-        List<String> keys = new ArrayList<>();
-        for (Group group : sortedContacts) {
-            if (letter.equals(letter(group.primary().displayName()))) {
-                keys.add(groupKey(group));
-            }
-        }
-        boolean all = !keys.isEmpty();
-        for (String key : keys) {
-            all &= selectedKeys.contains(key);
-        }
-        for (String key : keys) {
-            if (all) {
-                selectedKeys.remove(key);
-            } else {
-                selectedKeys.add(key);
-            }
-        }
-        updateSelectionUi();
-        adapter.notifyDataSetChanged();
-    }
-
-    /** Clears the search query (the bar itself is always visible). */
-    /** Swaps the title for the search pill and opens the keyboard. */
-    private void openSearch() {
-        searchOpen = true;
-        findViewById(R.id.bar_title).setVisibility(View.GONE);
-        findViewById(R.id.contacts_bar_spacer).setVisibility(View.GONE);
-        findViewById(R.id.contacts_search).setVisibility(View.GONE);
-        findViewById(R.id.contacts_search_pill).setVisibility(View.VISIBLE);
-        findViewById(R.id.contacts_search_close).setVisibility(View.VISIBLE);
-
-        EditText input = findViewById(R.id.contacts_search_input);
-        input.requestFocus();
-        android.view.inputmethod.InputMethodManager imm =
-                (android.view.inputmethod.InputMethodManager)
-                        getSystemService(INPUT_METHOD_SERVICE);
-        imm.showSoftInput(input, 0);
-    }
-
-    /** Clears the query and gives the title its place back. */
-    private void closeSearch() {
-        ((EditText) findViewById(R.id.contacts_search_input)).setText("");
-        if (!searchOpen) {
-            return;
-        }
-        searchOpen = false;
-
-        hideKeyboard();
-        // The chrome only moves when the contacts screen shows it (a
-        // sync landing while another screen is open also ends here).
-        if (screen != PANEL_CONTACTS) {
-            return;
-        }
-        findViewById(R.id.contacts_search_pill).setVisibility(View.GONE);
-        findViewById(R.id.contacts_search_close).setVisibility(View.GONE);
-        findViewById(R.id.bar_title).setVisibility(View.VISIBLE);
-        findViewById(R.id.contacts_bar_spacer).setVisibility(View.VISIBLE);
-        findViewById(R.id.contacts_search)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_more_slot)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-    }
-
-    /**
-     * The contacts screen's chrome, per selection and search state (the
-     * bar is shared across screens, so this only runs while the
-     * contacts screen shows; applyChrome re-runs it on every return).
-     */
-    private void updateSelectionUi() {
-        if (screen != PANEL_CONTACTS) {
-            return;
-        }
-
-        // The selected count takes the title's spot, so an open search
-        // gives way (and its query with it).
-        if (selectionMode) {
-            closeSearch();
-        }
-
-        TextView title = findViewById(R.id.bar_title);
-        if (selectionMode) {
-            title.setText(getString(R.string.selected_count, selectedKeys.size()));
-        } else {
-            title.setText(R.string.contacts_title);
-        }
-        title.setVisibility(searchOpen ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_bar_spacer)
-                .setVisibility(searchOpen ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_search_pill)
-                .setVisibility(searchOpen ? View.VISIBLE : View.GONE);
-        findViewById(R.id.contacts_search_close)
-                .setVisibility(searchOpen ? View.VISIBLE : View.GONE);
-
-        findViewById(R.id.contacts_search)
-                .setVisibility(selectionMode || searchOpen ? View.GONE : View.VISIBLE);
-        // The birthday and duplicates icons stay through search (like
-        // the overflow slot), so the pill shrinks to end at them.
-        findViewById(R.id.contacts_birthdays)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_duplicates)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_menu).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.contacts_close)
-                .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // Merging needs at least two physical cards (one merged row
-        // already offers that).
-        findViewById(R.id.contacts_merge)
-                .setVisibility(
-                        selectionMode && pool.distinctRefs(selectedReplicas()).size() > 1
-                                ? View.VISIBLE
-                                : View.GONE);
-        findViewById(R.id.contacts_delete)
-                .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        // The select-all box, checked when every contact is selected. The
-        // sticky letter only intercepts taps (to select its letter) while
-        // selecting.
-        findViewById(R.id.contacts_select_all_slot)
-                .setVisibility(selectionMode ? View.VISIBLE : View.GONE);
-        ((CheckBox) findViewById(R.id.contacts_select_all))
-                .setChecked(selectionMode && allSelected());
-        findViewById(R.id.contacts_sticky_letter).setClickable(selectionMode);
-        // The whole overflow slot goes in selection mode, not just the
-        // inner button: an empty 48dp frame would push the selection icons
-        // off the edge. It stays through search like the two icons above.
-        findViewById(R.id.contacts_more_slot)
-                .setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-        findViewById(R.id.fab).setVisibility(selectionMode ? View.GONE : View.VISIBLE);
-    }
-
-    /** Confirms, then stages a delete for every selected contact. */
-    private void confirmDeleteSelected() {
-        new AlertDialog.Builder(this)
-                .setMessage(R.string.delete_selected_confirm)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> deleteSelected())
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
-    }
-
-    private void deleteSelected() {
-        // Deleting a merged row deletes every replica behind it, each
-        // staged against its own account.
-        for (Group group : sortedContacts) {
-            if (selectedKeys.contains(groupKey(group))) {
-                for (Entry entry : group.replicas) {
-                    AccountEntry account = accountFor(entry.accountEmail);
-                    if (account == null) {
-                        continue;
-                    }
-                    base.markDeleted(
-                            entry.accountEmail,
-                            ContactPool.cardKey(account.account, entry.book.url, entry.card.id),
-                            entry.card);
-                }
-            }
-        }
-        selectionMode = false;
-        selectedKeys.clear();
-        reloadContacts();
-    }
-
-    /**
-     * A muted round avatar background, its hue mapped from the card's
-     * raw vCard rather than the display name: distinct contacts (their
-     * UID and address fields differ) spread across the wheel, while a
-     * card lightly edited keeps almost the same colour.
-     */
-    private android.graphics.drawable.GradientDrawable avatarCircle(String vcard) {
-        int color =
-                android.graphics.Color.HSVToColor(new float[] {hueOf(vcard), 0.4f, 0.55f});
-        android.graphics.drawable.GradientDrawable circle =
-                new android.graphics.drawable.GradientDrawable();
-        circle.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        circle.setColor(color);
-        return circle;
-    }
-
-    /**
-     * Maps a vCard to a hue in [0, 360) by summing its code points. The
-     * sum is locality preserving, so a one-character edit shifts the hue
-     * by one degree, yet the differing name, email and UID keep distinct
-     * cards far apart (unlike hashing the display name, where near
-     * identical names collapse onto near identical hues).
-     */
-    private static float hueOf(String vcard) {
-        if (vcard == null) {
-            return 0f;
-        }
-        long sum = 0;
-        for (int index = 0; index < vcard.length(); index++) {
-            sum += vcard.charAt(index);
-        }
-        return sum % 360;
-    }
-
-    /** Sets a diminished sub-line, hiding it when the value is empty. */
-    private void bindLine(TextView view, String value) {
-        if (value == null || value.isEmpty()) {
-            view.setVisibility(View.GONE);
-        } else {
-            view.setText(value);
-            view.setVisibility(View.VISIBLE);
-        }
-    }
-
-    /** True when the linked replicas' normalized contents differ. */
-    private static boolean diverged(Group group) {
-        String hash = group.primary().hash;
-        for (Entry entry : group.replicas) {
-            if (!hash.equals(entry.hash)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** True when any replica is a both-sides-edited sync conflict awaiting
-     *  the user's manual resolution. */
-    private static boolean conflicted(Group group) {
-        for (Entry entry : group.replicas) {
-            if (entry.conflicted) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static String letter(String name) {
-        String trimmed = name.trim();
-        if (trimmed.isEmpty()) {
-            return "#";
-        }
-        char first = Character.toUpperCase(trimmed.charAt(0));
-        return Character.isLetter(first) ? String.valueOf(first) : "#";
     }
 
     // ---- Contact screen -----------------------------------------------------
@@ -3330,27 +2727,9 @@ public class MainActivity extends Activity {
         toast(getString(R.string.merge_done));
     }
 
-    /**
-     * Rebuilds the contacts list from the base (staged edits included):
-     * the full table scan and the bridge grouping run on the io
-     * executor, and the render lands back on the main thread; the io
-     * executor is single-threaded, so overlapping reloads apply in
-     * order. The account snapshot keeps the grouping off the live
-     * main-thread cache.
-     */
+    /** Rebuilds the contacts list from the base (staged edits included). */
     void reloadContacts() {
-        List<AccountEntry> snapshot = new ArrayList<>(accounts);
-        io.execute(
-                () -> {
-                    List<Entry> entries = pool.loadEntries();
-                    List<Group> groups = pool.group(entries, snapshot);
-                    postAlive(
-                            () -> {
-                                contacts = entries;
-                                groupedContacts = groups;
-                                renderContacts();
-                            });
-                });
+        contactsList.reload();
     }
 
     // ---- vCard helpers ------------------------------------------------------
@@ -3485,13 +2864,13 @@ public class MainActivity extends Activity {
                     fab.setImageResource(R.drawable.ic_person_add);
                     fab.setContentDescription(getString(R.string.contacts_add));
                     fab.setVisibility(View.VISIBLE);
-                    updateSelectionUi();
+                    contactsList.updateSelectionUi();
                 };
         contacts.fab = this::addContact;
         contacts.systemBack =
                 () -> {
-                    if (searchOpen) {
-                        closeSearch();
+                    if (contactsList.isSearchOpen()) {
+                        contactsList.closeSearch();
                     } else {
                         // The merged list is the app's root itself.
                         MainActivity.super.onBackPressed();
@@ -3703,7 +3082,7 @@ public class MainActivity extends Activity {
      * arriving after a rotation or a finish would raise dialogs
      * against a dead window (BadTokenException).
      */
-    private void postAlive(Runnable action) {
+    void postAlive(Runnable action) {
         main.post(
                 () -> {
                     if (!isDestroyed()) {
