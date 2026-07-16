@@ -2,7 +2,8 @@
 //! addressbooks and cards, the batch create and delete verbs, group
 //! membership edits and the sync-token round.
 
-use io_google_people::{
+use io_http::rfc6750::bearer::HttpAuthBearer;
+use io_people::{
     coroutine::{PeopleCoroutine, PeopleCoroutineState, PeopleYield},
     v1::{
         rest::{
@@ -25,7 +26,6 @@ use io_google_people::{
         send::{PEOPLE_API_BASE, PeopleSendError, PeopleSendOutput},
     },
 };
-use io_http::rfc6750::bearer::HttpAuthBearer;
 
 use crate::{
     client::{Client, convert::coroutine_error},
@@ -499,7 +499,7 @@ impl<'a, 'local> Client<'a, 'local> {
     }
 }
 
-/// io-google-people person to the JNI-facing card shape: the projected
+/// io-people person to the JNI-facing card shape: the projected
 /// vCard document, the person id (resource name minus the `people/`
 /// prefix) as both display id and addressing key (uri), the person
 /// etag as ETag, and the contact group memberships (minus their

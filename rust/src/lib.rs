@@ -26,7 +26,7 @@
 //! Graph contact resources to and from the vCard document of record,
 //! JMAP runs io-jmap's RFC 9610 coroutines with the jmap module
 //! converting ContactCards to and from vCards via vcard-rs (RFC 9555),
-//! and Google runs io-google-people's coroutines with the google module
+//! and Google runs io-people's coroutines with the google module
 //! projecting People person resources to and from vCards.
 //!
 //! ## Offline engine

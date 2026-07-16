@@ -1,6 +1,6 @@
 # Google People API backend
 
-The fourth backend behind CardamumClient: accounts whose base URL carries the `google://<email>` sentinel route every operation through io-google-people's coroutines, with rust/src/google.rs projecting People person resources to and from the vCard document of record. The account exposes one Contacts addressbook (the People API has no folders; contact groups are m:n labels), and contacts list through `people.connections.list` paging.
+The fourth backend behind CardamumClient: accounts whose base URL carries the `google://<email>` sentinel route every operation through io-people's coroutines, with rust/src/google.rs projecting People person resources to and from the vCard document of record. The account exposes one Contacts addressbook (the People API has no folders; contact groups are m:n labels), and contacts list through `people.connections.list` paging.
 
 Two People mechanics shape the projection:
 

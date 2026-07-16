@@ -9,14 +9,12 @@ use io_http::{rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic};
 use io_jmap::{
     coroutine::{JmapCoroutine, JmapCoroutineState, JmapYield},
     rfc8620::{
-        JmapMethodError, JmapSession, changes::*, coroutine::JmapRedirectYield, session_get::*,
+        changes::*, coroutine::JmapRedirectYield, error::JmapMethodError, session::JmapSession,
+        session_get::*,
     },
     rfc9610::{
         address_book::{JmapAddressBook, get::*},
-        contact_card::{
-            JmapContactCard, JmapContactCardPatch, JmapContactCardSetItemError, changes::*, get::*,
-            query::*, set::*,
-        },
+        contact_card::{JmapContactCard, changes::*, get::*, query::*, set::*},
     },
 };
 use secrecy::SecretString;

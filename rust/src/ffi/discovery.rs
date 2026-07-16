@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use io_pim_discovery::compose::{
-    collect::ConfigCollector,
-    types::{Service, ServiceConfig},
+    collect::DiscoveryConfigCollector,
+    config::{DiscoveryService, DiscoveryServiceConfig},
 };
 use jni::{
     Env, EnvUnowned,
@@ -206,11 +206,11 @@ fn search_mechanism_json<'local>(
 /// io-pim-discovery's pure collector, restricted to the services the
 /// app drives (CardDAV, JMAP).
 fn search_merge(lists: &str) -> Result<String, String> {
-    let lists: Vec<Vec<ServiceConfig>> =
+    let lists: Vec<Vec<DiscoveryServiceConfig>> =
         from_str(lists).map_err(|err| format!("Invalid config lists: {err}"))?;
 
-    let services = BTreeSet::from([Service::Carddav, Service::Jmap]);
-    let mut collector = ConfigCollector::new(services);
+    let services = BTreeSet::from([DiscoveryService::Carddav, DiscoveryService::Jmap]);
+    let mut collector = DiscoveryConfigCollector::new(services);
 
     for configs in lists {
         collector.collect(configs);

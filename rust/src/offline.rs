@@ -18,14 +18,20 @@ use core::fmt::Display;
 use std::collections::BTreeMap;
 
 use io_offline::{
-    change::{Change, WriteOp},
-    collection::Checkpoint,
+    change::{OfflineChange, OfflineWriteOp},
+    collection::OfflineCheckpoint,
     coroutine::*,
-    mutate::{Mutation, OfflineMutate},
-    object::{Hash, Object},
-    placement::{Base, Flags, Handle, Level, LinkId, Meta, Origin, Placement, Status},
-    remote::{FetchedItem, PushOutcome, PushResult, RemoteItem, RemoteSnapshot, Tier},
-    storage::Loaded,
+    mutate::{OfflineMutate, OfflineMutation},
+    object::{OfflineHash, OfflineObject},
+    placement::{
+        OfflineBase, OfflineFlags, OfflineHandle, OfflineLevel, OfflineLinkId, OfflineMeta,
+        OfflineOrigin, OfflinePlacement, OfflineStatus,
+    },
+    remote::{
+        OfflineFetchedItem, OfflinePushOutcome, OfflinePushResult, OfflineRemoteItem,
+        OfflineRemoteSnapshot, OfflineTier,
+    },
+    storage::OfflineLoaded,
     sync::{OfflineSync, OfflineSyncOptions},
     upgrade::OfflineUpgrade,
 };
@@ -68,8 +74,8 @@ pub fn upgrade<'local>(
     collection: &str,
     handles: Vec<String>,
 ) -> Result<Value, BridgeError> {
-    let handles = handles.into_iter().map(Handle::from).collect();
-    let coroutine = OfflineUpgrade::new(collection, handles, Tier::Full);
+    let handles = handles.into_iter().map(OfflineHandle::from).collect();
+    let coroutine = OfflineUpgrade::new(collection, handles, OfflineTier::Full);
     let report = Driver::new(env, driver).run(coroutine)?;
 
     Ok(json!({
@@ -156,7 +162,7 @@ fn yield_json(yielded: &OfflineYield) -> String {
         }),
         OfflineYield::WantsLookupObject(links) => json!({
             "op": "lookup",
-            "links": links.iter().map(LinkId::as_str).collect::<Vec<_>>(),
+            "links": links.iter().map(OfflineLinkId::as_str).collect::<Vec<_>>(),
         }),
         OfflineYield::WantsWrite(ops) => json!({
             "op": "write",
@@ -174,10 +180,10 @@ fn yield_json(yielded: &OfflineYield) -> String {
         } => json!({
             "op": "fetch",
             "collection": collection.as_str(),
-            "handles": handles.iter().map(Handle::as_str).collect::<Vec<_>>(),
+            "handles": handles.iter().map(OfflineHandle::as_str).collect::<Vec<_>>(),
             "tier": match tier {
-                Tier::Meta => "meta",
-                Tier::Full => "full",
+                OfflineTier::Meta => "meta",
+                OfflineTier::Full => "full",
             },
         }),
         OfflineYield::WantsPush {
@@ -210,39 +216,43 @@ fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeEr
     let arg = match yielded {
         OfflineYield::WantsLoad(_) => {
             let loaded: LoadedJson = parse(reply)?;
-            OfflineArg::Load(Loaded {
-                placements: loaded.placements.into_iter().map(Placement::from).collect(),
+            OfflineArg::Load(OfflineLoaded {
+                placements: loaded
+                    .placements
+                    .into_iter()
+                    .map(OfflinePlacement::from)
+                    .collect(),
                 checkpoint: loaded
                     .checkpoint
                     .filter(|token| !token.is_empty())
-                    .map(|token| Checkpoint(token.into_bytes())),
+                    .map(|token| OfflineCheckpoint(token.into_bytes())),
             })
         }
         OfflineYield::WantsLookupObject(_) => {
             let lookup: LookupJson = parse(reply)?;
-            let objects: BTreeMap<LinkId, Hash> = lookup
+            let objects: BTreeMap<OfflineLinkId, OfflineHash> = lookup
                 .objects
                 .into_iter()
-                .map(|(link, hash)| (LinkId(link), Hash(hash)))
+                .map(|(link, hash)| (OfflineLinkId(link), OfflineHash(hash)))
                 .collect();
             OfflineArg::LookupObject(objects)
         }
         OfflineYield::WantsWrite(_) => OfflineArg::Write,
         OfflineYield::WantsEnumerate { .. } => {
             let snapshot: SnapshotJson = parse(reply)?;
-            OfflineArg::Enumerate(RemoteSnapshot {
+            OfflineArg::Enumerate(OfflineRemoteSnapshot {
                 items: snapshot
                     .items
                     .into_iter()
-                    .map(|item| RemoteItem {
-                        handle: Handle(item.handle),
-                        flags: Flags::from_iter(item.flags),
+                    .map(|item| OfflineRemoteItem {
+                        handle: OfflineHandle(item.handle),
+                        flags: OfflineFlags::from_iter(item.flags),
                         revision: item.revision,
                     })
                     .collect(),
-                vanished: snapshot.vanished.into_iter().map(Handle).collect(),
+                vanished: snapshot.vanished.into_iter().map(OfflineHandle).collect(),
                 complete: snapshot.complete,
-                checkpoint: Checkpoint(snapshot.checkpoint.unwrap_or_default().into_bytes()),
+                checkpoint: OfflineCheckpoint(snapshot.checkpoint.unwrap_or_default().into_bytes()),
             })
         }
         OfflineYield::WantsFetch { .. } => {
@@ -250,12 +260,12 @@ fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeEr
             let items = fetched
                 .items
                 .into_iter()
-                .map(|item| FetchedItem {
-                    handle: Handle(item.handle),
-                    link_id: LinkId(item.link_id),
-                    meta: Meta(item.meta),
+                .map(|item| OfflineFetchedItem {
+                    handle: OfflineHandle(item.handle),
+                    link_id: OfflineLinkId(item.link_id),
+                    meta: OfflineMeta(item.meta),
                     body: match (item.hash, item.body) {
-                        (Some(hash), Some(body)) => Some((Hash(hash), body.into_bytes())),
+                        (Some(hash), Some(body)) => Some((OfflineHash(hash), body.into_bytes())),
                         _ => None,
                     },
                     revision: item.revision,
@@ -268,14 +278,14 @@ fn parse_arg(yielded: &OfflineYield, reply: &str) -> Result<OfflineArg, BridgeEr
             let results = pushed
                 .results
                 .into_iter()
-                .map(|result| PushResult {
-                    handle: Handle(result.handle),
+                .map(|result| OfflinePushResult {
+                    handle: OfflineHandle(result.handle),
                     outcome: if result.accepted {
-                        PushOutcome::Accepted
+                        OfflinePushOutcome::Accepted
                     } else {
-                        PushOutcome::Rejected
+                        OfflinePushOutcome::Rejected
                     },
-                    assigned: result.assigned.map(Handle),
+                    assigned: result.assigned.map(OfflineHandle),
                     revision: result.revision,
                 })
                 .collect();
@@ -293,7 +303,7 @@ fn parse<'de, T: Deserialize<'de>>(reply: &'de str) -> Result<T, String> {
 /// Checkpoints are opaque bytes to the engine; every token this app
 /// round-trips (WebDAV sync-token, JMAP state) is text, so the wire
 /// carries them as plain strings.
-fn checkpoint_str(checkpoint: &Checkpoint) -> String {
+fn checkpoint_str(checkpoint: &OfflineCheckpoint) -> String {
     String::from_utf8_lossy(&checkpoint.0).into_owned()
 }
 
@@ -331,26 +341,26 @@ struct PlacementJson {
     origin: Option<OriginJson>,
 }
 
-impl From<PlacementJson> for Placement {
+impl From<PlacementJson> for OfflinePlacement {
     fn from(wire: PlacementJson) -> Self {
         Self {
             collection: wire.collection.into(),
-            handle: Handle(wire.handle),
-            link_id: wire.link_id.map(LinkId),
-            object: wire.object.map(Hash),
+            handle: OfflineHandle(wire.handle),
+            link_id: wire.link_id.map(OfflineLinkId),
+            object: wire.object.map(OfflineHash),
             level: wire.level.into(),
-            meta: wire.meta.map(Meta),
-            flags: Flags::from_iter(wire.flags),
+            meta: wire.meta.map(OfflineMeta),
+            flags: OfflineFlags::from_iter(wire.flags),
             status: wire.status.into(),
             conflict_revision: wire.conflict_revision,
-            base: wire.base.map(Base::from),
-            origin: wire.origin.map(Origin::from),
+            base: wire.base.map(OfflineBase::from),
+            origin: wire.origin.map(OfflineOrigin::from),
         }
     }
 }
 
-impl From<&Placement> for PlacementJson {
-    fn from(placement: &Placement) -> Self {
+impl From<&OfflinePlacement> for PlacementJson {
+    fn from(placement: &OfflinePlacement) -> Self {
         Self {
             collection: placement.collection.as_str().into(),
             handle: placement.handle.as_str().into(),
@@ -381,18 +391,18 @@ struct BaseJson {
     object: Option<String>,
 }
 
-impl From<BaseJson> for Base {
+impl From<BaseJson> for OfflineBase {
     fn from(wire: BaseJson) -> Self {
         Self {
-            flags: Flags::from_iter(wire.flags),
+            flags: OfflineFlags::from_iter(wire.flags),
             revision: wire.revision,
-            object: wire.object.map(Hash),
+            object: wire.object.map(OfflineHash),
         }
     }
 }
 
-impl From<&Base> for BaseJson {
-    fn from(base: &Base) -> Self {
+impl From<&OfflineBase> for BaseJson {
+    fn from(base: &OfflineBase) -> Self {
         Self {
             flags: base.flags.0.iter().cloned().collect(),
             revision: base.revision.clone(),
@@ -409,17 +419,17 @@ struct OriginJson {
     handle: String,
 }
 
-impl From<OriginJson> for Origin {
+impl From<OriginJson> for OfflineOrigin {
     fn from(wire: OriginJson) -> Self {
         Self {
             collection: wire.collection.into(),
-            handle: Handle(wire.handle),
+            handle: OfflineHandle(wire.handle),
         }
     }
 }
 
-impl From<&Origin> for OriginJson {
-    fn from(origin: &Origin) -> Self {
+impl From<&OfflineOrigin> for OriginJson {
+    fn from(origin: &OfflineOrigin) -> Self {
         Self {
             collection: origin.collection.as_str().into(),
             handle: origin.handle.as_str().into(),
@@ -436,7 +446,7 @@ enum LevelJson {
     Full,
 }
 
-impl From<LevelJson> for Level {
+impl From<LevelJson> for OfflineLevel {
     fn from(wire: LevelJson) -> Self {
         match wire {
             LevelJson::Probed => Self::Probed,
@@ -446,12 +456,12 @@ impl From<LevelJson> for Level {
     }
 }
 
-impl From<Level> for LevelJson {
-    fn from(level: Level) -> Self {
+impl From<OfflineLevel> for LevelJson {
+    fn from(level: OfflineLevel) -> Self {
         match level {
-            Level::Probed => Self::Probed,
-            Level::Meta => Self::Meta,
-            Level::Full => Self::Full,
+            OfflineLevel::Probed => Self::Probed,
+            OfflineLevel::Meta => Self::Meta,
+            OfflineLevel::Full => Self::Full,
         }
     }
 }
@@ -467,7 +477,7 @@ enum StatusJson {
     Created,
 }
 
-impl From<StatusJson> for Status {
+impl From<StatusJson> for OfflineStatus {
     fn from(wire: StatusJson) -> Self {
         match wire {
             StatusJson::Clean => Self::Clean,
@@ -479,14 +489,14 @@ impl From<StatusJson> for Status {
     }
 }
 
-impl From<Status> for StatusJson {
-    fn from(status: Status) -> Self {
+impl From<OfflineStatus> for StatusJson {
+    fn from(status: OfflineStatus) -> Self {
         match status {
-            Status::Clean => Self::Clean,
-            Status::Dirty => Self::Dirty,
-            Status::Tombstone => Self::Tombstone,
-            Status::Conflict => Self::Conflict,
-            Status::Created => Self::Created,
+            OfflineStatus::Clean => Self::Clean,
+            OfflineStatus::Dirty => Self::Dirty,
+            OfflineStatus::Tombstone => Self::Tombstone,
+            OfflineStatus::Conflict => Self::Conflict,
+            OfflineStatus::Created => Self::Created,
         }
     }
 }
@@ -516,22 +526,22 @@ enum WriteOpJson {
     },
 }
 
-impl From<&WriteOp> for WriteOpJson {
-    fn from(op: &WriteOp) -> Self {
+impl From<&OfflineWriteOp> for WriteOpJson {
+    fn from(op: &OfflineWriteOp) -> Self {
         match op {
-            WriteOp::UpsertPlacement(placement) => Self::Upsert {
+            OfflineWriteOp::UpsertPlacement(placement) => Self::Upsert {
                 placement: placement.into(),
             },
-            WriteOp::DropPlacement { collection, handle } => Self::Drop {
+            OfflineWriteOp::DropPlacement { collection, handle } => Self::Drop {
                 collection: collection.as_str().into(),
                 handle: handle.as_str().into(),
             },
-            WriteOp::StoreObject { object, body } => Self::StoreObject {
+            OfflineWriteOp::StoreObject { object, body } => Self::StoreObject {
                 hash: object.hash.as_str().into(),
                 size: object.size,
                 body: String::from_utf8_lossy(body).into_owned(),
             },
-            WriteOp::SetCheckpoint {
+            OfflineWriteOp::SetCheckpoint {
                 collection,
                 checkpoint,
             } => Self::SetCheckpoint {
@@ -580,10 +590,10 @@ enum ChangeJson {
     },
 }
 
-impl From<&Change> for ChangeJson {
-    fn from(change: &Change) -> Self {
+impl From<&OfflineChange> for ChangeJson {
+    fn from(change: &OfflineChange) -> Self {
         match change {
-            Change::Add {
+            OfflineChange::Add {
                 handle,
                 link_id,
                 flags,
@@ -596,7 +606,7 @@ impl From<&Change> for ChangeJson {
                 origin: origin.as_ref().map(OriginJson::from),
                 object: object.as_ref().map(|hash| hash.as_str().into()),
             },
-            Change::Remove {
+            OfflineChange::Remove {
                 handle,
                 to,
                 if_match,
@@ -605,11 +615,11 @@ impl From<&Change> for ChangeJson {
                 to: to.as_ref().map(|to| to.as_str().into()),
                 if_match: if_match.clone(),
             },
-            Change::SetFlags { handle, flags } => Self::SetFlags {
+            OfflineChange::SetFlags { handle, flags } => Self::SetFlags {
                 handle: handle.as_str().into(),
                 flags: flags.0.iter().cloned().collect(),
             },
-            Change::Update {
+            OfflineChange::Update {
                 handle,
                 object,
                 if_match,
@@ -637,7 +647,7 @@ enum MutationJson {
     },
 }
 
-impl From<MutationJson> for Mutation {
+impl From<MutationJson> for OfflineMutation {
     fn from(wire: MutationJson) -> Self {
         match wire {
             MutationJson::Edit {
@@ -647,13 +657,13 @@ impl From<MutationJson> for Mutation {
                 body,
                 meta,
             } => Self::Edit {
-                handle: Handle(handle),
-                object: Object {
-                    hash: Hash(hash),
+                handle: OfflineHandle(handle),
+                object: OfflineObject {
+                    hash: OfflineHash(hash),
                     size,
                 },
                 body: body.into_bytes(),
-                meta: meta.map(Meta),
+                meta: meta.map(OfflineMeta),
             },
         }
     }

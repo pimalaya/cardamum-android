@@ -12,30 +12,30 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-io-google-people = { version = "0.0.1", default-features = false }
-io-http = { version = "0.2", default-features = false }
-io-jmap = { version = "0.1", default-features = false }
-io-msgraph = { version = "0.0.1", default-features = false }
-io-oauth = { version = "0.1", default-features = false }
+io-http = { version = "0.3", default-features = false }
+io-jmap = { version = "0.2", default-features = false }
+io-msgraph = { version = "0.2", default-features = false }
+io-oauth = { version = "0.2", default-features = false }
 io-offline = { version = "0.1", default-features = false }
-io-webdav = { version = "0.0.1", default-features = false }
+io-people = { version = "0.2", default-features = false }
+io-pim-discovery = { version = "0.3", default-features = false, features = ["autoconfig", "pacc", "rfc6764", "rfc8414", "rfc8620"] }
+io-webdav = { version = "0.1", default-features = false }
 jni = "0.22"
-io-pim-discovery = { version = "0.2", default-features = false, features = ["autoconfig", "pacc", "rfc6764", "rfc8414", "rfc8620"] }
 rand = "0.10"
 secrecy = { version = "0.10", default-features = false }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11", default-features = false }
 url = { version = "2", default-features = false }
-vcard-rs = { version = "0.0.1", default-features = false, features = ["parser", "jscontact"] }
+vcard-rs = { version = "0.1", default-features = false, features = ["parser", "jscontact"] }
 
 [patch.crates-io]
-io-google-people.git = "https://github.com/pimalaya/io-google-people"
-io-http.git = "https://github.com/pimalaya/io-http"
-io-jmap.git = "https://github.com/pimalaya/io-jmap"
-io-msgraph.git = "https://github.com/pimalaya/io-msgraph"
-io-oauth.git = "https://github.com/pimalaya/io-oauth"
-io-offline.git = "https://github.com/pimalaya/io-offline"
-io-pim-discovery.git = "https://github.com/pimalaya/io-pim-discovery"
-io-webdav.git = "https://github.com/pimalaya/io-webdav"
-vcard-rs.git = "https://github.com/pimalaya/vcard"
+io-http.path = "../../io-http"
+io-jmap.path = "../../io-jmap"
+io-msgraph.path = "../../io-msgraph"
+io-oauth.path = "../../io-oauth"
+io-offline.path = "../../io-offline"
+io-people.path = "../../io-people"
+io-pim-discovery.path = "../../io-pim-discovery"
+io-webdav.path = "../../io-webdav"
+vcard-rs.path = "../../vcard"

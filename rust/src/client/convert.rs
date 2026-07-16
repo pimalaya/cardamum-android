@@ -5,9 +5,9 @@
 
 use core::error::Error as StdError;
 
-use io_google_people::v1::send::PeopleSendError;
 use io_jmap::rfc8620::send::JmapSendError;
 use io_msgraph::v1::send::MsgraphSendError;
+use io_people::v1::send::PeopleSendError;
 use io_webdav::rfc4918::{
     follow_redirects::FollowRedirectsError, send::SendError as WebdavSendError,
 };
@@ -26,7 +26,7 @@ pub(crate) fn coroutine_error(err: &(impl StdError + 'static)) -> BridgeError {
 /// Walks the failure's source chain down to the transport leaf that
 /// knows the HTTP status of the failed round, if the failure was one:
 /// io-webdav and io-jmap carry it on their send errors, io-msgraph
-/// and io-google-people expose it as an accessor.
+/// and io-people expose it as an accessor.
 fn http_status(err: &(dyn StdError + 'static)) -> Option<u16> {
     let mut cause = Some(err);
 

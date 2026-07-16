@@ -8,14 +8,16 @@ use io_msgraph::{
     coroutine::*,
     v1::{
         rest::users::{
-            contact_folders::{MsgraphContactFoldersListResponse, list::MsgraphContactFoldersList},
+            contact_folders::list::{MsgraphContactFoldersList, MsgraphContactFoldersListResponse},
             contacts::{
-                MsgraphContact, MsgraphContactsDeltaResponse, MsgraphContactsListResponse,
+                MsgraphContact,
                 create::MsgraphContactCreate,
                 delete::MsgraphContactDelete,
-                delta::MsgraphContactsDelta,
+                delta::{MsgraphContactsDelta, MsgraphContactsDeltaResponse},
                 get::MsgraphContactGet,
-                list::{MsgraphContactsList, MsgraphContactsListParams},
+                list::{
+                    MsgraphContactsList, MsgraphContactsListParams, MsgraphContactsListResponse,
+                },
                 update::MsgraphContactUpdate,
             },
         },

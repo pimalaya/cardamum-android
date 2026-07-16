@@ -4,7 +4,7 @@
 use std::{borrow::Cow, collections::BTreeSet};
 
 use io_http::{rfc6750::bearer::HttpAuthBearer, rfc7617::basic::HttpAuthBasic};
-use io_pim_discovery::rfc6764::{types::DavService, well_known::WellKnown};
+use io_pim_discovery::rfc6764::{service::DiscoveryDavService, well_known::DiscoveryWellKnown};
 use io_webdav::{
     coroutine::{WebdavCoroutine, WebdavCoroutineState, WebdavYield},
     rfc4918::{GETETAG, WebdavAuth},
@@ -44,7 +44,7 @@ impl<'a, 'local> Client<'a, 'local> {
         // (fastmail 404s outside /dav/*); no redirect keeps the origin.
         let base_url = match base_url.path() {
             "" | "/" => {
-                let probe = WellKnown::new(base_url.clone(), DavService::Carddav);
+                let probe = DiscoveryWellKnown::new(base_url.clone(), DiscoveryDavService::Carddav);
                 match self.run_discovery(probe) {
                     Ok(Some(root)) => root,
                     _ => base_url.clone(),

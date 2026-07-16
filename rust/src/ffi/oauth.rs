@@ -1,6 +1,6 @@
 //! OAuth (RFC 6749/7591/8414) JNI entry points.
 
-use io_oauth::rfc7591::register::{Oauth20ClientInformation, Oauth20RegisterClientParams};
+use io_oauth::rfc7591::register::{Oauth20ClientInformation, Oauth20ClientRegisterParams};
 use jni::{
     EnvUnowned,
     errors::{Error, LogErrorAndDefault},
@@ -280,8 +280,8 @@ fn oauth_register_params(
     redirect_uri: &str,
     client_name: &str,
     scope: &str,
-) -> Oauth20RegisterClientParams {
-    Oauth20RegisterClientParams {
+) -> Oauth20ClientRegisterParams {
+    Oauth20ClientRegisterParams {
         redirect_uris: vec![redirect_uri.to_string()],
         token_endpoint_auth_method: Some("none".to_string()),
         grant_types: vec![

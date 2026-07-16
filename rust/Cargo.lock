@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "allocator-api2"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -46,12 +40,12 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 name = "cardamum"
 version = "0.1.0"
 dependencies = [
- "io-google-people",
  "io-http",
  "io-jmap",
  "io-msgraph",
  "io-oauth",
  "io-offline",
+ "io-people",
  "io-pim-discovery",
  "io-webdav",
  "jni",
@@ -164,9 +158,9 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c469892dddfeff64ecfdbc64cf059c77fb0decaeccd4d5d484394bdd6312bac"
+checksum = "0c13d25dfb29edf328c7eb4ebb24838ade355272d685ba0402b8751567c3dde2"
 dependencies = [
  "bumpalo",
  "bytes",
@@ -174,18 +168,25 @@ dependencies = [
  "hashbrown",
  "jiff",
  "octseq",
+ "serde",
 ]
 
 [[package]]
 name = "domain-macros"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fef7ef74e413e36d5364db163ca577ccb56f2f74377705d5f920ee3e1544127"
+checksum = "e68f247cb4e380bcdf44c1e27d7d046cbb321c4ab4a01271a51dfb19326b6b0e"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
@@ -214,7 +215,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "allocator-api2",
+ "foldhash",
 ]
 
 [[package]]
@@ -336,24 +337,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-google-people"
-version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-google-people#981d46066b594a2b78c1c1d6fad23afebf7ac509"
-dependencies = [
- "base64",
- "io-http",
- "log",
- "serde",
- "serde_json",
- "serde_variant",
- "thiserror",
- "url",
-]
-
-[[package]]
 name = "io-http"
-version = "0.2.0"
-source = "git+https://github.com/pimalaya/io-http#6e169ff2d82b34591513b1f3f707db39ccd25a68"
+version = "0.3.0"
 dependencies = [
  "base64",
  "httparse",
@@ -366,8 +351,7 @@ dependencies = [
 
 [[package]]
 name = "io-jmap"
-version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-jmap#405171f4e3a4730e298b461805f28af25b167a53"
+version = "0.2.0"
 dependencies = [
  "io-http",
  "log",
@@ -380,23 +364,20 @@ dependencies = [
 
 [[package]]
 name = "io-msgraph"
-version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-msgraph#1178a91976cf2b94dc5dc08fdbdd5428db2cd595"
+version = "0.2.0"
 dependencies = [
  "base64",
  "io-http",
  "log",
  "serde",
  "serde_json",
- "serde_variant",
  "thiserror",
  "url",
 ]
 
 [[package]]
 name = "io-oauth"
-version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-oauth#fd3bc2271bcb4be3d93124963167deaf6d1a0837"
+version = "0.2.0"
 dependencies = [
  "base64",
  "io-http",
@@ -412,16 +393,28 @@ dependencies = [
 [[package]]
 name = "io-offline"
 version = "0.1.0"
-source = "git+https://github.com/pimalaya/io-offline#c222ce668b4343ea65a93b98e4254711d0c23093"
 dependencies = [
  "log",
  "thiserror",
 ]
 
 [[package]]
-name = "io-pim-discovery"
+name = "io-people"
 version = "0.2.0"
-source = "git+https://github.com/pimalaya/io-pim-discovery#7ec816eafdc6bad8a44c24a504408c447ddf0495"
+dependencies = [
+ "base64",
+ "io-http",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_variant",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "io-pim-discovery"
+version = "0.3.2"
 dependencies = [
  "base64",
  "domain",
@@ -438,8 +431,7 @@ dependencies = [
 
 [[package]]
 name = "io-webdav"
-version = "0.0.1"
-source = "git+https://github.com/pimalaya/io-webdav#fe94b8fd7e7ff458d87d49262b195d567a1d1414"
+version = "0.1.0"
 dependencies = [
  "io-http",
  "log",
@@ -788,9 +780,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
-version = "2.0.118"
+version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
+checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -871,8 +863,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "vcard-rs"
-version = "0.0.1"
-source = "git+https://github.com/pimalaya/vcard#86bb1807e587c0f109039513bbf3057a6afa00ae"
+version = "0.1.0"
 dependencies = [
  "memchr",
  "serde_json",

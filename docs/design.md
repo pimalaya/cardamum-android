@@ -7,7 +7,7 @@ The core idea and the target structure of the app. The current code implements t
 One activity, one ViewFlipper, one panel per screen:
 
 1. **Connection** (email, config, password panels). Shown on first launch and, later, when configuring a new account. The user enters an email; Cardamum detects the provider family from the domain and proposes matching configurations:
-   - Google account: Google Contacts API (io-google-people) or Google CardDAV over OAuth. Both pending; password CardDAV is not proposed because Google does not accept it.
+   - Google account: Google Contacts API (io-people) or Google CardDAV over OAuth. Both pending; password CardDAV is not proposed because Google does not accept it.
    - Microsoft account: Microsoft Graph (io-msgraph contacts) over OAuth. Wired end to end behind the same operations as CardDAV (the account's msgraph:// base URL routes them); the Rust bridge projects Graph contacts to and from the vCard document of record, since Graph has no vCard representation. Waits only on the Entra app registration client id.
    - Anyone else: standard CardDAV, resolved via pimconf RFC 6764 discovery (SRV, TXT, .well-known over a DNS-over-TCP resolver), plus JMAP for Contacts (RFC 9610) once io-jmap grows contacts support.
 

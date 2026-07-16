@@ -11,34 +11,34 @@ use io_http::rfc9110::request::HttpRequest;
 use io_oauth::{
     rfc6749::{
         access_token_request::{
-            Oauth20RequestAccessToken, Oauth20RequestAccessTokenParams,
-            Oauth20RequestAccessTokenResult,
+            Oauth20AccessTokenRequest, Oauth20AccessTokenRequestParams,
+            Oauth20AccessTokenRequestResult,
         },
-        issue_access_token::{
-            Oauth20IssueAccessTokenErrorParams, Oauth20IssueAccessTokenSuccessParams,
-        },
+        issue_access_token::{Oauth20AccessTokenErrorParams, Oauth20AccessTokenSuccessParams},
         refresh_access_token::{
-            Oauth20RefreshAccessToken, Oauth20RefreshAccessTokenParams,
-            Oauth20RefreshAccessTokenResult,
+            Oauth20AccessTokenRefresh, Oauth20AccessTokenRefreshParams,
+            Oauth20AccessTokenRefreshResult,
         },
     },
     rfc7591::register::{
-        Oauth20ClientInformation, Oauth20RegisterClient, Oauth20RegisterClientParams,
-        Oauth20RegisterClientResult,
+        Oauth20ClientInformation, Oauth20ClientRegister, Oauth20ClientRegisterParams,
+        Oauth20ClientRegisterResult,
     },
 };
 use io_pim_discovery::{
     autoconfig::mx::DiscoveryDnsMx,
     compose::{
-        providers::Provider,
-        types::{Service, ServiceConfig},
+        config::{DiscoveryService, DiscoveryServiceConfig},
+        providers::DiscoveryKnownProvider,
     },
     coroutine::{DiscoveryCoroutine, DiscoveryCoroutineState, DiscoveryYield},
     pacc::discover::DiscoveryPacc,
-    rfc6764::{resolve::ResolveDav, types::DavService, well_known::WellKnown},
-    rfc8414::{OauthServerMetadata, ResolveOauthServer},
-    rfc8620::resolve::ResolveJmap,
-    rfc9110::ProbeAuth,
+    rfc6764::{
+        resolve::DiscoveryDavResolve, service::DiscoveryDavService, well_known::DiscoveryWellKnown,
+    },
+    rfc8414::{DiscoveryOauthServerMetadata, DiscoveryOauthServerResolve},
+    rfc8620::resolve::DiscoveryJmapResolve,
+    rfc9110::DiscoveryProbeAuth,
 };
 use io_webdav::{
     rfc4918::WebdavAuth, rfc5397::current_user_principal::CurrentUserPrincipal,
@@ -80,7 +80,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let resolver = Url::parse(resolver)
             .map_err(|err| format!("Invalid DNS resolver URL `{resolver}`: {err}"))?;
 
-        let coroutine = ResolveDav::new(domain, DavService::Carddav, resolver);
+        let coroutine = DiscoveryDavResolve::new(domain, DiscoveryDavService::Carddav, resolver);
         let srv_err = match self.run_discovery(coroutine) {
             Ok(url) => return Ok(url),
             Err(err) => err,
@@ -90,7 +90,7 @@ impl<'a, 'local> Client<'a, 'local> {
         let origin =
             Url::parse(&origin).map_err(|err| format!("Invalid origin URL `{origin}`: {err}"))?;
 
-        let coroutine = WellKnown::new(origin.clone(), DavService::Carddav);
+        let coroutine = DiscoveryWellKnown::new(origin.clone(), DiscoveryDavService::Carddav);
         match self.run_discovery(coroutine) {
             // NOTE: RFC 6764 §5: no redirect means the origin itself is
             // the context root.
@@ -109,16 +109,16 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, BridgeError> {
+    ) -> Result<Vec<DiscoveryServiceConfig>, BridgeError> {
         let (email, domain) = search_domain(email)?;
 
         let mx = DiscoveryDnsMx::new(&domain, self.search_resolver(resolver)?);
         let records = self.run_mechanism(mx)?;
 
         for record in records {
-            let exchange = record.data().exchange().to_string();
+            let exchange = record.rdata.exchange.to_string();
 
-            if let Some(provider) = Provider::from_mx(&exchange) {
+            if let Some(provider) = DiscoveryKnownProvider::from_mx(&exchange) {
                 let mut configs = provider.configs(&email);
 
                 // NOTE: a bare-domain search has no email, so the
@@ -142,14 +142,14 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, BridgeError> {
+    ) -> Result<Vec<DiscoveryServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
         let pacc = DiscoveryPacc::new(&domain, self.search_resolver(resolver)?)
             .map_err(|err| err.to_string())?;
         let config = self.run_mechanism(pacc)?;
 
-        Ok(ServiceConfig::from_pacc(&config))
+        Ok(DiscoveryServiceConfig::from_pacc(&config))
     }
 
     /// Resolves the email domain's CardDAV context root (RFC 6764)
@@ -158,17 +158,20 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, BridgeError> {
+    ) -> Result<Vec<DiscoveryServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
-        let resolve = ResolveDav::new(
+        let resolve = DiscoveryDavResolve::new(
             &domain,
-            DavService::Carddav,
+            DiscoveryDavService::Carddav,
             self.search_resolver(resolver)?,
         );
         let url = self.run_mechanism(resolve)?;
 
-        Ok(vec![ServiceConfig::from_dav(Service::Carddav, url)])
+        Ok(vec![DiscoveryServiceConfig::from_dav(
+            DiscoveryService::Carddav,
+            url,
+        )])
     }
 
     /// Resolves the email domain's JMAP session URL (RFC 8620) into a
@@ -177,13 +180,13 @@ impl<'a, 'local> Client<'a, 'local> {
         &mut self,
         email: &str,
         resolver: Option<&str>,
-    ) -> Result<Vec<ServiceConfig>, BridgeError> {
+    ) -> Result<Vec<DiscoveryServiceConfig>, BridgeError> {
         let (_, domain) = search_domain(email)?;
 
-        let resolve = ResolveJmap::new(&domain, self.search_resolver(resolver)?);
+        let resolve = DiscoveryJmapResolve::new(&domain, self.search_resolver(resolver)?);
         let session = self.run_mechanism(resolve)?;
 
-        Ok(vec![ServiceConfig::from_jmap(
+        Ok(vec![DiscoveryServiceConfig::from_jmap(
             session.url,
             &session.auth_schemes,
         )])
@@ -197,10 +200,10 @@ impl<'a, 'local> Client<'a, 'local> {
     /// discovered.
     pub fn search_probe(
         &mut self,
-        mut config: ServiceConfig,
-    ) -> Result<ServiceConfig, BridgeError> {
+        mut config: DiscoveryServiceConfig,
+    ) -> Result<DiscoveryServiceConfig, BridgeError> {
         for url in config.probe_urls() {
-            match self.run_mechanism(ProbeAuth::new(url)) {
+            match self.run_mechanism(DiscoveryProbeAuth::new(url)) {
                 Ok(schemes) if !schemes.is_empty() => {
                     config.refine_auth(&schemes);
                     break;
@@ -229,13 +232,13 @@ impl<'a, 'local> Client<'a, 'local> {
     pub fn oauth_server_metadata(
         &mut self,
         issuer: &Url,
-    ) -> Result<OauthServerMetadata, BridgeError> {
-        let primary = OauthServerMetadata::well_known_url(issuer);
-        match self.run_discovery(ResolveOauthServer::new(primary)) {
+    ) -> Result<DiscoveryOauthServerMetadata, BridgeError> {
+        let primary = DiscoveryOauthServerMetadata::well_known_url(issuer);
+        match self.run_discovery(DiscoveryOauthServerResolve::new(primary)) {
             Ok(metadata) => Ok(metadata),
             Err(primary_err) => {
-                let fallback = OauthServerMetadata::openid_well_known_url(issuer);
-                self.run_discovery(ResolveOauthServer::new(fallback))
+                let fallback = DiscoveryOauthServerMetadata::openid_well_known_url(issuer);
+                self.run_discovery(DiscoveryOauthServerResolve::new(fallback))
                     .map_err(|fallback_err| {
                         format!("{primary_err} (OpenID fallback also failed: {fallback_err})")
                             .into()
@@ -250,27 +253,27 @@ impl<'a, 'local> Client<'a, 'local> {
     pub fn oauth_register_client(
         &mut self,
         registration_endpoint: &Url,
-        params: &Oauth20RegisterClientParams,
+        params: &Oauth20ClientRegisterParams,
     ) -> Result<Oauth20ClientInformation, BridgeError> {
         let request = oauth_post_request(registration_endpoint);
         let mut coroutine =
-            Oauth20RegisterClient::new(request, params).map_err(|err| err.to_string())?;
+            Oauth20ClientRegister::new(request, params).map_err(|err| err.to_string())?;
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
-                Oauth20RegisterClientResult::Ok(Ok(client)) => return Ok(client),
-                Oauth20RegisterClientResult::Ok(Err(err)) => {
+                Oauth20ClientRegisterResult::Ok(Ok(client)) => return Ok(client),
+                Oauth20ClientRegisterResult::Ok(Err(err)) => {
                     let detail = err
                         .error_description
                         .unwrap_or_else(|| format!("{:?}", err.error));
                     return Err(format!("Client registration rejected: {detail}").into());
                 }
-                Oauth20RegisterClientResult::Err(err) => return Err(err.to_string().into()),
-                Oauth20RegisterClientResult::WantsRead => {
+                Oauth20ClientRegisterResult::Err(err) => return Err(err.to_string().into()),
+                Oauth20ClientRegisterResult::WantsRead => {
                     arg = Some(self.read(registration_endpoint.as_str())?);
                 }
-                Oauth20RegisterClientResult::WantsWrite(bytes) => {
+                Oauth20ClientRegisterResult::WantsWrite(bytes) => {
                     self.write(registration_endpoint.as_str(), &bytes)?;
                     arg = None;
                 }
@@ -290,9 +293,9 @@ impl<'a, 'local> Client<'a, 'local> {
         code: &str,
         redirect_uri: &str,
         pkce_verifier: &str,
-    ) -> Result<Oauth20IssueAccessTokenSuccessParams, BridgeError> {
+    ) -> Result<Oauth20AccessTokenSuccessParams, BridgeError> {
         let verifier = parse_pkce_verifier(pkce_verifier)?;
-        let params = Oauth20RequestAccessTokenParams {
+        let params = Oauth20AccessTokenRequestParams {
             code: code.into(),
             redirect_uri: Some(redirect_uri.into()),
             client_id: client_id.into(),
@@ -301,20 +304,20 @@ impl<'a, 'local> Client<'a, 'local> {
         };
 
         let mut coroutine =
-            Oauth20RequestAccessToken::new(oauth_post_request(token_endpoint), params);
+            Oauth20AccessTokenRequest::new(oauth_post_request(token_endpoint), params);
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
-                Oauth20RequestAccessTokenResult::Ok(Ok(success)) => return Ok(success),
-                Oauth20RequestAccessTokenResult::Ok(Err(err)) => {
+                Oauth20AccessTokenRequestResult::Ok(Ok(success)) => return Ok(success),
+                Oauth20AccessTokenRequestResult::Ok(Err(err)) => {
                     return Err(oauth_error(err).into());
                 }
-                Oauth20RequestAccessTokenResult::Err(err) => return Err(err.to_string().into()),
-                Oauth20RequestAccessTokenResult::WantsRead => {
+                Oauth20AccessTokenRequestResult::Err(err) => return Err(err.to_string().into()),
+                Oauth20AccessTokenRequestResult::WantsRead => {
                     arg = Some(self.read(token_endpoint.as_str())?);
                 }
-                Oauth20RequestAccessTokenResult::WantsWrite(bytes) => {
+                Oauth20AccessTokenRequestResult::WantsWrite(bytes) => {
                     self.write(token_endpoint.as_str(), &bytes)?;
                     arg = None;
                 }
@@ -333,26 +336,26 @@ impl<'a, 'local> Client<'a, 'local> {
         client_secret: Option<&str>,
         refresh_token: &str,
         scope: &str,
-    ) -> Result<Oauth20IssueAccessTokenSuccessParams, BridgeError> {
-        let mut params = Oauth20RefreshAccessTokenParams::new(client_id, refresh_token);
+    ) -> Result<Oauth20AccessTokenSuccessParams, BridgeError> {
+        let mut params = Oauth20AccessTokenRefreshParams::new(client_id, refresh_token);
         params.client_secret = client_secret.map(SecretString::from);
         params.scopes = scope.split_whitespace().map(Cow::Borrowed).collect();
 
         let mut coroutine =
-            Oauth20RefreshAccessToken::new(oauth_post_request(token_endpoint), params);
+            Oauth20AccessTokenRefresh::new(oauth_post_request(token_endpoint), params);
         let mut arg: Option<Vec<u8>> = None;
 
         loop {
             match coroutine.resume(arg.as_deref()) {
-                Oauth20RefreshAccessTokenResult::Ok(Ok(success)) => return Ok(success),
-                Oauth20RefreshAccessTokenResult::Ok(Err(err)) => {
+                Oauth20AccessTokenRefreshResult::Ok(Ok(success)) => return Ok(success),
+                Oauth20AccessTokenRefreshResult::Ok(Err(err)) => {
                     return Err(oauth_error(err).into());
                 }
-                Oauth20RefreshAccessTokenResult::Err(err) => return Err(err.to_string().into()),
-                Oauth20RefreshAccessTokenResult::WantsRead => {
+                Oauth20AccessTokenRefreshResult::Err(err) => return Err(err.to_string().into()),
+                Oauth20AccessTokenRefreshResult::WantsRead => {
                     arg = Some(self.read(token_endpoint.as_str())?);
                 }
-                Oauth20RefreshAccessTokenResult::WantsWrite(bytes) => {
+                Oauth20AccessTokenRefreshResult::WantsWrite(bytes) => {
                     self.write(token_endpoint.as_str(), &bytes)?;
                     arg = None;
                 }
@@ -463,7 +466,7 @@ fn oauth_post_request(endpoint: &Url) -> HttpRequest {
 }
 
 /// Formats an RFC 6749 §5.2 token error response.
-fn oauth_error(err: Oauth20IssueAccessTokenErrorParams) -> String {
+fn oauth_error(err: Oauth20AccessTokenErrorParams) -> String {
     match err.error_description {
         Some(description) => format!("OAuth error {:?}: {description}", err.error),
         None => format!("OAuth error {:?}", err.error),
