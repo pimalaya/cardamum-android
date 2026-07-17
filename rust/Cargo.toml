@@ -28,14 +28,3 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 sha2 = { version = "0.11", default-features = false }
 url = { version = "2", default-features = false }
 vcard-rs = { version = "0.1", default-features = false, features = ["parser", "jscontact"] }
-
-[patch.crates-io]
-io-http.path = "../../io-http"
-io-jmap.path = "../../io-jmap"
-io-msgraph.path = "../../io-msgraph"
-io-oauth.path = "../../io-oauth"
-io-offline.path = "../../io-offline"
-io-people.path = "../../io-people"
-io-pim-discovery.path = "../../io-pim-discovery"
-io-webdav.path = "../../io-webdav"
-vcard-rs.path = "../../vcard"

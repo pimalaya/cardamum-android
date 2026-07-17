@@ -339,6 +339,8 @@ dependencies = [
 [[package]]
 name = "io-http"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb77bacb4b4756646a0056ef54454675fd47eee9a7181cc00d329af25d5482bb"
 dependencies = [
  "base64",
  "httparse",
@@ -352,6 +354,8 @@ dependencies = [
 [[package]]
 name = "io-jmap"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96712b259aa37146ca9de6eb71e0232f80421dc61ee51ff839cc8c6d05d84181"
 dependencies = [
  "io-http",
  "log",
@@ -365,6 +369,8 @@ dependencies = [
 [[package]]
 name = "io-msgraph"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1e962ea481e4e9a9632effbb6b90366c21f1a00a8e34fad75185c981b286189"
 dependencies = [
  "base64",
  "io-http",
@@ -378,6 +384,8 @@ dependencies = [
 [[package]]
 name = "io-oauth"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8224ce1dbb815f4bbfc60a9718dd034e93731d8c7ff74cf003e2b1329826121"
 dependencies = [
  "base64",
  "io-http",
@@ -393,6 +401,8 @@ dependencies = [
 [[package]]
 name = "io-offline"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9134f0881acefb69947ff40253f6a6c35d8c6f70315ea25d3753f56e044efb5c"
 dependencies = [
  "log",
  "thiserror",
@@ -401,6 +411,8 @@ dependencies = [
 [[package]]
 name = "io-people"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46f14a53bd0da01461eaac20402742807c75646ebfa9ce116304877d7c3ac73a"
 dependencies = [
  "base64",
  "io-http",
@@ -414,7 +426,9 @@ dependencies = [
 
 [[package]]
 name = "io-pim-discovery"
-version = "0.3.2"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a94d5441f31e708c5aaa3b66f300e513dbd3d3b2eaf91c510649ca1167d144af"
 dependencies = [
  "base64",
  "domain",
@@ -432,6 +446,8 @@ dependencies = [
 [[package]]
 name = "io-webdav"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc5171a8632ab5d7bee78effafcad0547bb8b95f03bcba0a131384cf674cc5c8"
 dependencies = [
  "io-http",
  "log",
@@ -864,6 +880,8 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "vcard-rs"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87969ab50d8c1c2372b82a5f5a7d2cd476e370f8db145417f79b00b4c0648e1c"
 dependencies = [
  "memchr",
  "serde_json",
